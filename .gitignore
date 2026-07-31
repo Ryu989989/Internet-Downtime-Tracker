@@ -1,0 +1,93 @@
+# Dependencies & install artifacts
+node_modules/
+web/vendor/
+
+# Build / packager output
+dist/
+out/
+build/
+*.exe
+release/
+*.nsis.7z
+*.blockmap
+
+# Caches & coverage
+.cache/
+.turbo/
+.parcel-cache/
+.eslintcache
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Python archive / leftovers
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+src/
+run.py
+requirements.txt
+build.spec
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.*
+
+# App local data / DBs (not source)
+.tmp_appdata/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Cursor / agent / skills / rules noise
+.cursor/
+.claude/
+.agents/
+.codex/
+.github/agents/
+AGENTS.md
+CLAUDE.md
+.cursorrules
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store
+ehthumbs.db
+
+# Logs & temp
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tmp/
+temp/
+*.tmp
+
+# Electron / native leftovers
+*.node
+.electron-builder/
+# Legacy root Electron stub (canonical entry is electron/main.js)
+/main.js
+
+# Local agent review prompt packs (not product docs)
+docs/code-review-prompts/

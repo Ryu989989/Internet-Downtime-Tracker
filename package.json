@@ -1,0 +1,54 @@
+{
+  "name": "internet-downtime-tracker",
+  "version": "1.0.0",
+  "description": "Windows tray app that tracks LAN/WAN outages with a local dashboard",
+  "main": "electron/main.js",
+  "author": "local",
+  "license": "MIT",
+  "scripts": {
+    "postinstall": "node scripts/vendor-chart.js",
+    "start": "electron .",
+    "build": "electron-builder --win",
+    "test": "node --test electron/test/monitor.test.js electron/test/netcheck.test.js electron/test/export.test.js electron/test/system-logs.test.js electron/test/speedtest.test.js electron/test/security.test.js"
+  },
+  "dependencies": {
+    "sql.js": "^1.12.0"
+  },
+  "devDependencies": {
+    "chart.js": "^4.4.1",
+    "electron": "^33.4.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.local.internetdowntimetracker",
+    "productName": "Internet Downtime Tracker",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "!electron/test/**",
+      "web/**/*",
+      "assets/icons/**/*",
+      "package.json",
+      "node_modules/sql.js/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/sql.js/dist/sql-wasm.wasm"
+    ],
+    "icon": "assets/icons/icon.ico",
+    "win": {
+      "icon": "assets/icons/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/icons/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

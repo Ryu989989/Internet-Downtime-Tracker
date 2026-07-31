@@ -1,0 +1,200 @@
+"use strict";
+
+const { describe, it, before, after } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const crypto = require("crypto");
+
+const {
+  TrackerDb,
+  normalizeSettingValue,
+  LIST_OUTAGES_LIMIT_MAX,
+} = require("../db");
+const { isSafeExternalUrl, isHttpsUrl } = require("../url-policy");
+const {
+  isAllowedDownloadUrl,
+  isTrustedCliPath,
+  verifyOfficialZip,
+  OFFICIAL_WIN64_SHA256,
+} = require("../speedtest");
+const { Monitor } = require("../monitor");
+
+describe("url policy (H1)", () => {
+  it("allows http(s) only for openExternal", () => {
+    assert.equal(isSafeExternalUrl("https://www.speedtest.net/result/1"), true);
+    assert.equal(isSafeExternalUrl("http://example.com"), true);
+    assert.equal(isSafeExternalUrl("javascript:alert(1)"), false);
+    assert.equal(isSafeExternalUrl("file:///C:/Windows/System32"), false);
+    assert.equal(isSafeExternalUrl("data:text/html,hi"), false);
+    assert.equal(isSafeExternalUrl(null), false);
+  });
+
+  it("https-only helper for dashboard hrefs (M2)", () => {
+    assert.equal(isHttpsUrl("https://www.speedtest.net/result/1"), true);
+    assert.equal(isHttpsUrl("http://example.com"), false);
+  });
+});
+
+describe("settings clamp (H2)", () => {
+  let dir;
+  let db;
+
+  before(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "idt-set-"));
+    db = await TrackerDb.open(path.join(dir, "tracker.db"));
+  });
+
+  after(() => {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects 0 / NaN / negatives; clamps into bounds", () => {
+    assert.equal(normalizeSettingValue("poll_interval_s", 0), null);
+    assert.equal(normalizeSettingValue("poll_interval_s", -1), null);
+    assert.equal(normalizeSettingValue("poll_interval_s", "nope"), null);
+    assert.equal(normalizeSettingValue("poll_interval_s", 1), 2);
+    assert.equal(normalizeSettingValue("poll_interval_s", 99999), 3600);
+    assert.equal(normalizeSettingValue("debounce_fail_count", 0), null);
+    assert.equal(normalizeSettingValue("debounce_fail_count", 1), 1);
+    assert.equal(normalizeSettingValue("debounce_fail_count", 99), 20);
+
+    db.updateSettings({ poll_interval_s: 0, debounce_fail_count: -3 });
+    const s = db.getSettings();
+    assert.equal(s.poll_interval_s, 5);
+    assert.equal(s.debounce_fail_count, 2);
+
+    db.updateSettings({ poll_interval_s: 1, debounce_fail_count: 50 });
+    const s2 = db.getSettings();
+    assert.equal(s2.poll_interval_s, 2);
+    assert.equal(s2.debounce_fail_count, 20);
+  });
+
+  it("clamps listOutages LIMIT (M3)", () => {
+    for (let i = 0; i < 3; i++) db.openOutage("lan", 1_700_000_000 + i);
+    const rows = db.listOutages({ limit: 1e9 });
+    assert.ok(rows.length <= LIST_OUTAGES_LIMIT_MAX);
+    const tiny = db.listOutages({ limit: 1 });
+    assert.equal(tiny.length, 1);
+  });
+});
+
+describe("Ookla download trust (H3/M10)", () => {
+  it("pins redirect hosts to https Ookla/speedtest domains", () => {
+    assert.equal(
+      isAllowedDownloadUrl(
+        "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip"
+      ),
+      true
+    );
+    assert.equal(isAllowedDownloadUrl("https://cdn.speedtest.net/file.zip"), true);
+    assert.equal(isAllowedDownloadUrl("http://install.speedtest.net/x"), false);
+    assert.equal(isAllowedDownloadUrl("https://evil.example/x.zip"), false);
+  });
+
+  it("requires speedtest basename under allowlisted dirs", () => {
+    const userData = path.join(os.tmpdir(), "idt-ud");
+    const good = path.join(userData, "speedtest", "speedtest.exe");
+    assert.equal(isTrustedCliPath(good, userData), true);
+    assert.equal(
+      isTrustedCliPath(path.join(os.tmpdir(), "evil", "speedtest.exe"), userData),
+      false
+    );
+    assert.equal(
+      isTrustedCliPath(path.join(userData, "speedtest", "malware.exe"), userData),
+      false
+    );
+  });
+
+  it("verifyOfficialZip rejects wrong digest", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "idt-zip-"));
+    const bad = path.join(dir, "bad.zip");
+    fs.writeFileSync(bad, "not-the-official-zip");
+    assert.throws(() => verifyOfficialZip(bad), /integrity check/);
+    const good = path.join(dir, "good.zip");
+    const payload = Buffer.from("pinned-bytes");
+    fs.writeFileSync(good, payload);
+    const digest = crypto.createHash("sha256").update(payload).digest("hex");
+    // Temporarily not equal to official pin — still rejects.
+    assert.notEqual(digest, OFFICIAL_WIN64_SHA256);
+    assert.throws(() => verifyOfficialZip(good), /integrity check/);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("WAN streak + timer overlap (M4/M5)", () => {
+  let dir;
+  let db;
+  let monitor;
+
+  before(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "idt-wan-"));
+    db = await TrackerDb.open(path.join(dir, "tracker.db"));
+    monitor = new Monitor(db, {
+      probeFn: async () => ({
+        lan_ok: true,
+        wan_ok: true,
+        gateway: "192.168.1.1",
+        latency_ms: 1,
+        lan_method: "icmp",
+      }),
+    });
+  });
+
+  after(() => {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("resets WAN fail streak while LAN is down", () => {
+    monitor.processResult(
+      { lan_ok: true, wan_ok: false, gateway: "g", latency_ms: 1, lan_method: "icmp" },
+      3
+    );
+    assert.equal(monitor.state.wan_fail_streak, 1);
+    monitor.processResult(
+      { lan_ok: false, wan_ok: false, gateway: "g", latency_ms: null, lan_method: "failed" },
+      3
+    );
+    assert.equal(monitor.state.wan_fail_streak, 0);
+    // After LAN recovers, streak starts fresh (one fail ≠ open at debounce 3).
+    monitor.processResult(
+      { lan_ok: true, wan_ok: false, gateway: "g", latency_ms: 1, lan_method: "icmp" },
+      3
+    );
+    assert.equal(monitor.state.wan_fail_streak, 1);
+    assert.equal(monitor.state.open_wan_id, null);
+  });
+
+  it("does not stack timers when a tick is already running", async () => {
+    let release;
+    const gate = new Promise((r) => {
+      release = r;
+    });
+    let probes = 0;
+    const slow = new Monitor(db, {
+      probeFn: async () => {
+        probes += 1;
+        await gate;
+        return {
+          lan_ok: true,
+          wan_ok: true,
+          gateway: "g",
+          latency_ms: 1,
+          lan_method: "icmp",
+        };
+      },
+    });
+    db.updateSettings({ poll_interval_s: 2 });
+    slow._stopped = false;
+    const p1 = slow._tick();
+    // Second tick while first is in-flight must no-op (no overlapping schedule).
+    await slow._tick();
+    assert.equal(probes, 1);
+    release();
+    await p1;
+    slow.stop();
+  });
+});

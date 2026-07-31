@@ -1,0 +1,202 @@
+"use strict";
+
+const { describe, it, before, after } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+const { TrackerDb } = require("../db");
+const { Monitor } = require("../monitor");
+
+function makeResult(lan, wan, dns = true, http = true) {
+  return {
+    lan_ok: lan,
+    wan_ok: wan,
+    dns_ok: lan && wan ? dns : false,
+    http_ok: lan && wan && dns ? http : false,
+    gateway: "192.168.1.1",
+    latency_ms: 5,
+    lan_method: "icmp",
+  };
+}
+
+describe("monitor debounce", async () => {
+  let dir;
+  let db;
+  let monitor;
+
+  before(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "idt-"));
+    db = await TrackerDb.open(path.join(dir, "tracker.db"));
+    monitor = new Monitor(db, { probeFn: async () => makeResult(true, true) });
+  });
+
+  after(() => {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("opens LAN outage after 2 consecutive fails", () => {
+    monitor.processResult(makeResult(false, false), 2);
+    assert.equal(monitor.state.open_lan_id, null);
+    monitor.processResult(makeResult(false, false), 2);
+    assert.ok(monitor.state.open_lan_id != null);
+    const open = db.getOpenOutages();
+    assert.equal(open.length, 1);
+    assert.equal(open[0].type, "lan");
+  });
+
+  it("closes LAN outage on one success", () => {
+    const id = monitor.state.open_lan_id;
+    assert.ok(id != null);
+    monitor.processResult(makeResult(true, true), 2);
+    assert.equal(monitor.state.open_lan_id, null);
+    const row = db._get("SELECT * FROM outages WHERE id=?", [id]);
+    assert.ok(row.ended_at != null);
+    assert.ok(row.duration_ms >= 0);
+  });
+
+  it("opens WAN only when LAN is up", () => {
+    monitor.processResult(makeResult(true, false), 2);
+    assert.equal(monitor.state.open_wan_id, null);
+    monitor.processResult(makeResult(true, false), 2);
+    assert.ok(monitor.state.open_wan_id != null);
+
+    const before = monitor.state.open_wan_id;
+    monitor.processResult(makeResult(false, false), 2);
+    monitor.processResult(makeResult(false, false), 2);
+    assert.equal(monitor.state.open_wan_id, before);
+  });
+
+  it("opens DNS/HTTP only when lower layers are up", () => {
+    // Clear any open WAN from prior test.
+    monitor.processResult(makeResult(true, true, true, true), 1);
+    assert.equal(monitor.state.open_wan_id, null);
+
+    monitor.processResult(makeResult(true, true, false, false), 2);
+    assert.equal(monitor.state.open_dns_id, null);
+    monitor.processResult(makeResult(true, true, false, false), 2);
+    assert.ok(monitor.state.open_dns_id != null);
+    assert.equal(monitor.state.open_http_id, null);
+
+    monitor.processResult(makeResult(true, true, true, false), 2);
+    assert.equal(monitor.state.open_dns_id, null);
+    assert.equal(monitor.state.open_http_id, null);
+    monitor.processResult(makeResult(true, true, true, false), 2);
+    assert.ok(monitor.state.open_http_id != null);
+  });
+});
+
+describe("summary uptime streak", async () => {
+  let dir;
+  let db;
+
+  before(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "idt-sum-"));
+    db = await TrackerDb.open(path.join(dir, "tracker.db"));
+  });
+
+  after(() => {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("caps streak to observeSince when last outage ended earlier", () => {
+    const now = 1_700_000_000;
+    const observeSince = now - 600; // session started 10 min ago
+    const outageEnd = now - 86400; // closed 1 day ago
+    db.openOutage("wan", outageEnd - 120);
+    const open = db.getOpenOutage("wan");
+    db.closeOutage(open.id, outageEnd);
+
+    const sum = db.summary(now, { observeSince });
+    assert.equal(sum.in_outage, false);
+    assert.ok(sum.uptime_streak_s <= 600.1);
+    assert.ok(sum.uptime_streak_s >= 599.9);
+  });
+
+  it("uses time since outage end when it is within this session", () => {
+    const now = 1_700_100_000;
+    const observeSince = now - 3600;
+    const outageEnd = now - 120;
+    db.openOutage("lan", outageEnd - 30);
+    const open = db.getOpenOutage("lan");
+    db.closeOutage(open.id, outageEnd);
+
+    const sum = db.summary(now, { observeSince });
+    assert.equal(sum.in_outage, false);
+    assert.ok(sum.uptime_streak_s <= 120.1);
+    assert.ok(sum.uptime_streak_s >= 119.9);
+  });
+
+  it("adopts prior-session open outages so recovery can close them", async () => {
+    const staleId = db.openOutage("lan", 1_699_000_000);
+    let adopted = null;
+    const m = new Monitor(db, {
+      probeFn: async () => {
+        throw new Error("offline");
+      },
+    });
+    await m._bootstrap();
+    adopted = m.state.open_lan_id;
+    assert.equal(adopted, staleId);
+
+    m.processResult(makeResult(true, true), 1);
+    assert.equal(m.state.open_lan_id, null);
+    const row = db._get("SELECT * FROM outages WHERE id=?", [staleId]);
+    assert.ok(row.ended_at != null);
+  });
+});
+
+describe("monitor probe suppress / cool-down", async () => {
+  let dir;
+  let db;
+  let monitor;
+
+  before(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "idt-sup-"));
+    db = await TrackerDb.open(path.join(dir, "tracker.db"));
+    monitor = new Monitor(db, { probeFn: async () => makeResult(true, true) });
+  });
+
+  after(() => {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("does not open outages from failures during cool-down", () => {
+    monitor.setProbeSuppress(true);
+    assert.equal(monitor.state.probe_suppressed, true);
+    monitor.setProbeSuppress(false, { cooldownMs: 60_000 });
+    assert.equal(monitor.state.probe_suppressed, false);
+    // Simulate ticks during cool-down (successesOnly path).
+    monitor._applyProbe(makeResult(true, false), 2, true, { successesOnly: true });
+    monitor._applyProbe(makeResult(true, false), 2, true, { successesOnly: true });
+    assert.equal(monitor.state.open_wan_id, null);
+    assert.equal(db.getOpenOutages().length, 0);
+  });
+
+  it("includes provider on summary from latest speed test", () => {
+    assert.equal(db.summary().provider, null);
+    db.insertSpeedTest({
+      tested_at: Date.now() / 1000,
+      download_mbps: 100,
+      upload_mbps: 20,
+      ping_ms: 12.5,
+      jitter_ms: 1,
+      packet_loss: 0,
+      server_name: "City Fiber",
+      server_id: "1",
+      server_location: "Austin, TX",
+      isp: "Example ISP",
+      result_url: null,
+      raw_json: null,
+    });
+    const sum = db.summary();
+    assert.equal(sum.provider.isp, "Example ISP");
+    assert.equal(sum.provider.server_name, "City Fiber");
+    assert.equal(sum.provider.server_location, "Austin, TX");
+    assert.equal(sum.provider.ping_ms, 12.5);
+  });
+});
