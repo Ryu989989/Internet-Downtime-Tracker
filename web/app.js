@@ -236,7 +236,19 @@ function activateTab(tab) {
     refreshHistory();
   }
   if (tab === "system-logs") refreshSystemLogs({ refresh: false });
-  if (tab === "speed") refreshSpeed();
+  if (tab === "speed") {
+    // Recreate trend chart on a visible canvas (Chart.js gets 0-size in hidden panels).
+    if (speedTrendChart) {
+      try {
+        speedTrendChart.destroy();
+      } catch {
+        /* ignore */
+      }
+      speedTrendChart = null;
+      chartEnterDone.speed = false;
+    }
+    refreshSpeed();
+  }
   if (tab === "settings") loadSettings().catch(() => {});
   if (tab === "overview") {
     refreshStatus();
@@ -463,26 +475,59 @@ function ensureDow(data) {
   });
 }
 
+function speedTrendLabels(rows) {
+  return rows.map((t) => {
+    const d = new Date(Number(t.tested_at) * 1000);
+    if (Number.isNaN(d.getTime())) return "—";
+    const md = `${d.getMonth() + 1}/${d.getDate()}`;
+    const hm = `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+    return `${md} ${hm}`;
+  });
+}
+
 function ensureSpeedTrend(tests) {
   const ctx = $("#speedTrendChart");
   const empty = $("#speedTrendEmpty");
   if (!ctx) return;
-  const rows = [...(tests || [])].reverse();
+  // Chronological for the line (API returns newest-first).
+  const rows = [...(tests || [])]
+    .filter((t) => t && t.tested_at != null)
+    .sort((a, b) => Number(a.tested_at) - Number(b.tested_at));
   const has = rows.length > 0;
   if (empty) empty.hidden = has;
-  const labels = rows.map((t) => {
-    const d = new Date(t.tested_at * 1000);
-    return `${d.getMonth() + 1}/${d.getDate()}`;
-  });
-  const down = rows.map((t) => t.download_mbps);
-  const up = rows.map((t) => t.upload_mbps);
+  if (!has) {
+    if (speedTrendChart) {
+      speedTrendChart.destroy();
+      speedTrendChart = null;
+      chartEnterDone.speed = false;
+    }
+    return;
+  }
+  const labels = speedTrendLabels(rows);
+  const down = rows.map((t) => Number(t.download_mbps));
+  const up = rows.map((t) => Number(t.upload_mbps));
+  const panelHidden = ctx.closest(".panel")?.hasAttribute("hidden");
+
   if (speedTrendChart) {
     speedTrendChart.data.labels = labels;
     speedTrendChart.data.datasets[0].data = down;
     speedTrendChart.data.datasets[1].data = up;
     speedTrendChart.update("none");
+    if (!panelHidden) {
+      requestAnimationFrame(() => {
+        try {
+          speedTrendChart.resize();
+        } catch {
+          /* chart torn down */
+        }
+      });
+    }
     return;
   }
+
+  // Avoid creating Chart.js on a zero-size hidden canvas.
+  if (panelHidden) return;
+
   speedTrendChart = new Chart(ctx, {
     type: "line",
     data: {
@@ -494,7 +539,8 @@ function ensureSpeedTrend(tests) {
           borderColor: chartTheme.domain.down,
           backgroundColor: "transparent",
           tension: 0.3,
-          pointRadius: 2,
+          pointRadius: 3,
+          pointHoverRadius: 5,
         },
         {
           label: "Up",
@@ -502,17 +548,35 @@ function ensureSpeedTrend(tests) {
           borderColor: chartTheme.domain.up,
           backgroundColor: "transparent",
           tension: 0.3,
-          pointRadius: 2,
+          pointRadius: 3,
+          pointHoverRadius: 5,
         },
       ],
     },
     options: {
       responsive: true,
+      maintainAspectRatio: false,
       animation: chartAnimOnce("speed"),
-      plugins: { legend: { labels: { boxWidth: 10 } } },
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { labels: { boxWidth: 10 } },
+        tooltip: {
+          callbacks: {
+            label(c) {
+              const v = c.parsed.y;
+              if (v == null || Number.isNaN(v)) return ` ${c.dataset.label}: —`;
+              return ` ${c.dataset.label}: ${v.toFixed(1)} Mbps`;
+            },
+          },
+        },
+      },
       scales: {
         ...chartScaleOpts(),
-        y: { ...chartScaleOpts().y, ticks: { callback: (v) => `${v}` } },
+        y: {
+          ...chartScaleOpts().y,
+          suggestedMax: Math.max(...down, ...up, 10) * 1.1,
+          ticks: { callback: (v) => `${v}` },
+        },
       },
     },
   });

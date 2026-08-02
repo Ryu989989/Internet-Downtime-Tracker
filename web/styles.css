@@ -870,6 +870,12 @@ button.btn-ghost:hover {
   position: relative;
 }
 
+.chart-wrap canvas {
+  width: 100% !important;
+  max-height: 220px;
+  min-height: 140px;
+}
+
 .chart-wrap h2,
 .table-wrap h2,
 .settings-box h2,
@@ -887,6 +893,11 @@ button.btn-ghost:hover {
   justify-content: center;
   text-align: center;
   pointer-events: none;
+}
+
+/* Author `display:flex` otherwise wins over the HTML hidden attribute. */
+.chart-empty[hidden] {
+  display: none !important;
 }
 
 .charts-grid {
