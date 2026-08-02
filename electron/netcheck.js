@@ -175,6 +175,64 @@ async function pingHost(host, timeoutS = 2.0) {
   return [ok, latency];
 }
 
+/**
+ * Summarize ICMP burst samples into loss / jitter / latency stats.
+ * samples: [{ ok: boolean, latency_ms: number|null }, ...]
+ */
+function summarizePingBurst(samples, { target = null, at = null } = {}) {
+  const list = Array.isArray(samples) ? samples : [];
+  const sent = list.length;
+  const lost = list.filter((s) => !s || !s.ok).length;
+  const lats = list
+    .filter((s) => s && s.ok && s.latency_ms != null && !Number.isNaN(Number(s.latency_ms)))
+    .map((s) => Number(s.latency_ms));
+  const loss_pct = sent ? Math.round((lost / sent) * 1000) / 10 : null;
+  const latency_avg_ms =
+    lats.length > 0
+      ? Math.round((lats.reduce((a, b) => a + b, 0) / lats.length) * 10) / 10
+      : null;
+  const latency_ms = lats.length ? lats[lats.length - 1] : null;
+  let jitter_ms = null;
+  if (lats.length >= 2) {
+    let sum = 0;
+    for (let i = 1; i < lats.length; i++) sum += Math.abs(lats[i] - lats[i - 1]);
+    jitter_ms = Math.round((sum / (lats.length - 1)) * 10) / 10;
+  }
+  return {
+    target: target || null,
+    loss_pct,
+    jitter_ms,
+    latency_ms,
+    latency_avg_ms,
+    samples: sent,
+    lost,
+    at: at != null ? at : Date.now() / 1000,
+  };
+}
+
+/** Lightweight 4-ping burst to one public host — informational only. */
+async function pingBurst(host = "1.1.1.1", { count = 4, timeoutS = 1.2 } = {}) {
+  const samples = [];
+  for (let i = 0; i < count; i++) {
+    const [ok, latency_ms] = await pingHost(host, timeoutS);
+    samples.push({ ok: !!ok, latency_ms });
+  }
+  return summarizePingBurst(samples, { target: host });
+}
+
+function isMonitorStale({
+  last_probe_at,
+  poll_interval_s = 5,
+  paused = false,
+  probe_suppressed = false,
+  now = Date.now() / 1000,
+} = {}) {
+  if (paused || probe_suppressed) return false;
+  if (last_probe_at == null) return false;
+  const interval = Math.max(2, Number(poll_interval_s) || 5);
+  return now - Number(last_probe_at) > 2 * interval;
+}
+
 async function checkLan(gateway = null) {
   const gw = gateway || (await getDefaultGateway());
   if (!gw) return [false, null, null, null];
@@ -405,6 +463,9 @@ module.exports = {
   getDefaultGateway,
   tcpConnect,
   pingHost,
+  summarizePingBurst,
+  pingBurst,
+  isMonitorStale,
   checkLan,
   checkWan,
   checkDns,

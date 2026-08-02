@@ -1,9 +1,48 @@
 "use strict";
 
-const { probe: runProbe, getActiveAdapter } = require("./netcheck");
+const {
+  probe: runProbe,
+  getActiveAdapter,
+  pingBurst,
+  isMonitorStale,
+} = require("./netcheck");
 
 const ADAPTER_EVERY_N = 30;
+const QUALITY_EVERY_N = 6;
+const QUALITY_TARGET = "1.1.1.1";
 const OUTAGE_TYPES = ["lan", "wan", "dns", "http"];
+
+function buildIncidentSnapshot(state, type) {
+  const adapter = state.adapter
+    ? {
+        name: state.adapter.name || null,
+        type: state.adapter.type || null,
+        signal: state.adapter.signal != null ? state.adapter.signal : null,
+      }
+    : null;
+  return {
+    at: Date.now() / 1000,
+    type,
+    adapter,
+    gateway: state.gateway || null,
+    latency_ms: state.latency_ms != null ? state.latency_ms : null,
+    lan_ok: state.lan_ok,
+    wan_ok: state.wan_ok,
+    dns_ok: state.dns_ok,
+    http_ok: state.http_ok,
+    domain:
+      type ||
+      (state.lan_ok === false
+        ? "lan"
+        : state.wan_ok === false
+          ? "wan"
+          : state.dns_ok === false
+            ? "dns"
+            : state.http_ok === false
+              ? "http"
+              : null),
+  };
+}
 
 class Monitor {
   constructor(db, { probeFn = null, onState = null, onOutage = null } = {}) {
@@ -32,6 +71,7 @@ class Monitor {
       open_http_id: null,
       started_at: Date.now() / 1000,
       probe_suppressed: false,
+      quality: null,
     };
     this._timer = null;
     this._stopped = true;
@@ -39,6 +79,9 @@ class Monitor {
     this._running = false;
     this._suppressProbes = false;
     this._suppressCooldownUntil = 0;
+    this._qualityRunning = false;
+    /** Skip closing open outages for N successful layer updates after resume. */
+    this._resumeGraceTicks = 0;
   }
 
   start() {
@@ -109,6 +152,14 @@ class Monitor {
       uptime_streak_s = Math.max(0, tNow - baseline);
     }
     const domains = [...new Set(open.map((o) => o.type))];
+    const poll_interval_s = settings.poll_interval_s ?? 5;
+    const monitor_stale = isMonitorStale({
+      last_probe_at: this.state.last_probe_at,
+      poll_interval_s,
+      paused: this.state.paused,
+      probe_suppressed: this.state.probe_suppressed,
+      now: tNow,
+    });
     return {
       lan_ok: this.state.lan_ok,
       wan_ok: this.state.wan_ok,
@@ -121,12 +172,14 @@ class Monitor {
       paused: this.state.paused,
       probe_suppressed: !!this.state.probe_suppressed,
       last_probe_at: this.state.last_probe_at,
-      poll_interval_s: settings.poll_interval_s ?? 5,
+      poll_interval_s,
       open_outages: open,
       failure_domain: domains.length > 1 ? "mixed" : domains[0] || null,
       monitor_started_at: this.state.started_at,
       in_outage,
       uptime_streak_s: Math.round(uptime_streak_s * 10) / 10,
+      monitor_stale,
+      quality: this.state.quality,
     };
   }
 
@@ -193,11 +246,29 @@ class Monitor {
     }
   }
 
+  async _maybeQualityBurst() {
+    if (this._suppressProbes || this.state.paused) return;
+    if (!this.state.lan_ok) return;
+    if (this._probeCount % QUALITY_EVERY_N !== 0) return;
+    if (this._qualityRunning) return;
+    this._qualityRunning = true;
+    try {
+      const q = await pingBurst(QUALITY_TARGET, { count: 4, timeoutS: 1.2 });
+      this.state.quality = q;
+      this._emit();
+    } catch (err) {
+      console.error("quality burst failed", err);
+    } finally {
+      this._qualityRunning = false;
+    }
+  }
+
   async _bootstrap() {
     try {
       const result = await this._runProbe();
-      this.db.resumeOpenOutages(result);
+      // Adopt only — do not close on a single flaky resume probe.
       this._adoptOpenOutageIds();
+      this._resumeGraceTicks = 1;
       this._applyProbe(result, 2, false);
       this._probeCount = 1;
       await this._maybeRefreshAdapter();
@@ -205,6 +276,7 @@ class Monitor {
       console.error("initial probe failed", err);
       // Still adopt open IDs so a later success can close prior-session outages.
       this._adoptOpenOutageIds();
+      this._resumeGraceTicks = 1;
     }
   }
 
@@ -237,6 +309,8 @@ class Monitor {
           this._probeCount += 1;
           if (this._probeCount % 60 === 0) this.db.pruneProbes();
           await this._maybeRefreshAdapter();
+          // Fire-and-forget — do not block the probe schedule.
+          void this._maybeQualityBurst();
         } catch (err) {
           console.error("probe cycle failed", err);
         }
@@ -305,6 +379,7 @@ class Monitor {
           );
         }
       }
+      if (this._resumeGraceTicks > 0) this._resumeGraceTicks -= 1;
     }
     this._emit();
   }
@@ -323,9 +398,14 @@ class Monitor {
     if (ok) {
       this.state[streakKey] = 0;
       if (this.state[openKey] != null) {
+        if (this._resumeGraceTicks > 0) {
+          // Confirm with a later tick before closing prior-session outages.
+          return;
+        }
         const id = this.state[openKey];
         const row = this.db._get("SELECT started_at FROM outages WHERE id=?", [id]);
-        this.db.closeOutage(id, now);
+        const snap = buildIncidentSnapshot(this.state, type);
+        this.db.closeOutage(id, now, null, { at_close: snap });
         this.state[openKey] = null;
         const durationMs =
           row && row.started_at != null
@@ -337,17 +417,25 @@ class Monitor {
           id,
           ended_at: now,
           duration_ms: durationMs,
+          snapshot: snap,
         });
       }
       return;
     }
     this.state[streakKey] += 1;
     if (this.state[openKey] == null && this.state[streakKey] >= debounceFail) {
-      const id = this.db.openOutage(type, now);
+      const snap = buildIncidentSnapshot(this.state, type);
+      const id = this.db.openOutage(type, now, null, { at_open: snap });
       this.state[openKey] = id;
-      this._notifyOutage({ action: "open", type, id, started_at: now });
+      this._notifyOutage({ action: "open", type, id, started_at: now, snapshot: snap });
     }
   }
 }
 
-module.exports = { Monitor, OUTAGE_TYPES };
+module.exports = {
+  Monitor,
+  OUTAGE_TYPES,
+  buildIncidentSnapshot,
+  QUALITY_EVERY_N,
+  isMonitorStale,
+};

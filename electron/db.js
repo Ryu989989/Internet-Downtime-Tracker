@@ -35,9 +35,55 @@ const LIST_OUTAGES_LIMIT_MAX = 5000;
  * Coerce/clamp a settings value. Returns null to reject (keep prior / skip write).
  * Rejects NaN, 0, and negatives for numeric tunables.
  */
+function coerceBoolSetting(value) {
+  if (typeof value === "string") {
+    const s = value.trim().toLowerCase();
+    if (s === "false" || s === "0" || s === "no" || s === "off") return false;
+    if (s === "true" || s === "1" || s === "yes" || s === "on") return true;
+    return null;
+  }
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  return null;
+}
+
+/** Serialize snapshot JSON without mid-string truncation (keeps parseable JSON). */
+function encodeSnapshotJson(snapshot, maxLen = 8000) {
+  if (snapshot == null) return null;
+  if (typeof snapshot === "string") {
+    try {
+      return encodeSnapshotJson(JSON.parse(snapshot), maxLen);
+    } catch {
+      return JSON.stringify({ note: snapshot.slice(0, Math.max(0, maxLen - 20)) }).slice(
+        0,
+        maxLen
+      );
+    }
+  }
+  let text = JSON.stringify(snapshot);
+  if (text.length <= maxLen) return text;
+  // Drop bulky nested blobs first, then shrink string fields.
+  const slim = { ...snapshot };
+  for (const key of Object.keys(slim)) {
+    if (slim[key] && typeof slim[key] === "object") {
+      slim[key] = { truncated: true };
+      text = JSON.stringify(slim);
+      if (text.length <= maxLen) return text;
+    }
+  }
+  for (const key of Object.keys(slim)) {
+    if (typeof slim[key] === "string" && slim[key].length > 120) {
+      slim[key] = slim[key].slice(0, 120);
+    }
+  }
+  text = JSON.stringify(slim);
+  if (text.length <= maxLen) return text;
+  return JSON.stringify({ truncated: true, type: slim.type || null });
+}
+
 function normalizeSettingValue(key, value) {
   if (key === "autostart" || key === "toast_alerts" || key === "minimize_to_tray") {
-    return !!value;
+    return coerceBoolSetting(value);
   }
   if (key === "wan_targets" || key === "dns_resolver" || key === "http_url") {
     if (value == null) return null;
@@ -128,8 +174,31 @@ class TrackerDb {
   }
 
   _persist() {
-    const data = this.db.export();
-    fs.writeFileSync(this.path, Buffer.from(data));
+    const data = Buffer.from(this.db.export());
+    const dir = path.dirname(this.path);
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = path.join(dir, `.${path.basename(this.path)}.${process.pid}.tmp`);
+    fs.writeFileSync(tmp, data);
+    try {
+      fs.renameSync(tmp, this.path);
+    } catch (err) {
+      // Windows cannot always rename over an existing file.
+      try {
+        fs.unlinkSync(this.path);
+      } catch {
+        /* missing */
+      }
+      try {
+        fs.renameSync(tmp, this.path);
+      } catch (err2) {
+        try {
+          fs.unlinkSync(tmp);
+        } catch {
+          /* ignore */
+        }
+        throw err2;
+      }
+    }
   }
 
   _run(sql, params = []) {
@@ -160,7 +229,8 @@ class TrackerDb {
         started_at REAL NOT NULL,
         ended_at REAL,
         duration_ms INTEGER,
-        notes TEXT
+        notes TEXT,
+        snapshot_json TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_outages_started ON outages(started_at);
       CREATE INDEX IF NOT EXISTS idx_outages_type ON outages(type);
@@ -221,7 +291,8 @@ class TrackerDb {
           started_at REAL NOT NULL,
           ended_at REAL,
           duration_ms INTEGER,
-          notes TEXT
+          notes TEXT,
+          snapshot_json TEXT
         );
         INSERT INTO outages_new (id, type, started_at, ended_at, duration_ms, notes)
           SELECT id, type, started_at, ended_at, duration_ms, notes FROM outages;
@@ -231,6 +302,13 @@ class TrackerDb {
         CREATE INDEX IF NOT EXISTS idx_outages_type ON outages(type);
         CREATE INDEX IF NOT EXISTS idx_outages_open ON outages(ended_at);
       `);
+    }
+
+    const outageCols = new Set(
+      this._all("PRAGMA table_info(outages)").map((c) => c.name)
+    );
+    if (!outageCols.has("snapshot_json")) {
+      this._run("ALTER TABLE outages ADD COLUMN snapshot_json TEXT");
     }
 
     const probeCols = new Set(
@@ -281,17 +359,19 @@ class TrackerDb {
     return this.getSettings();
   }
 
-  openOutage(outageType, startedAt = null, notes = null) {
+  openOutage(outageType, startedAt = null, notes = null, snapshot = null) {
     const typ = String(outageType || "").toLowerCase();
     if (!OUTAGE_TYPES.has(typ)) {
       throw new Error(`invalid outage type: ${outageType}`);
     }
+    const existing = this.getOpenOutage(typ);
+    if (existing) return Number(existing.id);
     const ts = startedAt != null ? startedAt : Date.now() / 1000;
-    this._run("INSERT INTO outages (type, started_at, notes) VALUES (?, ?, ?)", [
-      typ,
-      ts,
-      notes,
-    ]);
+    const snap = encodeSnapshotJson(snapshot);
+    this._run(
+      "INSERT INTO outages (type, started_at, notes, snapshot_json) VALUES (?, ?, ?, ?)",
+      [typ, ts, notes, snap]
+    );
     const row = this._get("SELECT last_insert_rowid() AS id");
     this._persist();
     return Number(row.id);
@@ -306,19 +386,56 @@ class TrackerDb {
     return this._get("SELECT * FROM outages WHERE id=?", [id]);
   }
 
-  closeOutage(outageId, endedAt = null, notes = null) {
+  mergeOutageSnapshot(outageId, patch) {
+    const id = Number(outageId);
+    if (!Number.isFinite(id) || patch == null) return null;
+    const row = this._get("SELECT snapshot_json FROM outages WHERE id=?", [id]);
+    if (!row) return null;
+    let cur = {};
+    if (row.snapshot_json) {
+      try {
+        cur = JSON.parse(row.snapshot_json) || {};
+      } catch {
+        cur = {};
+      }
+    }
+    const merged = { ...cur, ...(typeof patch === "object" ? patch : {}) };
+    const text = encodeSnapshotJson(merged);
+    this._run("UPDATE outages SET snapshot_json=? WHERE id=?", [text, id]);
+    this._persist();
+    return this._get("SELECT * FROM outages WHERE id=?", [id]);
+  }
+
+  closeOutage(outageId, endedAt = null, notes = null, snapshotPatch = null) {
     const ts = endedAt != null ? endedAt : Date.now() / 1000;
-    const row = this._get("SELECT started_at, notes FROM outages WHERE id=?", [
-      outageId,
-    ]);
+    const row = this._get(
+      "SELECT started_at, notes, snapshot_json FROM outages WHERE id=?",
+      [outageId]
+    );
     if (!row) return;
     const durationMs = Math.max(0, Math.floor((ts - row.started_at) * 1000));
     let merged = notes;
     if (notes && row.notes) merged = `${row.notes}; ${notes}`;
     else if (row.notes && !notes) merged = row.notes;
+    let snapText = row.snapshot_json || null;
+    if (snapshotPatch != null) {
+      let cur = {};
+      if (row.snapshot_json) {
+        try {
+          cur = JSON.parse(row.snapshot_json) || {};
+        } catch {
+          cur = {};
+        }
+      }
+      const next = {
+        ...cur,
+        ...(typeof snapshotPatch === "object" ? snapshotPatch : {}),
+      };
+      snapText = encodeSnapshotJson(next);
+    }
     this._run(
-      "UPDATE outages SET ended_at=?, duration_ms=?, notes=? WHERE id=?",
-      [ts, durationMs, merged, outageId]
+      "UPDATE outages SET ended_at=?, duration_ms=?, notes=?, snapshot_json=? WHERE id=?",
+      [ts, durationMs, merged, snapText, outageId]
     );
     this._persist();
   }
@@ -390,33 +507,13 @@ class TrackerDb {
     );
   }
 
-  resumeOpenOutages(resultOrLanOk, wanOkArg = null) {
-    const now = Date.now() / 1000;
-    let lanOk;
-    let wanOk;
-    let dnsOk;
-    let httpOk;
-    if (resultOrLanOk && typeof resultOrLanOk === "object") {
-      lanOk = !!resultOrLanOk.lan_ok;
-      wanOk = !!resultOrLanOk.wan_ok;
-      dnsOk = !!resultOrLanOk.dns_ok;
-      httpOk = !!resultOrLanOk.http_ok;
-    } else {
-      lanOk = !!resultOrLanOk;
-      wanOk = !!wanOkArg;
-      dnsOk = lanOk && wanOk;
-      httpOk = lanOk && wanOk;
-    }
-    for (const o of this.getOpenOutages()) {
-      const shouldClose =
-        (o.type === "lan" && lanOk) ||
-        (o.type === "wan" && wanOk) ||
-        (o.type === "dns" && dnsOk) ||
-        (o.type === "http" && httpOk);
-      if (shouldClose) {
-        this.closeOutage(o.id, now, "closed on process resume");
-      }
-    }
+  /**
+   * Legacy helper retained for tests/callers. Does NOT close outages on a single
+   * probe — Monitor adopts open IDs and closes via the normal 1-success path
+   * after a post-resume grace tick (avoids flaky first-probe closes).
+   */
+  resumeOpenOutages(_resultOrLanOk, _wanOkArg = null) {
+    return this.getOpenOutages();
   }
 
   insertProbe(lanOk, wanOk, latencyMs, ts = null, dnsOk = null, httpOk = null) {
@@ -707,6 +804,8 @@ module.exports = {
   LIST_OUTAGES_LIMIT_MAX,
   normalizeSettingValue,
   normalizeSettingsObject,
+  encodeSnapshotJson,
+  coerceBoolSetting,
   dataDir,
   dbPath,
   TrackerDb,

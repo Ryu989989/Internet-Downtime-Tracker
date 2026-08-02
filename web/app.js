@@ -3,17 +3,65 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-const chartDefaults = {
-  color: "#8b9bb0",
-  borderColor: "#2c3a4a",
+const cssVar = (name, fallback) => {
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  } catch {
+    return fallback;
+  }
 };
 
-Chart.defaults.color = chartDefaults.color;
-Chart.defaults.borderColor = chartDefaults.borderColor;
-Chart.defaults.font.family = '"Segoe UI", system-ui, sans-serif';
+const chartTheme = {
+  color: () => cssVar("--muted", "#8b9bb0"),
+  border: () => cssVar("--border", "#2c3a4a"),
+  grid: "rgba(44, 58, 74, 0.5)",
+  tooltipBg: "#15202b",
+  tooltipBorder: cssVar("--border", "#2c3a4a"),
+  domain: {
+    lan: "rgba(240, 113, 120, 0.55)",
+    wan: "rgba(230, 180, 80, 0.55)",
+    dns: "rgba(91, 159, 212, 0.6)",
+    http: "rgba(62, 207, 142, 0.55)",
+    latency: "rgba(91, 159, 212, 0.9)",
+    down: "rgba(62, 207, 142, 0.9)",
+    up: "rgba(91, 159, 212, 0.9)",
+  },
+};
+
+function applyChartDefaults() {
+  Chart.defaults.color = chartTheme.color();
+  Chart.defaults.borderColor = chartTheme.border();
+  Chart.defaults.font.family = '"Segoe UI", "IBM Plex Sans", system-ui, sans-serif';
+  Chart.defaults.plugins.tooltip.backgroundColor = chartTheme.tooltipBg;
+  Chart.defaults.plugins.tooltip.borderColor = chartTheme.tooltipBorder;
+  Chart.defaults.plugins.tooltip.borderWidth = 1;
+  Chart.defaults.plugins.tooltip.titleColor = "#e7eef6";
+  Chart.defaults.plugins.tooltip.bodyColor = "#8b9bb0";
+  Chart.defaults.plugins.tooltip.padding = 10;
+  Chart.defaults.plugins.tooltip.cornerRadius = 6;
+  Chart.defaults.plugins.tooltip.displayColors = false;
+  Chart.defaults.animation = prefersReducedMotion()
+    ? false
+    : { duration: 420, easing: "easeOutQuart" };
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+applyChartDefaults();
+
+const LAYER_TIPS = {
+  lan: { name: "LAN", meaning: "Router/gateway unreachable — local network." },
+  wan: { name: "WAN", meaning: "Public internet path failed while LAN is up (ISP/upstream)." },
+  dns: { name: "DNS", meaning: "Name resolution failed while LAN+WAN are up. Checked only when lower layers are up." },
+  http: { name: "HTTP", meaning: "Web connectivity failed while LAN+WAN+DNS are up (captive portal / HTTP path)." },
+};
 
 let sparkChart, hourChart, dowChart, latencyChart, speedTrendChart;
 let speedRunning = false;
+let chartEnterDone = { spark: false, latency: false, hour: false, dow: false, speed: false };
 
 function fmtDuration(ms) {
   if (ms == null || Number.isNaN(ms)) return "—";
@@ -59,7 +107,8 @@ function escapeHtml(s) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function safeOutageType(type) {
@@ -157,8 +206,11 @@ async function api(path, opts) {
 }
 
 function setPill(el, label, ok) {
+  if (!el) return;
   el.textContent = label;
-  el.className = "pill " + (ok === true ? "pill-ok" : ok === false ? "pill-down" : "pill-unknown");
+  const tip = el.classList.contains("has-tip") ? " has-tip" : "";
+  el.className =
+    "pill" + tip + " " + (ok === true ? "pill-ok" : ok === false ? "pill-down" : "pill-unknown");
 }
 
 function activateTab(tab) {
@@ -235,9 +287,22 @@ function setupTabs() {
 
 function chartScaleOpts() {
   return {
-    x: { grid: { color: "rgba(44, 58, 74, 0.55)" }, ticks: { maxRotation: 0 } },
-    y: { beginAtZero: true, grid: { color: "rgba(44, 58, 74, 0.45)" } },
+    x: {
+      grid: { color: chartTheme.grid },
+      ticks: { maxRotation: 0, maxTicksLimit: 8 },
+    },
+    y: {
+      beginAtZero: true,
+      grid: { color: chartTheme.grid },
+      ticks: { maxTicksLimit: 6 },
+    },
   };
+}
+
+function chartAnimOnce(key) {
+  if (prefersReducedMotion() || chartEnterDone[key]) return false;
+  chartEnterDone[key] = true;
+  return { duration: 420, easing: "easeOutQuart" };
 }
 
 function ensureSpark(data) {
@@ -261,13 +326,13 @@ function ensureSpark(data) {
       datasets: [{
         label: "Downtime (s)",
         data: values,
-        backgroundColor: "rgba(240, 113, 120, 0.55)",
+        backgroundColor: chartTheme.domain.lan,
         borderRadius: 2,
       }],
     },
     options: {
       responsive: true,
-      animation: false,
+      animation: chartAnimOnce("spark"),
       interaction: { mode: "index", intersect: false },
       plugins: chartBarPlugins("second downtime", "seconds downtime"),
       scales: {
@@ -302,7 +367,7 @@ function ensureLatency(data) {
       datasets: [{
         label: "ms",
         data: values,
-        borderColor: "rgba(91, 159, 212, 0.9)",
+        borderColor: chartTheme.domain.latency,
         backgroundColor: "rgba(91, 159, 212, 0.12)",
         fill: true,
         tension: 0.35,
@@ -312,7 +377,7 @@ function ensureLatency(data) {
     },
     options: {
       responsive: true,
-      animation: false,
+      animation: chartAnimOnce("latency"),
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { display: false },
@@ -351,13 +416,13 @@ function ensureHour(data) {
       datasets: [{
         label: "Outage starts",
         data,
-        backgroundColor: "rgba(91, 159, 212, 0.6)",
+        backgroundColor: chartTheme.domain.dns,
         borderRadius: 2,
       }],
     },
     options: {
       responsive: true,
-      animation: false,
+      animation: chartAnimOnce("hour"),
       interaction: { mode: "index", intersect: false },
       plugins: chartBarPlugins("outage start", "outage starts"),
       scales: {
@@ -384,13 +449,13 @@ function ensureDow(data) {
       datasets: [{
         label: "Outage starts",
         data,
-        backgroundColor: "rgba(230, 180, 80, 0.55)",
+        backgroundColor: chartTheme.domain.wan,
         borderRadius: 2,
       }],
     },
     options: {
       responsive: true,
-      animation: false,
+      animation: chartAnimOnce("dow"),
       interaction: { mode: "index", intersect: false },
       plugins: chartBarPlugins("outage start", "outage starts"),
       scales: chartScaleOpts(),
@@ -426,7 +491,7 @@ function ensureSpeedTrend(tests) {
         {
           label: "Down",
           data: down,
-          borderColor: "rgba(62, 207, 142, 0.9)",
+          borderColor: chartTheme.domain.down,
           backgroundColor: "transparent",
           tension: 0.3,
           pointRadius: 2,
@@ -434,7 +499,7 @@ function ensureSpeedTrend(tests) {
         {
           label: "Up",
           data: up,
-          borderColor: "rgba(91, 159, 212, 0.9)",
+          borderColor: chartTheme.domain.up,
           backgroundColor: "transparent",
           tension: 0.3,
           pointRadius: 2,
@@ -443,7 +508,7 @@ function ensureSpeedTrend(tests) {
     },
     options: {
       responsive: true,
-      animation: false,
+      animation: chartAnimOnce("speed"),
       plugins: { legend: { labels: { boxWidth: 10 } } },
       scales: {
         ...chartScaleOpts(),
@@ -453,13 +518,66 @@ function ensureSpeedTrend(tests) {
   });
 }
 
-function renderOutageRows(tbody, rows, { showEnded = true, editableNotes = false, emptyMsg = "No outages" } = {}) {
+function parseSnapshot(raw) {
+  if (!raw) return null;
+  if (typeof raw === "object") return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function formatSnapshotBlock(label, snap) {
+  if (!snap) return "";
+  const a = snap.adapter;
+  const adapter =
+    a && a.name
+      ? `${a.type === "wifi" ? "Wi‑Fi" : a.type === "ethernet" ? "Ethernet" : "Adapter"} ${a.name}${
+          a.signal != null ? ` ${a.signal}%` : ""
+        }`
+      : "adapter —";
+  const flags = [
+    `LAN ${snap.lan_ok === true ? "up" : snap.lan_ok === false ? "down" : "—"}`,
+    `WAN ${snap.wan_ok === true ? "up" : snap.wan_ok === false ? "down" : "—"}`,
+    `DNS ${snap.dns_ok === true ? "up" : snap.dns_ok === false ? "down" : "—"}`,
+    `HTTP ${snap.http_ok === true ? "up" : snap.http_ok === false ? "down" : "—"}`,
+  ].join(" · ");
+  const lat = snap.latency_ms != null ? `${Math.round(snap.latency_ms)} ms` : "—";
+  const gw = snap.gateway || "—";
+  return `<div><strong>${escapeHtml(label)}</strong> · ${escapeHtml(adapter)} · gw ${escapeHtml(gw)} · ${escapeHtml(lat)}<br>${escapeHtml(flags)}</div>`;
+}
+
+function emptyStateHtml(cols, title, body) {
+  return `<tr><td colspan="${cols}" class="empty-state">
+    <p class="empty-state-title">${escapeHtml(title)}</p>
+    <p class="empty-state-body">${escapeHtml(body)}</p>
+  </td></tr>`;
+}
+
+function renderOutageRows(tbody, rows, {
+  showEnded = true,
+  editableNotes = false,
+  emptyMsg = "No outages",
+  emptyTitle = null,
+  expandable = false,
+} = {}) {
   const now = Date.now() / 1000;
-  const cols = showEnded ? 5 : 4;
+  const cols = (showEnded ? 5 : 4) + (expandable ? 1 : 0);
+  if (!rows.length) {
+    tbody.innerHTML = emptyStateHtml(
+      cols,
+      emptyTitle || emptyMsg,
+      emptyTitle ? emptyMsg : "Try a wider range or clear filters."
+    );
+    return;
+  }
   tbody.innerHTML = rows.map((o) => {
     const open = o.ended_at == null;
     const dur = o.duration_ms != null ? o.duration_ms : Math.floor((now - o.started_at) * 1000);
     const typ = safeOutageType(o.type);
+    const snap = parseSnapshot(o.snapshot_json);
+    const hasSnap = !!(snap && (snap.at_open || snap.at_close || snap.adapter || snap.lan_ok != null));
     const notesCell = editableNotes
       ? `<td class="notes-cell">
           <input type="text" class="notes-input" data-outage-id="${Number(o.id)}"
@@ -467,14 +585,42 @@ function renderOutageRows(tbody, rows, { showEnded = true, editableNotes = false
             aria-label="Outage note" />
         </td>`
       : `<td>${o.notes ? escapeHtml(o.notes) : ""}</td>`;
-    return `<tr class="${open ? "open-row" : ""}">
+    const expandBtn = expandable
+      ? `<td>${hasSnap
+        ? `<button type="button" class="row-expand" aria-expanded="false" aria-label="Show incident snapshot" data-expand="${Number(o.id)}">▸</button>`
+        : ""}</td>`
+      : "";
+    const detail = expandable && hasSnap
+      ? `<tr class="snapshot-row" hidden data-for="${Number(o.id)}">
+          <td colspan="${cols}" class="snapshot-detail">
+            ${formatSnapshotBlock("Opened", snap.at_open || (snap.adapter || snap.lan_ok != null ? snap : null))}
+            ${formatSnapshotBlock("Closed", snap.at_close)}
+          </td>
+        </tr>`
+      : "";
+    return `<tr class="${open ? "open-row" : ""}" data-outage-row="${Number(o.id)}">
+      ${expandBtn}
       <td class="type-${typ}">${escapeHtml(typ.toUpperCase())}</td>
       <td>${fmtTs(o.started_at)}</td>
       ${showEnded ? `<td>${open ? "ongoing" : fmtTs(o.ended_at)}</td>` : ""}
       <td class="dur">${fmtDuration(dur)}${open ? "…" : ""}</td>
       ${notesCell}
-    </tr>`;
-  }).join("") || `<tr><td colspan="${cols}" class="muted">${escapeHtml(emptyMsg)}</td></tr>`;
+    </tr>${detail}`;
+  }).join("");
+
+  if (expandable) {
+    tbody.querySelectorAll(".row-expand").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-expand");
+        const detail = tbody.querySelector(`.snapshot-row[data-for="${id}"]`);
+        if (!detail) return;
+        const open = detail.hidden;
+        detail.hidden = !open;
+        btn.setAttribute("aria-expanded", open ? "true" : "false");
+        btn.textContent = open ? "▾" : "▸";
+      });
+    });
+  }
 
   if (editableNotes) {
     tbody.querySelectorAll(".notes-input").forEach((input) => {
@@ -529,7 +675,7 @@ function renderSplit(el, win) {
   const parts = ["lan", "wan", "dns", "http"].map((k) => {
     const w = win[k] || {};
     if (!(w.count || w.downtime_ms)) return "";
-    return `<span class="split-pill ${k}">${k.toUpperCase()} ${fmtDuration(w.downtime_ms)} · ${w.count || 0}</span>`;
+    return `<span class="split-pill ${k} pressable">${k.toUpperCase()} ${fmtDuration(w.downtime_ms)} · ${w.count || 0}</span>`;
   }).filter(Boolean);
   el.innerHTML = parts.join("") || `<span class="split-pill">No events</span>`;
 }
@@ -540,7 +686,10 @@ function renderTimeline(el, events, { now = Date.now() / 1000 } = {}) {
   const span = 86400;
   const rows = events || [];
   if (!rows.length) {
-    el.innerHTML = `<div class="timeline-empty muted" title="No outages">No outages in the last 24 hours</div>`;
+    el.innerHTML = `<div class="timeline-empty empty-state">
+      <p class="empty-state-title">Clear stretch</p>
+      <p class="empty-state-body muted">No outages in the last 24 hours</p>
+    </div>`;
     return;
   }
   const blocks = rows.map((o) => {
@@ -551,11 +700,12 @@ function renderTimeline(el, events, { now = Date.now() / 1000 } = {}) {
     const left = ((oStart - start) / span) * 100;
     const width = Math.max(0.35, ((oEnd - oStart) / span) * 100);
     const tip = timelineTooltip(o, { now });
-    return `<div class="tl-block ${typ}" style="left:${left}%;width:${width}%"
-      tabindex="0" role="img" title="${escapeHtml(tip)}" aria-label="${escapeHtml(tip)}"></div>`;
+    return `<div class="tl-block ${typ} has-tip" style="left:${left}%;width:${width}%"
+      tabindex="0" role="img" data-tip-text="${escapeHtml(tip)}" aria-label="${escapeHtml(tip)}"></div>`;
   }).join("");
-  el.innerHTML = `<div class="timeline-track" title="Colored blocks are outages; empty track = up">${blocks}</div>
+  el.innerHTML = `<div class="timeline-track">${blocks}</div>
     <div class="timeline-axis"><span>−24h</span><span>−12h</span><span>now</span></div>`;
+  bindTooltips(el);
 }
 
 function paintProvider(provider) {
@@ -593,19 +743,40 @@ function paintProvider(provider) {
   }
 }
 
+function paintQuality(q) {
+  const strip = $("#qualityStrip");
+  if (!strip) return;
+  const has = q && (q.loss_pct != null || q.jitter_ms != null || q.latency_avg_ms != null);
+  strip.classList.toggle("has-data", !!has);
+  if ($("#qualityLoss")) {
+    $("#qualityLoss").textContent = q && q.loss_pct != null ? `${q.loss_pct}%` : "—";
+  }
+  if ($("#qualityJitter")) {
+    $("#qualityJitter").textContent = q && q.jitter_ms != null ? `${q.jitter_ms} ms` : "—";
+  }
+  if ($("#qualityAvg")) {
+    $("#qualityAvg").textContent =
+      q && q.latency_avg_ms != null ? `${q.latency_avg_ms} ms` : "—";
+  }
+  if ($("#qualityLast")) {
+    $("#qualityLast").textContent =
+      q && q.latency_ms != null ? `${q.latency_ms} ms` : "—";
+  }
+}
+
 function paintStatus(s) {
   if (!s) return;
   setPill($("#pillLan"), `LAN ${s.lan_ok === true ? "UP" : s.lan_ok === false ? "DOWN" : "—"}`, s.lan_ok);
   if (s.lan_ok === false) {
     $("#pillWan").textContent = `WAN ${s.wan_ok === true ? "UP" : "DOWN"}`;
-    $("#pillWan").className = "pill " + (s.wan_ok ? "pill-ok" : "pill-amber");
+    $("#pillWan").className = "pill has-tip " + (s.wan_ok ? "pill-ok" : "pill-amber");
   } else {
     setPill($("#pillWan"), `WAN ${s.wan_ok === true ? "UP" : s.wan_ok === false ? "DOWN" : "—"}`, s.wan_ok);
   }
   if ($("#pillDns")) {
     if (s.lan_ok !== true || s.wan_ok !== true) {
       $("#pillDns").textContent = "DNS —";
-      $("#pillDns").className = "pill pill-unknown";
+      $("#pillDns").className = "pill pill-unknown has-tip";
     } else {
       setPill($("#pillDns"), `DNS ${s.dns_ok === true ? "UP" : s.dns_ok === false ? "DOWN" : "—"}`, s.dns_ok);
     }
@@ -613,7 +784,7 @@ function paintStatus(s) {
   if ($("#pillHttp")) {
     if (s.lan_ok !== true || s.wan_ok !== true || s.dns_ok !== true) {
       $("#pillHttp").textContent = "HTTP —";
-      $("#pillHttp").className = "pill pill-unknown";
+      $("#pillHttp").className = "pill pill-unknown has-tip";
     } else {
       setPill($("#pillHttp"), `HTTP ${s.http_ok === true ? "UP" : s.http_ok === false ? "DOWN" : "—"}`, s.http_ok);
     }
@@ -631,6 +802,11 @@ function paintStatus(s) {
   if ($("#heroLatency")) {
     $("#heroLatency").textContent = s.latency_ms != null ? `${Math.round(s.latency_ms)} ms` : "—";
   }
+
+  const stale = $("#staleBanner");
+  if (stale) stale.hidden = !s.monitor_stale;
+
+  paintQuality(s.quality);
 
   const adapterEl = $("#adapterLine");
   if (adapterEl) {
@@ -650,6 +826,9 @@ function paintStatus(s) {
   if (s.paused) {
     title = "Paused";
     sub = "Monitoring is paused — resume from Settings or the tray";
+  } else if (s.monitor_stale) {
+    title = "Monitor stalled";
+    sub = "Last probe is older than expected — check Pause or restart";
   } else if (s.probe_suppressed) {
     title = "Speed test running";
     sub = "Probes paused so the test won’t pollute History";
@@ -690,10 +869,12 @@ function paintStatus(s) {
   if (logo) {
     // Color is decorative; text status lives in pills + statusTitle (not color-only).
     logo.setAttribute("aria-label", `Status: ${title}`);
-    logo.setAttribute("title", title);
     if (s.probe_suppressed) {
       logo.style.background = "var(--blue)";
       logo.style.boxShadow = "0 0 0 3px rgba(91,159,212,0.3)";
+    } else if (s.monitor_stale) {
+      logo.style.background = "var(--amber)";
+      logo.style.boxShadow = "0 0 0 3px rgba(230,180,80,0.3)";
     } else if (s.lan_ok === false) {
       logo.style.background = "var(--red)";
       logo.style.boxShadow = "0 0 0 3px rgba(240,113,120,0.3)";
@@ -788,12 +969,18 @@ async function refreshHistory() {
     const rows = data.outages || [];
     renderOutageRows($("#outageBody"), rows, {
       editableNotes: true,
+      expandable: true,
+      emptyTitle: "No outages",
       emptyMsg: "No outages in this range — try widening From/To or clearing filters",
     });
     if (meta) meta.textContent = `${rows.length} outage${rows.length === 1 ? "" : "s"}`;
   } catch (e) {
     console.error(e);
-    $("#outageBody").innerHTML = `<tr><td colspan="5" class="muted state-error">Failed to load history</td></tr>`;
+    $("#outageBody").innerHTML = emptyStateHtml(
+      6,
+      "Load failed",
+      "Could not load history — try Apply again."
+    );
     if (meta) meta.textContent = "Load failed";
   }
 }
@@ -1167,6 +1354,8 @@ function defaultSystemLogsRange() {
 document.addEventListener("DOMContentLoaded", async () => {
   setupTabs();
   setupForms();
+  setupTipDismiss();
+  setupTooltips();
   defaultHistoryRange();
   defaultSystemLogsRange();
   document.querySelectorAll("[data-goto-tab]").forEach((el) => {
@@ -1185,3 +1374,123 @@ document.addEventListener("DOMContentLoaded", async () => {
   setInterval(refreshStatus, 1000);
   setInterval(refreshSummary, 8000);
 });
+
+/* --- Tooltips (Emil skip-delay after first open) --- */
+
+const tipController = {
+  el: null,
+  anchor: null,
+  openTimer: null,
+  skipDelay: false,
+  delayMs: 380,
+};
+
+function ensureTipEl() {
+  if (tipController.el) return tipController.el;
+  const el = document.createElement("div");
+  el.className = "ui-tooltip";
+  el.setAttribute("role", "tooltip");
+  el.id = "uiTooltip";
+  document.body.appendChild(el);
+  tipController.el = el;
+  return el;
+}
+
+function tipPayload(anchor) {
+  if (!anchor) return null;
+  if (anchor.dataset.tipText) {
+    return { name: null, meaning: anchor.dataset.tipText };
+  }
+  const key = anchor.dataset.tip;
+  if (key && LAYER_TIPS[key]) return LAYER_TIPS[key];
+  return null;
+}
+
+function positionTip(anchor) {
+  const tip = ensureTipEl();
+  const r = anchor.getBoundingClientRect();
+  tip.style.visibility = "hidden";
+  tip.classList.add("is-open");
+  const tw = tip.offsetWidth;
+  const th = tip.offsetHeight;
+  let left = r.left + r.width / 2 - tw / 2;
+  let top = r.top - th - 8;
+  if (top < 8) top = r.bottom + 8;
+  left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+  tip.style.visibility = "";
+}
+
+function showTip(anchor) {
+  const payload = tipPayload(anchor);
+  if (!payload) return;
+  const tip = ensureTipEl();
+  tip.innerHTML = payload.name
+    ? `<span class="tip-name">${escapeHtml(payload.name)}</span><span class="tip-body">${escapeHtml(payload.meaning)}</span>`
+    : `<span class="tip-body">${escapeHtml(payload.meaning)}</span>`;
+  tipController.anchor = anchor;
+  anchor.setAttribute("aria-describedby", tip.id);
+  positionTip(anchor);
+  tip.classList.add("is-open");
+  tipController.skipDelay = true;
+}
+
+function hideTip() {
+  if (tipController.openTimer) {
+    clearTimeout(tipController.openTimer);
+    tipController.openTimer = null;
+  }
+  const tip = tipController.el;
+  if (tip) tip.classList.remove("is-open");
+  if (tipController.anchor) {
+    tipController.anchor.removeAttribute("aria-describedby");
+    tipController.anchor = null;
+  }
+}
+
+function scheduleTip(anchor) {
+  if (tipController.openTimer) clearTimeout(tipController.openTimer);
+  const delay = tipController.skipDelay ? 0 : tipController.delayMs;
+  tipController.openTimer = setTimeout(() => showTip(anchor), delay);
+}
+
+function bindTooltips(root = document) {
+  root.querySelectorAll(".has-tip").forEach((el) => {
+    if (el.dataset.tipBound) return;
+    el.dataset.tipBound = "1";
+    el.addEventListener("pointerenter", () => scheduleTip(el));
+    el.addEventListener("pointerleave", () => hideTip());
+    el.addEventListener("focus", () => scheduleTip(el));
+    el.addEventListener("blur", () => hideTip());
+  });
+}
+
+function setupTooltips() {
+  bindTooltips(document);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideTip();
+  });
+  window.addEventListener("scroll", () => hideTip(), true);
+}
+
+function setupTipDismiss() {
+  const tip = $("#firstRunTip");
+  const btn = $("#dismissTip");
+  if (!tip) return;
+  try {
+    if (localStorage.getItem("idt-tip-dismissed") === "1") {
+      tip.hidden = true;
+      tip.classList.add("is-dismissed");
+    }
+  } catch (_) { /* ignore */ }
+  if (btn) {
+    btn.addEventListener("click", () => {
+      tip.hidden = true;
+      tip.classList.add("is-dismissed");
+      try {
+        localStorage.setItem("idt-tip-dismissed", "1");
+      } catch (_) { /* ignore */ }
+    });
+  }
+}

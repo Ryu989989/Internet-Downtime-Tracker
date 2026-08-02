@@ -1,13 +1,16 @@
-# Internet Downtime Tracker
+﻿# Internet Downtime Tracker
 
-Windows **Electron** tray app that monitors **LAN** (router/gateway) and **WAN** (public internet) separately, stores outages in SQLite, and shows an in-app dashboard.
+Windows **Electron** tray app that monitors **LAN** (router/gateway), **WAN** (public internet), **DNS**, and **HTTP** separately, stores outages in SQLite, and shows an in-app dashboard.
 
 ## Features
 
-- Probe every 5s (configurable): ICMP ping to default gateway with TCP fallback; WAN TCP to `1.1.1.1:443` and `8.8.8.8:53`
+- Probe every 5s (configurable): ICMP ping to default gateway with TCP fallback; WAN TCP to `1.1.1.1:443` and `8.8.8.8:53`; DNS + HTTP checks only when lower layers are up
 - Debounced outages: **2 consecutive failures** to open, **1 success** to close
-- Outage types: `lan` | `wan`
-- Dashboard tabs: Overview, History, Patterns, System logs (OS-inferred gaps), Speed (Ookla CLI)
+- Outage domains: `lan` | `wan` | `dns` | `http`
+- Live quality strip (Overview): rolling 4-ping burst (~every 30s) for loss/jitter — informational only; never opens outages; suppressed during speed tests
+- Incident snapshots on outage open/close (adapter, latency, layer flags) — expandable in History
+- Stale-monitor banner when probes stop unexpectedly (not while Pause / speed test)
+- Dashboard tabs: Overview, History, Patterns, System logs (OS-inferred gaps), Speed (Ookla CLI), Settings
 - System tray: Open Dashboard, Pause/Resume, Start with Windows, Quit
 - Single-instance lock; dashboard via `BrowserWindow` + IPC (no public bind)
 - Data under `%LOCALAPPDATA%\InternetDowntimeTracker\` (same path/schema as the old Python app)
@@ -27,7 +30,7 @@ Uses the **official** Ookla Speedtest CLI (`speedtest.exe`) — no website scrap
 
 Speed tests saturate the link. While a test runs, the monitor **suppresses probes** (and ignores failure streaks for ~8s after) so the test does not create false LAN/WAN outages in History. System-log scanning stays on-demand (**Refresh**), not continuous.
 
-Ookla’s CLI terms allow personal / non-commercial use; review their EULA before automated or commercial use. First run accepts license/GDPR flags via CLI.
+Ookla's CLI terms allow personal / non-commercial use; review their EULA before automated or commercial use. First run accepts license/GDPR flags via CLI.
 
 ## Requirements
 
@@ -64,16 +67,16 @@ Output under `dist\`:
 | Action | How |
 |--------|-----|
 | Open dashboard | Tray → **Open Dashboard** (or double-click tray icon) |
-| Pause probes | Tray → **Pause** / **Resume** |
-| Autostart | Tray → **Start with Windows**, or Overview → Settings |
+| Pause probes | Tray → **Pause** / **Resume**, or **Settings** |
+| Autostart | Tray → **Start with Windows**, or **Settings** |
 | Quit | Tray → **Quit** (closing the window only hides to tray) |
 
 ### Status colors
 
 | Icon | Meaning |
 |------|---------|
-| Green | LAN + WAN OK |
-| Amber | LAN up, WAN down |
+| Green | LAN + WAN OK (DNS/HTTP not failing) |
+| Amber | LAN up, WAN/DNS/HTTP down — or monitor stalled |
 | Red | LAN down |
 | Gray | Paused / unknown |
 
@@ -90,7 +93,7 @@ package.json  Electron + electron-builder
 
 SQLite file: `%LOCALAPPDATA%\InternetDowntimeTracker\tracker.db`
 
-Schema matches the Python app (`outages`, `probes`, `settings`) plus `speed_tests` for Ookla history. Existing DBs are reused as-is. The `port` setting remains in the DB for compatibility but is unused (Electron loads the UI with `loadFile` + IPC).
+Schema matches the Python app (`outages`, `probes`, `settings`) plus `speed_tests` for Ookla history and `snapshot_json` on outages. Existing DBs are reused as-is. The `port` setting remains in the DB for compatibility but is unused (Electron loads the UI with `loadFile` + IPC).
 
 Persistence uses **sql.js** (WASM SQLite) writing the same `.db` file format so Python-era data continues to work. Quit the Python app before switching; if `tracker.db-wal` exists, leave the Python process exit cleanly so SQLite checkpoints first.
 
@@ -99,7 +102,7 @@ Persistence uses **sql.js** (WASM SQLite) writing the same `.db` file format so 
 - After `npm run build`, relaunch the new exe from `dist\` — an already-running old build will not pick up changes.
 - sql.js loads the full DB into memory and rewrites the file on changes; fine for personal outage history, not for huge multi-GB DBs.
 - ICMP ping may need network permissions; TCP to gateway `:80`/`:53` is used as fallback.
-- While LAN is down, new WAN outages are not opened.
+- While LAN is down, new WAN/DNS/HTTP outages are not opened.
 - Chart.js is vendored under `web/vendor/` (offline OK after install).
 - Autostart uses Electron login items **and** `HKCU\...\Run\InternetDowntimeTracker`.
 - Packaged binaries are large (Electron runtime); accepted for personal use.

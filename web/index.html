@@ -19,10 +19,10 @@
       <h1>Internet Downtime Tracker</h1>
     </div>
     <div class="live" id="liveStatus" aria-live="polite">
-      <span class="pill pill-unknown" id="pillLan" title="LAN — router/gateway unreachable (local network)">LAN —</span>
-      <span class="pill pill-unknown" id="pillWan" title="WAN — public internet path failed while LAN up (ISP/upstream)">WAN —</span>
-      <span class="pill pill-unknown" id="pillDns" title="DNS — name resolution failed while LAN+WAN up. Only checked when lower layers are up.">DNS —</span>
-      <span class="pill pill-unknown" id="pillHttp" title="HTTP — web connectivity failed while LAN+WAN+DNS up (captive portal / HTTP path). Only checked when lower layers are up.">HTTP —</span>
+      <span class="pill pill-unknown has-tip" id="pillLan" data-tip="lan" tabindex="0">LAN —</span>
+      <span class="pill pill-unknown has-tip" id="pillWan" data-tip="wan" tabindex="0">WAN —</span>
+      <span class="pill pill-unknown has-tip" id="pillDns" data-tip="dns" tabindex="0">DNS —</span>
+      <span class="pill pill-unknown has-tip" id="pillHttp" data-tip="http" tabindex="0">HTTP —</span>
       <span class="muted" id="metaLine"></span>
     </div>
   </header>
@@ -38,9 +38,16 @@
 
   <main>
     <section id="panel-overview" class="panel active" role="tabpanel" aria-labelledby="tab-overview">
-      <p class="first-run-tip muted" id="firstRunTip">
-        Monitoring runs only while this app is open (or in the tray). Pause anytime from Settings or the tray menu.
-      </p>
+      <div class="first-run-tip" id="firstRunTip">
+        <p class="muted">
+          Monitoring runs only while this app is open (or in the tray). Pause anytime from Settings or the tray menu.
+        </p>
+        <button type="button" class="tip-dismiss" id="dismissTip" aria-label="Dismiss tip">Dismiss</button>
+      </div>
+
+      <div class="stale-banner" id="staleBanner" hidden role="status" aria-live="polite">
+        Monitoring looks stalled — last probe is older than expected. Check Pause, or restart the app.
+      </div>
 
       <div class="status-hero" id="statusHero">
         <div class="status-hero-main">
@@ -54,6 +61,29 @@
           <div class="meta-chip"><span class="meta-label">Gateway</span> <span id="heroGateway">—</span></div>
           <div class="meta-chip"><span class="meta-label">Latency</span> <span id="heroLatency">—</span></div>
         </div>
+      </div>
+
+      <div class="quality-strip" id="qualityStrip" aria-live="polite">
+        <div class="quality-kicker">Live quality</div>
+        <div class="quality-body">
+          <div class="meta-chip quality-chip">
+            <span class="meta-label">Loss</span>
+            <span id="qualityLoss">—</span>
+          </div>
+          <div class="meta-chip quality-chip">
+            <span class="meta-label">Jitter</span>
+            <span id="qualityJitter">—</span>
+          </div>
+          <div class="meta-chip quality-chip">
+            <span class="meta-label">Avg</span>
+            <span id="qualityAvg">—</span>
+          </div>
+          <div class="meta-chip quality-chip">
+            <span class="meta-label">Last</span>
+            <span id="qualityLast">—</span>
+          </div>
+        </div>
+        <p class="quality-empty muted" id="qualityEmpty">Rolling ping burst updates every ~30s — informational only (never opens outages).</p>
       </div>
 
       <div class="provider-strip is-empty" id="providerStrip" aria-live="polite">
@@ -87,22 +117,17 @@
         </div>
         <div class="timeline" id="timeline24" role="img" aria-label="24 hour outage timeline"></div>
         <div class="timeline-legend" role="list" aria-label="Outage domain legend">
-          <span class="tl-key lan" role="listitem" tabindex="0" title="LAN — router/gateway unreachable (local network)">LAN</span>
-          <span class="tl-key wan" role="listitem" tabindex="0" title="WAN — public internet path failed while LAN up (ISP/upstream)">WAN</span>
-          <span class="tl-key dns" role="listitem" tabindex="0" title="DNS — name resolution failed while LAN+WAN up. Only checked when lower layers are up.">DNS</span>
-          <span class="tl-key http" role="listitem" tabindex="0" title="HTTP — web connectivity failed while LAN+WAN+DNS up (captive portal / HTTP path). Only checked when lower layers are up.">HTTP</span>
+          <span class="tl-key lan has-tip pressable" role="listitem" tabindex="0" data-tip="lan">LAN</span>
+          <span class="tl-key wan has-tip pressable" role="listitem" tabindex="0" data-tip="wan">WAN</span>
+          <span class="tl-key dns has-tip pressable" role="listitem" tabindex="0" data-tip="dns">DNS</span>
+          <span class="tl-key http has-tip pressable" role="listitem" tabindex="0" data-tip="http">HTTP</span>
         </div>
       </div>
 
-      <div class="evidence-bar">
-        <div class="section-head">
-          <h2>Evidence</h2>
-          <span class="muted" id="evidenceMsg" aria-live="polite"></span>
-        </div>
-        <div class="evidence-actions">
-          <button type="button" class="btn btn-secondary" id="exportCsvBtn">Export CSV</button>
-          <button type="button" class="btn btn-secondary" id="exportReportBtn">Open HTML report</button>
-        </div>
+      <div class="export-actions" id="exportActions">
+        <button type="button" class="btn btn-ghost" id="exportCsvBtn">Export CSV</button>
+        <button type="button" class="btn btn-ghost" id="exportReportBtn">Open report</button>
+        <span class="muted" id="evidenceMsg" aria-live="polite"></span>
       </div>
 
       <div class="stats stats-dense">
@@ -165,7 +190,7 @@
 
     <section id="panel-history" class="panel" role="tabpanel" aria-labelledby="tab-history" hidden>
       <p class="panel-lead muted">
-        Probe-detected outages for the selected range. Edit the Notes column to add context — saved on Enter or when you leave the field.
+        Probe-detected outages for the selected range. Expand a row for adapter/latency snapshot. Edit Notes — saved on Enter or blur.
       </p>
       <form id="historyFilters" class="filters">
         <label>From
@@ -209,6 +234,7 @@
         <table>
           <thead>
             <tr>
+              <th></th>
               <th>Type</th>
               <th>Started</th>
               <th>Ended</th>

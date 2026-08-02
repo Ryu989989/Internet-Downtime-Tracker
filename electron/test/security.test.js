@@ -10,6 +10,7 @@ const crypto = require("crypto");
 const {
   TrackerDb,
   normalizeSettingValue,
+  encodeSnapshotJson,
   LIST_OUTAGES_LIMIT_MAX,
 } = require("../db");
 const { isSafeExternalUrl, isHttpsUrl } = require("../url-policy");
@@ -78,6 +79,29 @@ describe("settings clamp (H2)", () => {
     assert.ok(rows.length <= LIST_OUTAGES_LIMIT_MAX);
     const tiny = db.listOutages({ limit: 1 });
     assert.equal(tiny.length, 1);
+  });
+
+  it("coerces bool settings without treating string false as true", () => {
+    assert.equal(normalizeSettingValue("toast_alerts", "false"), false);
+    assert.equal(normalizeSettingValue("autostart", "true"), true);
+    assert.equal(normalizeSettingValue("minimize_to_tray", 0), false);
+    assert.equal(normalizeSettingValue("toast_alerts", 1), true);
+  });
+
+  it("refuses duplicate open outages per type", () => {
+    const a = db.openOutage("wan", 1_700_100_000);
+    const b = db.openOutage("wan", 1_700_100_100);
+    assert.equal(a, b);
+    assert.equal(db.getOpenOutages().filter((o) => o.type === "wan").length, 1);
+  });
+
+  it("encodeSnapshotJson stays parseable under size pressure", () => {
+    const big = {
+      at_open: { note: "x".repeat(9000), nested: { deep: "y".repeat(2000) } },
+    };
+    const text = encodeSnapshotJson(big, 800);
+    assert.ok(text.length <= 800);
+    assert.doesNotThrow(() => JSON.parse(text));
   });
 });
 

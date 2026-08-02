@@ -142,10 +142,39 @@ describe("summary uptime streak", async () => {
     adopted = m.state.open_lan_id;
     assert.equal(adopted, staleId);
 
+    // First success after resume is grace (no close); second confirms.
+    m.processResult(makeResult(true, true), 1);
+    assert.equal(m.state.open_lan_id, staleId);
     m.processResult(makeResult(true, true), 1);
     assert.equal(m.state.open_lan_id, null);
     const row = db._get("SELECT * FROM outages WHERE id=?", [staleId]);
     assert.ok(row.ended_at != null);
+  });
+
+  it("closes DNS/HTTP on success and resets streaks when prerequisite down", () => {
+    const m = new Monitor(db, { probeFn: async () => makeResult(true, true) });
+    m.processResult(makeResult(true, true, false, false), 2);
+    m.processResult(makeResult(true, true, false, false), 2);
+    const dnsId = m.state.open_dns_id;
+    assert.ok(dnsId != null);
+
+    m.processResult(makeResult(true, true, true, true), 2);
+    assert.equal(m.state.open_dns_id, null);
+    assert.ok(db._get("SELECT ended_at FROM outages WHERE id=?", [dnsId]).ended_at);
+
+    m.processResult(makeResult(true, true, true, false), 2);
+    m.processResult(makeResult(true, true, true, false), 2);
+    const httpId = m.state.open_http_id;
+    assert.ok(httpId != null);
+    m.processResult(makeResult(true, true, true, true), 2);
+    assert.equal(m.state.open_http_id, null);
+
+    // Streak reset: accumulate DNS fails, then LAN down clears streak.
+    m.processResult(makeResult(true, true, false, false), 2);
+    assert.equal(m.state.dns_fail_streak, 1);
+    m.processResult(makeResult(false, false, false, false), 2);
+    assert.equal(m.state.dns_fail_streak, 0);
+    assert.equal(m.state.http_fail_streak, 0);
   });
 });
 
@@ -198,5 +227,37 @@ describe("monitor probe suppress / cool-down", async () => {
     assert.equal(sum.provider.server_name, "City Fiber");
     assert.equal(sum.provider.server_location, "Austin, TX");
     assert.equal(sum.provider.ping_ms, 12.5);
+  });
+
+  it("stores incident snapshot on open and close", () => {
+    monitor.processResult(makeResult(true, true), 1);
+    monitor.state.adapter = { name: "Eth0", type: "ethernet", signal: null };
+    monitor.processResult(makeResult(true, false), 1);
+    const id = monitor.state.open_wan_id;
+    assert.ok(id != null);
+    const openRow = db._get("SELECT * FROM outages WHERE id=?", [id]);
+    const openSnap = JSON.parse(openRow.snapshot_json);
+    assert.ok(openSnap.at_open);
+    assert.equal(openSnap.at_open.type, "wan");
+    assert.equal(openSnap.at_open.wan_ok, false);
+    assert.equal(openSnap.at_open.adapter.name, "Eth0");
+
+    monitor.processResult(makeResult(true, true), 1);
+    const closed = db._get("SELECT * FROM outages WHERE id=?", [id]);
+    const snap = JSON.parse(closed.snapshot_json);
+    assert.ok(snap.at_open);
+    assert.ok(snap.at_close);
+    assert.equal(snap.at_close.wan_ok, true);
+  });
+
+  it("snapshot reports monitor_stale when probes age out", () => {
+    monitor.state.paused = false;
+    monitor.state.probe_suppressed = false;
+    monitor.state.last_probe_at = Date.now() / 1000 - 20;
+    db.updateSettings({ poll_interval_s: 5 });
+    const snap = monitor.snapshot();
+    assert.equal(snap.monitor_stale, true);
+    monitor.state.paused = true;
+    assert.equal(monitor.snapshot().monitor_stale, false);
   });
 });

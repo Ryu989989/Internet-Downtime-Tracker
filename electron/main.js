@@ -11,8 +11,20 @@ const autostart = require("./autostart");
 const { trayIcon, stateColor, resolveAppIconPath } = require("./icons");
 const systemLogs = require("./system-logs");
 const speedtest = require("./speedtest");
-const { isSafeExternalUrl } = require("./url-policy");
+const { isHttpsUrl } = require("./url-policy");
 const { buildEvidenceCsv, buildHtmlReport, fmtDuration } = require("./export");
+
+/** Exports always land under downloads/temp — ignore renderer-supplied paths. */
+function resolveExportDest(kind) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  if (kind === "report") {
+    return path.join(os.tmpdir(), `idt-report-${Date.now()}.html`);
+  }
+  return path.join(
+    app.getPath("downloads") || os.tmpdir(),
+    `idt-outages-${stamp}.csv`
+  );
+}
 
 app.setAppUserModelId("com.local.internetdowntimetracker");
 
@@ -142,7 +154,7 @@ function createWindow() {
     event.preventDefault();
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isSafeExternalUrl(url)) {
+    if (isHttpsUrl(url)) {
       shell.openExternal(url);
     }
     return { action: "deny" };
@@ -342,12 +354,7 @@ function registerIpc() {
       ? db.listSpeedTests({ fromTs, toTs, limit: 500 })
       : [];
     const csv = buildEvidenceCsv({ outages, speedTests, now });
-    const dest =
-      params.path ||
-      path.join(
-        app.getPath("downloads") || os.tmpdir(),
-        `idt-outages-${new Date().toISOString().slice(0, 10)}.csv`
-      );
+    const dest = resolveExportDest("csv");
     fs.writeFileSync(dest, csv, "utf8");
     return { path: dest, count: outages.length };
   });
@@ -366,9 +373,7 @@ function registerIpc() {
       orderDir: "DESC",
     });
     const html = buildHtmlReport({ summary, outages, now });
-    const dest =
-      params.path ||
-      path.join(os.tmpdir(), `idt-report-${Date.now()}.html`);
+    const dest = resolveExportDest("report");
     fs.writeFileSync(dest, html, "utf8");
     await shell.openPath(dest);
     return { path: dest };
