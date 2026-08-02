@@ -1381,7 +1381,7 @@ function setupForms() {
       http_url: form.http_url.value.trim(),
     };
     try {
-      await api("/api/settings", {
+      const saved = await api("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -1391,8 +1391,23 @@ function setupForms() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paused: !!form.paused.checked }),
       });
-      $("#settingsMsg").textContent = "Saved";
-      setTimeout(() => { $("#settingsMsg").textContent = ""; }, 2000);
+      if (form.autostart) form.autostart.checked = !!saved.autostart;
+      const hint = $("#autostartHint");
+      if (body.autostart && !saved.autostart) {
+        $("#settingsMsg").textContent = "Saved, but Start with Windows failed — try the Setup installer";
+        if (hint) {
+          hint.textContent =
+            "Could not register at sign-in. Run the Setup installer, or keep the portable .exe in a fixed folder and try again.";
+        }
+      } else if (saved.autostart && saved.autostart_path) {
+        $("#settingsMsg").textContent = "Saved";
+        if (hint) {
+          hint.textContent = `Starts at sign-in from: ${saved.autostart_path}`;
+        }
+      } else {
+        $("#settingsMsg").textContent = "Saved";
+      }
+      setTimeout(() => { $("#settingsMsg").textContent = ""; }, 4000);
       refreshStatus();
     } catch (err) {
       $("#settingsMsg").textContent = "Save failed";

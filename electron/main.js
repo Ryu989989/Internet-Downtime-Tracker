@@ -306,9 +306,20 @@ function registerIpc() {
     const updated = db.updateSettings(body || {});
     if (Object.prototype.hasOwnProperty.call(body || {}, "autostart")) {
       try {
-        autostart.setEnabled(!!updated.autostart);
+        const on = autostart.setEnabled(!!updated.autostart);
+        if (on !== !!updated.autostart) {
+          db.updateSettings({ autostart: on });
+          updated.autostart = on;
+        }
+        try {
+          updated.autostart_path = autostart.resolvedExePath();
+        } catch {
+          updated.autostart_path = null;
+        }
       } catch (err) {
         console.error("autostart update failed", err);
+        updated.autostart = false;
+        db.updateSettings({ autostart: false });
       }
       if (tray) tray.setContextMenu(buildTrayMenu());
     }
@@ -434,9 +445,15 @@ function boot() {
   return TrackerDb.open().then((opened) => {
     db = opened;
     const settings = db.getSettings();
-    const registryOn = autostart.isEnabled();
-    if (Boolean(settings.autostart) !== registryOn) {
-      db.updateSettings({ autostart: registryOn });
+    // Settings are source of truth — re-write Run key / login item with the
+    // current stable exe path (critical for portable builds).
+    try {
+      const on = autostart.syncFromSettings(!!settings.autostart);
+      if (on !== !!settings.autostart) {
+        db.updateSettings({ autostart: on });
+      }
+    } catch (err) {
+      console.error("autostart sync failed", err);
     }
 
     monitor = new Monitor(db, {
@@ -447,7 +464,19 @@ function boot() {
     createWindow();
     createTray();
     monitor.start();
-    showDashboard();
+
+    let openedAtLogin = false;
+    try {
+      openedAtLogin = !!app.getLoginItemSettings().wasOpenedAtLogin;
+    } catch {
+      openedAtLogin = false;
+    }
+    // Autostart: keep monitoring in tray; don't steal focus on login.
+    if (openedAtLogin && minimizeToTrayEnabled()) {
+      hideToTray();
+    } else {
+      showDashboard();
+    }
   });
 }
 

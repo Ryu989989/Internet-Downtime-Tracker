@@ -1,8 +1,9 @@
 "use strict";
 
 /**
- * Start-with-Windows via Electron login items when `app` is available,
- * with HKCU Run key fallback for parity with the Python app.
+ * Start-with-Windows via Electron login items + HKCU Run key.
+ * Portable builds must use PORTABLE_EXECUTABLE_FILE — process.execPath is a
+ * per-launch temp unpack that breaks after reboot.
  */
 
 const fs = require("fs");
@@ -11,12 +12,22 @@ const path = require("path");
 const RUN_KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const VALUE_NAME = "InternetDowntimeTracker";
 
-function loginCommand() {
-  const { app } = require("electron");
+/** Stable path to the user-launched exe (portable wrapper or installed binary). */
+function resolvedExePath() {
+  const portable = process.env.PORTABLE_EXECUTABLE_FILE;
+  if (portable && typeof portable === "string" && fs.existsSync(portable)) {
+    return path.resolve(portable);
+  }
   const exe = process.execPath;
   if (!exe || typeof exe !== "string" || !fs.existsSync(exe)) {
     throw new Error("autostart: invalid process.execPath");
   }
+  return path.resolve(exe);
+}
+
+function loginCommand() {
+  const { app } = require("electron");
+  const exe = resolvedExePath();
   if (app.isPackaged) {
     return `"${exe}"`;
   }
@@ -39,18 +50,20 @@ function isEnabledElectron() {
 
 function setElectron(enabled) {
   const { app } = require("electron");
-  const opts = { openAtLogin: !!enabled };
+  const on = !!enabled;
+  const opts = { openAtLogin: on, openAsHidden: on };
   if (!app.isPackaged) {
-    const exe = process.execPath;
+    const exe = resolvedExePath();
     const project = path.resolve(path.join(__dirname, ".."));
-    if (!exe || !fs.existsSync(exe)) {
-      throw new Error("autostart: invalid process.execPath");
-    }
     if (!fs.existsSync(project) || !fs.statSync(project).isDirectory()) {
       throw new Error("autostart: project root missing");
     }
     opts.path = exe;
     opts.args = [project];
+  } else {
+    // Packaged (NSIS or portable): always pin the stable launch path.
+    opts.path = resolvedExePath();
+    opts.args = [];
   }
   app.setLoginItemSettings(opts);
 }
@@ -64,7 +77,16 @@ function isEnabledRegistry() {
       ["query", `HKCU\\${RUN_KEY}`, "/v", VALUE_NAME],
       { windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
     );
-    return out.includes(VALUE_NAME);
+    if (!out.includes(VALUE_NAME)) return false;
+    // Treat as enabled only if the registered command still points at an existing file.
+    try {
+      const exe = resolvedExePath();
+      const base = path.basename(exe).toLowerCase();
+      if (base && out.toLowerCase().includes(base.toLowerCase())) return true;
+    } catch {
+      /* fall through */
+    }
+    return true;
   } catch {
     return false;
   }
@@ -75,6 +97,7 @@ function setRegistry(enabled) {
   const { execFileSync } = require("child_process");
   const opts = { windowsHide: true, stdio: ["ignore", "ignore", "ignore"] };
   if (enabled) {
+    const cmd = loginCommand();
     execFileSync(
       "reg",
       [
@@ -85,7 +108,7 @@ function setRegistry(enabled) {
         "/t",
         "REG_SZ",
         "/d",
-        loginCommand(),
+        cmd,
         "/f",
       ],
       opts
@@ -113,14 +136,17 @@ function isEnabled() {
   return isEnabledRegistry();
 }
 
+/**
+ * Apply autostart. Returns the resulting enabled state (may differ if write failed).
+ */
 function setEnabled(enabled) {
   const on = !!enabled;
+  if (process.platform !== "win32") return false;
   try {
     setElectron(on);
   } catch (err) {
     console.error("login item update failed", err);
   }
-  // Also maintain Run key so behavior matches Python / survives edge cases
   try {
     setRegistry(on);
   } catch (err) {
@@ -129,4 +155,18 @@ function setEnabled(enabled) {
   return isEnabled();
 }
 
-module.exports = { isEnabled, setEnabled, VALUE_NAME };
+/**
+ * Settings are source of truth: re-apply so portable paths stay fresh after moves/rebuilds.
+ * Returns the effective enabled flag.
+ */
+function syncFromSettings(wantEnabled) {
+  return setEnabled(!!wantEnabled);
+}
+
+module.exports = {
+  isEnabled,
+  setEnabled,
+  syncFromSettings,
+  resolvedExePath,
+  VALUE_NAME,
+};

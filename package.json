@@ -9,7 +9,7 @@
     "postinstall": "node scripts/vendor-chart.js",
     "start": "electron .",
     "build": "electron-builder --win",
-    "test": "node --test electron/test/monitor.test.js electron/test/netcheck.test.js electron/test/export.test.js electron/test/system-logs.test.js electron/test/speedtest.test.js electron/test/security.test.js"
+    "test": "node --test electron/test/monitor.test.js electron/test/netcheck.test.js electron/test/export.test.js electron/test/system-logs.test.js electron/test/speedtest.test.js electron/test/security.test.js electron/test/autostart.test.js"
   },
   "dependencies": {
     "sql.js": "^1.12.0"
