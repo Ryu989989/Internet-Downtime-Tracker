@@ -38,12 +38,10 @@
     ],
     "icon": "assets/icons/icon.ico",
     "win": {
-      "icon": "assets/icons/icon.ico",
       "target": [
         "nsis",
         "portable"
       ],
-      "icon": "assets/icons/icon.ico",
       "signAndEditExecutable": false
     },
     "nsis": {

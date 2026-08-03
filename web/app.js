@@ -33,6 +33,9 @@ function applyChartDefaults() {
   Chart.defaults.color = chartTheme.color();
   Chart.defaults.borderColor = chartTheme.border();
   Chart.defaults.font.family = '"Segoe UI", "IBM Plex Sans", system-ui, sans-serif';
+  Chart.defaults.devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
+  Chart.defaults.animation = false;
+  Chart.defaults.transitions = { active: { animation: { duration: 0 } } };
   Chart.defaults.plugins.tooltip.backgroundColor = chartTheme.tooltipBg;
   Chart.defaults.plugins.tooltip.borderColor = chartTheme.tooltipBorder;
   Chart.defaults.plugins.tooltip.borderWidth = 1;
@@ -41,9 +44,6 @@ function applyChartDefaults() {
   Chart.defaults.plugins.tooltip.padding = 10;
   Chart.defaults.plugins.tooltip.cornerRadius = 6;
   Chart.defaults.plugins.tooltip.displayColors = false;
-  Chart.defaults.animation = prefersReducedMotion()
-    ? false
-    : { duration: 420, easing: "easeOutQuart" };
 }
 
 function prefersReducedMotion() {
@@ -57,11 +57,31 @@ const LAYER_TIPS = {
   wan: { name: "WAN", meaning: "Public internet path failed while LAN is up (ISP/upstream)." },
   dns: { name: "DNS", meaning: "Name resolution failed while LAN+WAN are up. Checked only when lower layers are up." },
   http: { name: "HTTP", meaning: "Web connectivity failed while LAN+WAN+DNS are up (captive portal / HTTP path)." },
+  "speed-down": {
+    name: "Download",
+    meaning: "Last Ookla test download throughput (Mbps) — how fast data arrives from the internet.",
+  },
+  "speed-up": {
+    name: "Upload",
+    meaning: "Last Ookla test upload throughput (Mbps) — how fast you can send data upstream.",
+  },
+  "speed-ping": {
+    name: "Ping",
+    meaning: "Round-trip latency to the test server (ms). Jitter is how much that latency varies.",
+  },
+  "speed-loss": {
+    name: "Packet loss",
+    meaning:
+      "Share of test packets that never arrived. Healthy home broadband is usually under 1% (ideally ~0%). Around 1–2% can cause lag or glitches; above ~2–5% is often noticeable on calls/games.",
+  },
 };
 
 let sparkChart, hourChart, dowChart, latencyChart, speedTrendChart;
 let speedRunning = false;
 let chartEnterDone = { spark: false, latency: false, hour: false, dow: false, speed: false };
+const HISTORY_ROW_LIMIT = 100;
+let chartTipAnchor = null;
+let chartTipScrollWired = false;
 
 function fmtDuration(ms) {
   if (ms == null || Number.isNaN(ms)) return "—";
@@ -200,9 +220,7 @@ async function api(path, opts) {
     }
     throw new Error(`unknown api ${path}`);
   }
-  const res = await fetch(path, opts);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
+  throw new Error("API unavailable");
 }
 
 function setPill(el, label, ok) {
@@ -213,9 +231,10 @@ function setPill(el, label, ok) {
     "pill" + tip + " " + (ok === true ? "pill-ok" : ok === false ? "pill-down" : "pill-unknown");
 }
 
-function activateTab(tab) {
+function activateTab(tab, { focusPanel = false } = {}) {
   const btn = $(`.tab[data-tab="${tab}"]`);
   if (!btn) return;
+  hideChartTip();
   $$(".tab").forEach((b) => {
     const on = b === btn;
     b.classList.toggle("active", on);
@@ -228,7 +247,8 @@ function activateTab(tab) {
     p.hidden = !active;
   });
   if (tab === "patterns") {
-    refreshSummary();
+    resetPatternsCharts();
+    refreshSummary().then((sum) => remountPatternsCharts(sum));
     refreshLongest();
   }
   if (tab === "history") {
@@ -237,40 +257,227 @@ function activateTab(tab) {
   }
   if (tab === "system-logs") refreshSystemLogs({ refresh: false });
   if (tab === "speed") {
-    // Recreate trend chart on a visible canvas (Chart.js gets 0-size in hidden panels).
-    if (speedTrendChart) {
-      try {
-        speedTrendChart.destroy();
-      } catch {
-        /* ignore */
-      }
-      speedTrendChart = null;
-      chartEnterDone.speed = false;
-    }
-    refreshSpeed();
+    resetSpeedTrendChart();
+    refreshSpeed().then(() => queueSpeedTrendMount(lastSpeedTrendTests));
   }
   if (tab === "settings") loadSettings().catch(() => {});
   if (tab === "overview") {
     refreshStatus();
-    refreshSummary();
+    refreshSummary().then(() => scheduleChartsResize());
+  }
+  if (focusPanel) {
+    const panel = document.getElementById(`panel-${tab}`);
+    const first = panel?.querySelector(
+      'button:not([hidden]), [href], input:not([type="hidden"]), select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    if (first) first.focus();
+  } else {
+    btn.focus();
+  }
+  // After panel show/hide + CSS animation, force Chart.js to the live box size.
+  scheduleChartsResize();
+}
+
+/** HTML chart tips via direct mouse→scale mapping (Chart.js hit-testing is flaky here). */
+function ensureChartTipEl() {
+  let el = document.getElementById("chartJsTooltip");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "chartJsTooltip";
+  el.className = "chart-js-tooltip";
+  el.setAttribute("role", "tooltip");
+  document.body.appendChild(el);
+  return el;
+}
+
+function hideChartTip() {
+  const el = document.getElementById("chartJsTooltip");
+  if (el) el.classList.remove("is-open", "is-below");
+  if (chartTipAnchor) {
+    chartTipAnchor.removeAttribute("aria-describedby");
+    chartTipAnchor = null;
   }
 }
 
-function chartBarPlugins(unitSingular, unitPlural) {
+function showChartTipHtml(html, clientX, clientY) {
+  const el = ensureChartTipEl();
+  el.innerHTML = html;
+  el.classList.remove("is-below");
+  el.style.left = `${Math.max(8, Math.min(clientX, window.innerWidth - 8))}px`;
+  el.style.top = `${Math.max(8, clientY)}px`;
+  el.classList.add("is-open");
+  const th = el.offsetHeight;
+  if (clientY - th - 10 < 8) {
+    el.classList.add("is-below");
+    el.style.top = `${Math.min(window.innerHeight - 8, clientY)}px`;
+  }
+}
+
+function chartTipPayloadAt(chart, index) {
+  const fmt = chart.$tipFormat;
+  if (!fmt) return null;
+  const payload = fmt(index, chart);
+  if (!payload || (!payload.title && !(payload.lines && payload.lines.length))) return null;
+  return (
+    (payload.title ? `<span class="tip-title">${escapeHtml(String(payload.title))}</span>` : "") +
+    (payload.lines || [])
+      .map((ln) => `<span class="tip-line">${escapeHtml(String(ln))}</span>`)
+      .join("")
+  );
+}
+
+function chartTipCoordsForIndex(chart, index) {
+  const canvas = chart.canvas;
+  const area = chart.chartArea;
+  const xScale = chart.scales?.x;
+  if (!canvas || !area || !xScale) return null;
+  const cx = xScale.getPixelForValue(index);
+  const rect = canvas.getBoundingClientRect();
+  return {
+    clientX: rect.left + (cx / chart.width) * rect.width,
+    clientY: rect.top + ((area.top + area.bottom) / 2 / chart.height) * rect.height,
+  };
+}
+
+function openChartTip(chart, index, clientX, clientY) {
+  const html = chartTipPayloadAt(chart, index);
+  if (!html) {
+    hideChartTip();
+    return;
+  }
+  chart.$tipIndex = index;
+  showChartTipHtml(html, clientX, clientY);
+  const canvas = chart.canvas;
+  if (canvas) {
+    chartTipAnchor = canvas;
+    canvas.setAttribute("aria-describedby", "chartJsTooltip");
+  }
+}
+
+function setupChartTipGlobal() {
+  if (chartTipScrollWired) return;
+  chartTipScrollWired = true;
+  window.addEventListener("scroll", () => hideChartTip(), true);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideChartTip();
+  });
+}
+
+function unwireChartTip(chart) {
+  if (!chart || !chart.$tipWired) return;
+  const canvas = chart.canvas;
+  const h = chart.$tipHandlers;
+  if (canvas && h) {
+    if (h.mousemove) canvas.removeEventListener("mousemove", h.mousemove);
+    if (h.mouseleave) canvas.removeEventListener("mouseleave", h.mouseleave);
+    if (h.keydown) canvas.removeEventListener("keydown", h.keydown);
+    if (h.blur) canvas.removeEventListener("blur", h.blur);
+  }
+  if (canvas) {
+    canvas.removeAttribute("tabindex");
+    canvas.removeAttribute("aria-describedby");
+    canvas.removeAttribute("role");
+  }
+  if (chartTipAnchor === canvas) chartTipAnchor = null;
+  chart.$tipWired = false;
+  chart.$tipHandlers = null;
+  chart.$tipFormat = null;
+  chart.$tipIndex = null;
+}
+
+function wireChartTip(chart, formatIndex) {
+  if (!chart) return;
+  unwireChartTip(chart);
+  chart.$tipWired = true;
+  chart.$tipFormat = formatIndex;
+  chart.$tipIndex = null;
+  const canvas = chart.canvas;
+  canvas.tabIndex = 0;
+  canvas.setAttribute("role", "img");
+  canvas.style.pointerEvents = "auto";
+
+  const onMouseMove = (evt) => {
+    const area = chart.chartArea;
+    const xScale = chart.scales?.x;
+    if (!area || !xScale) {
+      hideChartTip();
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) {
+      hideChartTip();
+      return;
+    }
+    const x = ((evt.clientX - rect.left) / rect.width) * chart.width;
+    const y = ((evt.clientY - rect.top) / rect.height) * chart.height;
+    if (x < area.left || x > area.right || y < area.top || y > area.bottom) {
+      hideChartTip();
+      return;
+    }
+    let index = xScale.getValueForPixel(x);
+    if (typeof index !== "number" || Number.isNaN(index)) {
+      hideChartTip();
+      return;
+    }
+    index = Math.round(index);
+    const n = chart.data.labels?.length || 0;
+    if (index < 0 || index >= n) {
+      hideChartTip();
+      return;
+    }
+    openChartTip(chart, index, evt.clientX, evt.clientY);
+  };
+
+  const onKeyDown = (evt) => {
+    if (evt.key === "Escape") {
+      hideChartTip();
+      return;
+    }
+    const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+    if (!keys.includes(evt.key)) return;
+    evt.preventDefault();
+    const n = chart.data.labels?.length || 0;
+    if (n === 0) return;
+    let index = chart.$tipIndex ?? 0;
+    if (evt.key === "ArrowRight") index = Math.min(n - 1, index + 1);
+    if (evt.key === "ArrowLeft") index = Math.max(0, index - 1);
+    if (evt.key === "Home") index = 0;
+    if (evt.key === "End") index = n - 1;
+    const coords = chartTipCoordsForIndex(chart, index);
+    if (!coords) return;
+    openChartTip(chart, index, coords.clientX, coords.clientY);
+  };
+
+  chart.$tipHandlers = {
+    mousemove: onMouseMove,
+    mouseleave: hideChartTip,
+    keydown: onKeyDown,
+    blur: hideChartTip,
+  };
+  canvas.addEventListener("mousemove", onMouseMove);
+  canvas.addEventListener("mouseleave", hideChartTip);
+  canvas.addEventListener("keydown", onKeyDown);
+  canvas.addEventListener("blur", hideChartTip);
+  setupChartTipGlobal();
+}
+
+function chartBarPlugins() {
   return {
     legend: { display: false },
-    tooltip: {
-      enabled: true,
-      callbacks: {
-        label(ctx) {
-          const v = ctx.parsed.y;
-          if (v == null) return " No data";
-          const n = Number(v);
-          const unit = n === 1 ? unitSingular : unitPlural;
-          return ` ${n} ${unit}`;
-        },
-      },
-    },
+    tooltip: { enabled: false },
+  };
+}
+
+function barTipFormatter(unitSingular, unitPlural) {
+  return (index, chart) => {
+    const title = chart.data.labels?.[index] ?? "";
+    const v = chart.data.datasets?.[0]?.data?.[index];
+    if (v == null || Number.isNaN(Number(v))) {
+      return { title, lines: ["No data"] };
+    }
+    const n = Number(v);
+    const unit = n === 1 ? unitSingular : unitPlural;
+    return { title, lines: [`${n} ${unit}`] };
   };
 }
 
@@ -301,7 +508,7 @@ function chartScaleOpts() {
   return {
     x: {
       grid: { color: chartTheme.grid },
-      ticks: { maxRotation: 0, maxTicksLimit: 8 },
+      ticks: { autoSkip: true, maxRotation: 0, maxTicksLimit: 6 },
     },
     y: {
       beginAtZero: true,
@@ -311,10 +518,132 @@ function chartScaleOpts() {
   };
 }
 
-function chartAnimOnce(key) {
-  if (prefersReducedMotion() || chartEnterDone[key]) return false;
-  chartEnterDone[key] = true;
-  return { duration: 420, easing: "easeOutQuart" };
+function chartPanelHidden(canvas) {
+  return !!canvas?.closest(".panel")?.hasAttribute("hidden");
+}
+
+function patternsPanelVisible() {
+  const panel = document.getElementById("panel-patterns");
+  return !!(panel && !panel.hidden && panel.classList.contains("active"));
+}
+
+function chartBoxReady(canvas) {
+  const box = canvas?.closest(".chart-box") || canvas?.parentElement;
+  if (!box) return false;
+  return box.clientWidth >= 8 && box.clientHeight >= 8;
+}
+
+function scheduleChartsResize() {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      Chart.defaults.devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
+      for (const c of [sparkChart, latencyChart, hourChart, dowChart, speedTrendChart]) {
+        fitChartToBox(c);
+      }
+    });
+  });
+}
+
+function resizeChartSoon(chart) {
+  if (!chart) return;
+  requestAnimationFrame(() => fitChartToBox(chart));
+}
+
+function setupChartResize() {
+  let raf = 0;
+  const schedule = () => {
+    if (raf) cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      scheduleChartsResize();
+    });
+  };
+  window.addEventListener("resize", schedule);
+  window.visualViewport?.addEventListener("resize", schedule);
+  // Catch layout changes that don't always emit window.resize in Electron.
+  if (typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(schedule);
+    document.querySelectorAll(".chart-box").forEach((el) => ro.observe(el));
+    const main = document.querySelector("main");
+    if (main) ro.observe(main);
+  }
+}
+
+function resetPatternsCharts() {
+  for (const key of ["hour", "dow"]) {
+    const chart = key === "hour" ? hourChart : dowChart;
+    if (!chart) continue;
+    unwireChartTip(chart);
+    try {
+      chart.destroy();
+    } catch {
+      /* ignore */
+    }
+    chartEnterDone[key] = false;
+  }
+  hourChart = null;
+  dowChart = null;
+}
+
+function prepCanvasBox(canvas) {
+  const box = canvas.closest(".chart-box");
+  const rect = box?.getBoundingClientRect();
+  const w = Math.max(16, Math.floor(rect?.width || 300));
+  const h = Math.max(16, Math.floor(rect?.height || 200));
+  canvas.style.display = "block";
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+  return { w, h };
+}
+
+let lastPatternsSum = null;
+
+/** Remount Patterns charts after the panel has real layout (avoids 0-height Chart.js canvases). */
+function remountPatternsCharts(sum) {
+  if (sum) lastPatternsSum = sum;
+  if (!patternsPanelVisible()) return;
+  resetPatternsCharts();
+  const data = lastPatternsSum || sum || {};
+  const run = (attempt = 0) => {
+    if (!patternsPanelVisible()) return;
+    const hourCanvas = $("#hourChart");
+    const dowCanvas = $("#dowChart");
+    if (!chartBoxReady(hourCanvas) || !chartBoxReady(dowCanvas)) {
+      if (attempt < 60) requestAnimationFrame(() => run(attempt + 1));
+      return;
+    }
+    ensureHour(data.by_hour || []);
+    ensureDow(data.by_dow || []);
+    fitChartToBox(hourChart);
+    fitChartToBox(dowChart);
+  };
+  requestAnimationFrame(() => requestAnimationFrame(() => run(0)));
+}
+
+function chartAnimOnce(_key) {
+  // Animations race Electron layout/resize: Chart.js defers resize while animating,
+  // leaving blank canvases whose scales still power our custom tooltips.
+  return false;
+}
+
+function fitChartToBox(chart) {
+  if (!chart?.canvas) return;
+  const box = chart.canvas.closest(".chart-box");
+  if (!box) return;
+  const rect = box.getBoundingClientRect();
+  const w = Math.floor(rect.width);
+  const h = Math.floor(rect.height);
+  if (w < 16 || h < 16) return;
+  try {
+    if (typeof chart.stop === "function") chart.stop();
+    chart.options.devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
+    chart.canvas.style.width = `${w}px`;
+    chart.canvas.style.height = `${h}px`;
+    chart.resize(w, h);
+    if (typeof chart.draw === "function") chart.draw();
+  } catch {
+    /* torn down */
+  }
 }
 
 function ensureSpark(data) {
@@ -329,8 +658,10 @@ function ensureSpark(data) {
     sparkChart.data.labels = labels;
     sparkChart.data.datasets[0].data = values;
     sparkChart.update("none");
+    if (!chartPanelHidden(ctx)) resizeChartSoon(sparkChart);
     return;
   }
+  if (chartPanelHidden(ctx)) return;
   sparkChart = new Chart(ctx, {
     type: "bar",
     data: {
@@ -343,15 +674,33 @@ function ensureSpark(data) {
       }],
     },
     options: {
-      responsive: true,
-      animation: chartAnimOnce("spark"),
+      responsive: false,
+      maintainAspectRatio: false,
+      animation: false,
       interaction: { mode: "index", intersect: false },
-      plugins: chartBarPlugins("second downtime", "seconds downtime"),
+      plugins: chartBarPlugins(),
       scales: {
         ...chartScaleOpts(),
         y: { ...chartScaleOpts().y, ticks: { callback: (v) => `${v}s` } },
       },
     },
+  });
+  wireChartTip(sparkChart, barTipFormatter("second downtime", "seconds downtime"));
+  resizeChartSoon(sparkChart);
+}
+
+function latencySparkLabels(n) {
+  const count = Math.max(1, n);
+  const start = Date.now() - 6 * 3600_000;
+  // Sparse labels only — Chart.js still plots all points; dense time strings overlap.
+  const labelEvery = Math.max(1, Math.ceil(count / 6));
+  return Array.from({ length: count }, (_, i) => {
+    if (i % labelEvery !== 0 && i !== count - 1) return "";
+    const t = start + (i / Math.max(1, count - 1)) * 6 * 3600_000;
+    return new Date(t).toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    });
   });
 }
 
@@ -359,120 +708,198 @@ function ensureLatency(data) {
   const ctx = $("#latencyChart");
   const empty = $("#latencyEmpty");
   if (!ctx) return;
-  const has = (data || []).some((v) => v != null);
-  if (empty) empty.hidden = has;
-  const labels = (data || []).map((_, i) => {
-    const mins = Math.round((i / Math.max(1, data.length - 1)) * 360);
-    return `${Math.floor(mins / 60)}h`;
-  });
-  const values = (data || []).map((v) => (v == null ? null : v));
+  const series = Array.isArray(data) ? data : [];
+  const has = series.some((v) => v != null);
+  const wrap = ctx.closest(".chart-wrap");
+  if (wrap) wrap.classList.toggle("is-empty", !has);
+  if (empty) {
+    empty.hidden = has;
+    empty.setAttribute("aria-hidden", has ? "true" : "false");
+  }
+  if (!has) {
+    if (latencyChart) {
+      unwireChartTip(latencyChart);
+      latencyChart.destroy();
+      latencyChart = null;
+      chartEnterDone.latency = false;
+    }
+    hideChartTip();
+    return;
+  }
+  const labels = latencySparkLabels(series.length);
+  const values = series.map((v) => (v == null ? null : Number(v)));
   if (latencyChart) {
     latencyChart.data.labels = labels;
     latencyChart.data.datasets[0].data = values;
     latencyChart.update("none");
+    if (!chartPanelHidden(ctx)) resizeChartSoon(latencyChart);
     return;
   }
+  if (chartPanelHidden(ctx)) return;
   latencyChart = new Chart(ctx, {
     type: "line",
     data: {
       labels,
       datasets: [{
-        label: "ms",
+        label: "Latency",
         data: values,
         borderColor: chartTheme.domain.latency,
         backgroundColor: "rgba(91, 159, 212, 0.12)",
         fill: true,
         tension: 0.35,
         pointRadius: 0,
+        pointHoverRadius: 4,
+        pointHitRadius: 16,
         spanGaps: true,
       }],
     },
     options: {
-      responsive: true,
-      animation: chartAnimOnce("latency"),
+      responsive: false,
+      maintainAspectRatio: false,
+      animation: false,
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { display: false },
-        tooltip: {
-          enabled: true,
-          callbacks: {
-            label(ctx) {
-              const v = ctx.parsed.y;
-              if (v == null) return " No sample";
-              return ` ${v} ms`;
-            },
-          },
-        },
+        tooltip: { enabled: false },
       },
       scales: {
         ...chartScaleOpts(),
-        y: { ...chartScaleOpts().y, ticks: { callback: (v) => `${v}` } },
+        y: {
+          ...chartScaleOpts().y,
+          beginAtZero: true,
+          ticks: { callback: (v) => `${v} ms` },
+        },
       },
     },
   });
+  wireChartTip(latencyChart, (index, chart) => {
+    const title = chart.data.labels?.[index] ?? "";
+    const v = chart.data.datasets?.[0]?.data?.[index];
+    if (v == null || Number.isNaN(Number(v))) {
+      return { title, lines: ["No sample"] };
+    }
+    return { title, lines: [`${v} ms`] };
+  });
+  resizeChartSoon(latencyChart);
 }
 
 function ensureHour(data) {
   const ctx = $("#hourChart");
+  const empty = $("#hourEmpty");
   if (!ctx) return;
-  const labels = Array.from({ length: 24 }, (_, i) => `${i}:00`);
-  if (hourChart) {
-    hourChart.data.datasets[0].data = data;
-    hourChart.update("none");
+  const values = Array.isArray(data) ? data : [];
+  const has = values.some((v) => Number(v) > 0);
+  const wrap = ctx.closest(".chart-wrap");
+  if (wrap) wrap.classList.toggle("is-empty", !has);
+  if (empty) {
+    empty.hidden = has;
+    empty.setAttribute("aria-hidden", has ? "true" : "false");
+  }
+  if (!has) {
+    if (hourChart) {
+      unwireChartTip(hourChart);
+      hourChart.destroy();
+      hourChart = null;
+      chartEnterDone.hour = false;
+    }
+    hideChartTip();
     return;
   }
+  // Never touch Chart.js while Patterns is hidden — resize-to-zero blanks the canvas
+  // while tooltips still work off stale scales.
+  if (!patternsPanelVisible() || !chartBoxReady(ctx)) return;
+  const labels = Array.from({ length: 24 }, (_, i) => (i % 3 === 0 ? `${i}:00` : ""));
+  if (hourChart) {
+    hourChart.data.labels = labels;
+    hourChart.data.datasets[0].data = values;
+    fitChartToBox(hourChart);
+    return;
+  }
+  prepCanvasBox(ctx);
   hourChart = new Chart(ctx, {
     type: "bar",
     data: {
       labels,
       datasets: [{
         label: "Outage starts",
-        data,
+        data: values,
         backgroundColor: chartTheme.domain.dns,
+        borderColor: "rgba(91, 159, 212, 0.95)",
+        borderWidth: 1,
         borderRadius: 2,
       }],
     },
     options: {
-      responsive: true,
-      animation: chartAnimOnce("hour"),
+      responsive: false,
+      maintainAspectRatio: false,
+      animation: false,
       interaction: { mode: "index", intersect: false },
-      plugins: chartBarPlugins("outage start", "outage starts"),
+      plugins: chartBarPlugins(),
       scales: {
         ...chartScaleOpts(),
         y: { ...chartScaleOpts().y, ticks: { stepSize: 1 } },
       },
     },
   });
+  wireChartTip(hourChart, barTipFormatter("outage start", "outage starts"));
+  fitChartToBox(hourChart);
 }
 
 function ensureDow(data) {
   const ctx = $("#dowChart");
+  const empty = $("#dowEmpty");
   if (!ctx) return;
-  const labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  if (dowChart) {
-    dowChart.data.datasets[0].data = data;
-    dowChart.update("none");
+  const values = Array.isArray(data) ? data : [];
+  const has = values.some((v) => Number(v) > 0);
+  const wrap = ctx.closest(".chart-wrap");
+  if (wrap) wrap.classList.toggle("is-empty", !has);
+  if (empty) {
+    empty.hidden = has;
+    empty.setAttribute("aria-hidden", has ? "true" : "false");
+  }
+  if (!has) {
+    if (dowChart) {
+      unwireChartTip(dowChart);
+      dowChart.destroy();
+      dowChart = null;
+      chartEnterDone.dow = false;
+    }
+    hideChartTip();
     return;
   }
+  if (!patternsPanelVisible() || !chartBoxReady(ctx)) return;
+  const labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  if (dowChart) {
+    dowChart.data.labels = labels;
+    dowChart.data.datasets[0].data = values;
+    fitChartToBox(dowChart);
+    return;
+  }
+  prepCanvasBox(ctx);
   dowChart = new Chart(ctx, {
     type: "bar",
     data: {
       labels,
       datasets: [{
         label: "Outage starts",
-        data,
+        data: values,
         backgroundColor: chartTheme.domain.wan,
+        borderColor: "rgba(230, 180, 80, 0.95)",
+        borderWidth: 1,
         borderRadius: 2,
       }],
     },
     options: {
-      responsive: true,
-      animation: chartAnimOnce("dow"),
+      responsive: false,
+      maintainAspectRatio: false,
+      animation: false,
       interaction: { mode: "index", intersect: false },
-      plugins: chartBarPlugins("outage start", "outage starts"),
+      plugins: chartBarPlugins(),
       scales: chartScaleOpts(),
     },
   });
+  wireChartTip(dowChart, barTipFormatter("outage start", "outage starts"));
+  fitChartToBox(dowChart);
 }
 
 function speedTrendLabels(rows) {
@@ -485,48 +912,80 @@ function speedTrendLabels(rows) {
   });
 }
 
-function ensureSpeedTrend(tests) {
+function speedPanelVisible() {
+  const panel = document.getElementById("panel-speed");
+  return !!(panel && !panel.hidden && panel.classList.contains("active"));
+}
+
+let lastSpeedTrendTests = [];
+let speedTrendMountRaf = 0;
+
+function resetSpeedTrendChart() {
+  if (!speedTrendChart) return;
+  unwireChartTip(speedTrendChart);
+  try {
+    speedTrendChart.destroy();
+  } catch {
+    /* ignore */
+  }
+  speedTrendChart = null;
+  chartEnterDone.speed = false;
+}
+
+/** Create/fit the throughput chart only after the Speed panel box has real pixels. */
+function queueSpeedTrendMount(tests, attempt = 0) {
+  if (tests) lastSpeedTrendTests = Array.isArray(tests) ? tests : [];
+  if (speedTrendMountRaf) cancelAnimationFrame(speedTrendMountRaf);
+  speedTrendMountRaf = requestAnimationFrame(() => {
+    speedTrendMountRaf = 0;
+    if (!speedPanelVisible()) return;
+    const ctx = $("#speedTrendChart");
+    if (!ctx || !chartBoxReady(ctx)) {
+      if (attempt < 60) queueSpeedTrendMount(null, attempt + 1);
+      return;
+    }
+    buildSpeedTrendChart(lastSpeedTrendTests);
+  });
+}
+
+function buildSpeedTrendChart(tests) {
   const ctx = $("#speedTrendChart");
   const empty = $("#speedTrendEmpty");
-  if (!ctx) return;
-  // Chronological for the line (API returns newest-first).
+  if (!ctx || !speedPanelVisible()) return;
+
   const rows = [...(tests || [])]
     .filter((t) => t && t.tested_at != null)
     .sort((a, b) => Number(a.tested_at) - Number(b.tested_at));
   const has = rows.length > 0;
-  if (empty) empty.hidden = has;
+  const wrap = ctx.closest(".chart-wrap");
+  if (wrap) wrap.classList.toggle("is-empty", !has);
+  if (empty) {
+    empty.textContent = "No speed tests yet. Run a test to build history.";
+    empty.hidden = has;
+    empty.setAttribute("aria-hidden", has ? "true" : "false");
+  }
   if (!has) {
-    if (speedTrendChart) {
-      speedTrendChart.destroy();
-      speedTrendChart = null;
-      chartEnterDone.speed = false;
-    }
+    resetSpeedTrendChart();
+    hideChartTip();
     return;
   }
+
   const labels = speedTrendLabels(rows);
   const down = rows.map((t) => Number(t.download_mbps));
   const up = rows.map((t) => Number(t.upload_mbps));
-  const panelHidden = ctx.closest(".panel")?.hasAttribute("hidden");
+  const yMax = Math.max(...down.filter((n) => !Number.isNaN(n)), ...up.filter((n) => !Number.isNaN(n)), 10) * 1.1;
 
   if (speedTrendChart) {
     speedTrendChart.data.labels = labels;
     speedTrendChart.data.datasets[0].data = down;
     speedTrendChart.data.datasets[1].data = up;
-    speedTrendChart.update("none");
-    if (!panelHidden) {
-      requestAnimationFrame(() => {
-        try {
-          speedTrendChart.resize();
-        } catch {
-          /* chart torn down */
-        }
-      });
-    }
+    speedTrendChart.options.scales.y.suggestedMax = yMax;
+    fitChartToBox(speedTrendChart);
     return;
   }
 
-  // Avoid creating Chart.js on a zero-size hidden canvas.
-  if (panelHidden) return;
+  // Pre-size canvas before Chart.js init (responsive:false starts blank otherwise).
+  prepCanvasBox(ctx);
 
   speedTrendChart = new Chart(ctx, {
     type: "line",
@@ -541,6 +1000,7 @@ function ensureSpeedTrend(tests) {
           tension: 0.3,
           pointRadius: 3,
           pointHoverRadius: 5,
+          pointHitRadius: 16,
         },
         {
           label: "Up",
@@ -550,36 +1010,62 @@ function ensureSpeedTrend(tests) {
           tension: 0.3,
           pointRadius: 3,
           pointHoverRadius: 5,
+          pointHitRadius: 16,
         },
       ],
     },
     options: {
-      responsive: true,
+      responsive: false,
       maintainAspectRatio: false,
-      animation: chartAnimOnce("speed"),
+      animation: false,
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { labels: { boxWidth: 10 } },
-        tooltip: {
-          callbacks: {
-            label(c) {
-              const v = c.parsed.y;
-              if (v == null || Number.isNaN(v)) return ` ${c.dataset.label}: —`;
-              return ` ${c.dataset.label}: ${v.toFixed(1)} Mbps`;
-            },
-          },
-        },
+        tooltip: { enabled: false },
       },
       scales: {
         ...chartScaleOpts(),
         y: {
           ...chartScaleOpts().y,
-          suggestedMax: Math.max(...down, ...up, 10) * 1.1,
+          suggestedMax: yMax,
           ticks: { callback: (v) => `${v}` },
         },
       },
     },
   });
+  wireChartTip(speedTrendChart, (index, chart) => {
+    const title = chart.data.labels?.[index] ?? "";
+    const lines = (chart.data.datasets || []).map((ds) => {
+      const v = ds.data?.[index];
+      if (v == null || Number.isNaN(Number(v))) return `${ds.label}: —`;
+      return `${ds.label}: ${Number(v).toFixed(1)} Mbps`;
+    });
+    return { title, lines };
+  });
+  fitChartToBox(speedTrendChart);
+}
+
+function ensureSpeedTrend(tests) {
+  lastSpeedTrendTests = Array.isArray(tests) ? tests : [];
+  const ctx = $("#speedTrendChart");
+  const empty = $("#speedTrendEmpty");
+  if (!ctx) return;
+  const rows = lastSpeedTrendTests.filter((t) => t && t.tested_at != null);
+  const has = rows.length > 0;
+  const wrap = ctx.closest(".chart-wrap");
+  if (wrap) wrap.classList.toggle("is-empty", !has);
+  if (empty) {
+    empty.textContent = "No speed tests yet. Run a test to build history.";
+    empty.hidden = has;
+    empty.setAttribute("aria-hidden", has ? "true" : "false");
+  }
+  if (!has) {
+    resetSpeedTrendChart();
+    hideChartTip();
+    return;
+  }
+  if (!speedPanelVisible()) return;
+  queueSpeedTrendMount(lastSpeedTrendTests);
 }
 
 function parseSnapshot(raw) {
@@ -701,11 +1187,19 @@ function renderOutageRows(tbody, rows, {
           });
           last = input.value;
           input.classList.remove("error");
+          input.removeAttribute("aria-invalid");
           input.classList.add("saved");
+          const notesLive = $("#notesLive");
+          if (notesLive) notesLive.textContent = "";
           setTimeout(() => input.classList.remove("saved"), 800);
         } catch (err) {
           console.error(err);
           input.classList.add("error");
+          input.setAttribute("aria-invalid", "true");
+          const notesLive = $("#notesLive");
+          if (notesLive) {
+            notesLive.textContent = `Could not save note: ${err.message || err}`;
+          }
           setTimeout(() => input.classList.remove("error"), 1200);
         }
       };
@@ -992,8 +1486,12 @@ async function refreshSummary() {
     }
     ensureSpark(sum.sparkline_24h || []);
     ensureLatency(sum.latency_spark_6h || []);
-    ensureHour(sum.by_hour || []);
-    ensureDow(sum.by_dow || []);
+    // Patterns charts only when that tab is visible (see remountPatternsCharts / ensureHour).
+    if (patternsPanelVisible()) {
+      ensureHour(sum.by_hour || []);
+      ensureDow(sum.by_dow || []);
+      paintPatternsSummary(sum, null);
+    }
     if ($("#recentBody")) {
       renderOutageRows($("#recentBody"), sum.recent_outages || [], { showEnded: false });
       if ($("#recentMeta")) {
@@ -1001,8 +1499,11 @@ async function refreshSummary() {
       }
     }
     paintProvider(sum.provider);
+    lastPatternsSum = sum;
+    return sum;
   } catch (e) {
     console.error(e);
+    return null;
   }
 }
 
@@ -1015,6 +1516,9 @@ function refreshHistoryToNow() {
 async function refreshHistory() {
   const form = $("#historyFilters");
   const meta = $("#historyMeta");
+  const tbody = $("#outageBody");
+  const table = tbody?.closest("table");
+  const applyBtn = form?.querySelector('button[type="submit"]');
   const fd = new FormData(form);
   const params = new URLSearchParams();
   const from = localInputToTs(fd.get("from"));
@@ -1027,26 +1531,107 @@ async function refreshHistory() {
   if (minS) params.set("min_ms", String(Number(minS) * 1000));
   params.set("sort", fd.get("sort") || "started_at");
   params.set("dir", fd.get("dir") || "DESC");
+  params.set("limit", String(HISTORY_ROW_LIMIT));
   if (meta) meta.textContent = "Loading…";
+  if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="muted">Loading…</td></tr>`;
+  if (table) table.setAttribute("aria-busy", "true");
+  if (applyBtn) applyBtn.disabled = true;
   try {
     const data = await api(`/api/outages?${params}`);
     const rows = data.outages || [];
-    renderOutageRows($("#outageBody"), rows, {
+    renderOutageRows(tbody, rows, {
       editableNotes: true,
       expandable: true,
       emptyTitle: "No outages",
       emptyMsg: "No outages in this range — try widening From/To or clearing filters",
     });
-    if (meta) meta.textContent = `${rows.length} outage${rows.length === 1 ? "" : "s"}`;
+    if (meta) {
+      const capped = rows.length >= HISTORY_ROW_LIMIT ? ` (showing first ${HISTORY_ROW_LIMIT})` : "";
+      meta.textContent = `${rows.length} outage${rows.length === 1 ? "" : "s"}${capped}`;
+    }
   } catch (e) {
     console.error(e);
-    $("#outageBody").innerHTML = emptyStateHtml(
-      6,
-      "Load failed",
-      "Could not load history — try Apply again."
-    );
+    if (tbody) {
+      tbody.innerHTML = emptyStateHtml(
+        6,
+        "Load failed",
+        "Could not load history — try Apply again."
+      );
+    }
     if (meta) meta.textContent = "Load failed";
+  } finally {
+    if (table) table.removeAttribute("aria-busy");
+    if (applyBtn) applyBtn.disabled = false;
   }
+}
+
+const DOW_NAMES = [
+  "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+];
+
+function peakIndex(arr) {
+  let best = 0;
+  let bestV = -1;
+  for (let i = 0; i < (arr || []).length; i++) {
+    const v = Number(arr[i]) || 0;
+    if (v > bestV) {
+      bestV = v;
+      best = i;
+    }
+  }
+  return { index: best, value: bestV };
+}
+
+function buildPatternsNarrative(sum, longestRows) {
+  const byHour = sum?.by_hour || [];
+  const byDow = sum?.by_dow || [];
+  const total = byHour.reduce((a, b) => a + (Number(b) || 0), 0);
+  if (!total) {
+    return "Over the last 30 days there were no recorded outage starts while this tracker was watching. That usually means the path stayed up during observation — if a tech is investigating a report from outside this window, confirm monitoring was running at that time.";
+  }
+  const hourPeak = peakIndex(byHour);
+  const dowPeak = peakIndex(byDow);
+  const hourLabel = `${String(hourPeak.index).padStart(2, "0")}:00`;
+  const nextHour = `${String((hourPeak.index + 1) % 24).padStart(2, "0")}:00`;
+  const layerLabels = {
+    lan: "local network / gateway (LAN)",
+    wan: "internet path past the gateway (WAN)",
+    dns: "name resolution (DNS)",
+    http: "web connectivity (HTTP)",
+  };
+  const w7 = sum?.windows?.["7d"] || {};
+  const typeBits = ["lan", "wan", "dns", "http"]
+    .map((k) => ({ k, c: w7[k]?.count || 0 }))
+    .filter((x) => x.c > 0)
+    .sort((a, b) => b.c - a.c);
+  let domainBit = "";
+  if (typeBits.length) {
+    const lead = typeBits[0];
+    domainBit = ` In the last 7 days, failures most often looked like ${layerLabels[lead.k]} (${lead.c} event${lead.c === 1 ? "" : "s"}).`;
+    if (typeBits.length > 1) {
+      domainBit += ` Also seen: ${typeBits.slice(1).map((t) => `${t.c} ${t.k.toUpperCase()}`).join(", ")}.`;
+    }
+  }
+  const top = (longestRows || [])[0];
+  let longestBit = "";
+  if (top) {
+    const open = top.ended_at == null;
+    const durMs =
+      top.duration_ms != null
+        ? top.duration_ms
+        : open
+          ? Math.floor((Date.now() / 1000 - top.started_at) * 1000)
+          : null;
+    const dur = durMs != null ? fmtDuration(durMs) : "unknown length";
+    longestBit = ` The longest outage in the table below is ${String(top.type || "?").toUpperCase()}, about ${dur}${open ? " and still open" : ""}.`;
+  }
+  return `Over the last 30 days this tracker recorded ${total} outage start${total === 1 ? "" : "s"}. They clustered most often around ${hourLabel}–${nextHour} local time, and more often on ${DOW_NAMES[dowPeak.index]}s than other days.${domainBit}${longestBit} Share this with a visiting tech: timing peaks and which layer fails first usually separate a local/wifi issue from an ISP or DNS problem.`;
+}
+
+function paintPatternsSummary(sum, longestRows) {
+  const el = $("#patternsSummary");
+  if (!el) return;
+  el.textContent = buildPatternsNarrative(sum || lastPatternsSum, longestRows);
 }
 
 async function refreshLongest() {
@@ -1079,9 +1664,11 @@ async function refreshLongest() {
     if ($("#longestMeta")) {
       $("#longestMeta").textContent = `${rows.length} shown`;
     }
+    paintPatternsSummary(lastPatternsSum, rows);
   } catch (e) {
     console.error(e);
     tbody.innerHTML = `<tr><td colspan="4" class="muted state-error">Failed to load</td></tr>`;
+    paintPatternsSummary(lastPatternsSum, []);
   }
 }
 
@@ -1187,6 +1774,22 @@ function renderSpeedHistory(rows) {
 
 async function refreshSpeed() {
   const statusEl = $("#speedStatus");
+  const runBtn = $("#speedRunBtn");
+  const installBtn = $("#speedInstallBtn");
+  const tbody = $("#speedHistoryBody");
+  const table = tbody?.closest("table");
+  const trendWrap = $("#speedTrendChart")?.closest(".chart-wrap");
+  const trendEmpty = $("#speedTrendEmpty");
+
+  if (!speedRunning) {
+    statusEl.textContent = "Loading…";
+    statusEl.className = "muted";
+  }
+  if (runBtn && !speedRunning) runBtn.disabled = true;
+  if (installBtn) installBtn.disabled = true;
+  if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="muted">Loading…</td></tr>`;
+  if (table) table.setAttribute("aria-busy", "true");
+
   try {
     const [st, hist] = await Promise.all([
       api("/api/speedtest/status"),
@@ -1195,6 +1798,7 @@ async function refreshSpeed() {
     paintSpeedLast(hist.latest);
     renderSpeedHistory(hist.tests || []);
     ensureSpeedTrend(hist.tests || []);
+    scheduleChartsResize();
     if (!speedRunning) {
       if (st.available) {
         statusEl.textContent = `CLI ready${st.path ? ` · ${st.path}` : ""}`;
@@ -1207,8 +1811,28 @@ async function refreshSpeed() {
     $("#speedRunBtn").disabled = speedRunning || !st.available;
     $("#speedInstallBtn").hidden = !!st.available;
   } catch (e) {
-    statusEl.textContent = e.message || "Failed to load speed data";
-    statusEl.className = "muted state-error";
+    if (!speedRunning) {
+      statusEl.textContent = e.message || "Failed to load speed data";
+      statusEl.className = "muted state-error";
+    }
+    if (tbody) {
+      tbody.innerHTML =
+        `<tr><td colspan="8" class="muted state-error">Load failed: ${escapeHtml(e.message || e)}</td></tr>`;
+    }
+    if (speedTrendChart) {
+      resetSpeedTrendChart();
+    }
+    if (trendWrap) trendWrap.classList.add("is-empty");
+    if (trendEmpty) {
+      trendEmpty.textContent = "Could not load throughput trend.";
+      trendEmpty.hidden = false;
+      trendEmpty.setAttribute("aria-hidden", "false");
+    }
+    hideChartTip();
+    if (runBtn && !speedRunning) runBtn.disabled = false;
+    if (installBtn) installBtn.disabled = false;
+  } finally {
+    if (table) table.removeAttribute("aria-busy");
   }
 }
 
@@ -1435,13 +2059,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupForms();
   setupTipDismiss();
   setupTooltips();
+  setupChartResize();
   defaultHistoryRange();
   defaultSystemLogsRange();
   document.querySelectorAll("[data-goto-tab]").forEach((el) => {
-    el.addEventListener("click", () => activateTab(el.getAttribute("data-goto-tab")));
+    el.addEventListener("click", () => activateTab(el.getAttribute("data-goto-tab"), { focusPanel: true }));
   });
   if (window.idt && typeof window.idt.onStatusUpdate === "function") {
     window.idt.onStatusUpdate((s) => paintStatus(s));
+  }
+  if (window.idt && typeof window.idt.onLayout === "function") {
+    window.idt.onLayout(() => scheduleChartsResize());
   }
   try {
     await loadSettings();

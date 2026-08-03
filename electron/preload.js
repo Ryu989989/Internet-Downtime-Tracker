@@ -31,4 +31,15 @@ contextBridge.exposeInMainWorld("idt", {
     ipcRenderer.on("status:update", handler);
     return () => ipcRenderer.removeListener("status:update", handler);
   },
+  onLayout: (cb) => {
+    const handler = () => {
+      try {
+        cb();
+      } catch (err) {
+        console.error("onLayout handler failed", err);
+      }
+    };
+    ipcRenderer.on("ui:layout", handler);
+    return () => ipcRenderer.removeListener("ui:layout", handler);
+  },
 });

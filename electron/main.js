@@ -3,7 +3,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, Notification } = require("electron");
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, Notification, screen } = require("electron");
 
 const { TrackerDb } = require("./db");
 const { Monitor } = require("./monitor");
@@ -131,11 +131,24 @@ function hideToTray() {
   mainWindow.hide();
 }
 
+function defaultWindowBounds() {
+  const { width: dw, height: dh } = screen.getPrimaryDisplay().workAreaSize;
+  return {
+    width: Math.min(1680, Math.max(960, Math.round(dw * 0.9))),
+    height: Math.min(1040, Math.max(640, Math.round(dh * 0.9))),
+    minWidth: 800,
+    minHeight: 560,
+  };
+}
+
 function createWindow() {
   const iconPath = resolveAppIconPath();
+  const bounds = defaultWindowBounds();
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 760,
+    width: bounds.width,
+    height: bounds.height,
+    minWidth: bounds.minWidth,
+    minHeight: bounds.minHeight,
     show: false,
     backgroundColor: "#0f1419",
     ...(iconPath ? { icon: iconPath } : {}),
@@ -180,6 +193,22 @@ function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+
+  // Renderer window.resize can miss some Electron maximize/restore passes.
+  let resizeNotifyTimer = null;
+  const notifyLayout = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send("ui:layout");
+  };
+  const scheduleLayoutNotify = () => {
+    if (resizeNotifyTimer) clearTimeout(resizeNotifyTimer);
+    resizeNotifyTimer = setTimeout(notifyLayout, 50);
+  };
+  mainWindow.on("resize", scheduleLayoutNotify);
+  mainWindow.on("maximize", scheduleLayoutNotify);
+  mainWindow.on("unmaximize", scheduleLayoutNotify);
+  mainWindow.on("enter-full-screen", scheduleLayoutNotify);
+  mainWindow.on("leave-full-screen", scheduleLayoutNotify);
 }
 
 function showDashboard() {
@@ -304,6 +333,13 @@ function registerIpc() {
   safeHandle("api:settings", () => db.getSettings());
   safeHandle("api:settings:update", (_e, body) => {
     const updated = db.updateSettings(body || {});
+    if (Object.prototype.hasOwnProperty.call(body || {}, "probe_retention_days")) {
+      try {
+        db.pruneProbes();
+      } catch (err) {
+        console.error("probe prune failed", err);
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(body || {}, "autostart")) {
       try {
         const on = autostart.setEnabled(!!updated.autostart);
@@ -425,6 +461,11 @@ function registerIpc() {
         raw_json: result.raw_json,
       });
       return { test: saved, ok: true };
+    } catch (err) {
+      if (err && err.code === "CANCELLED") {
+        return { ok: false, cancelled: true, error: err.message };
+      }
+      throw err;
     } finally {
       // Cool-down ignores failure streaks after saturated-link blips.
       if (monitor) monitor.setProbeSuppress(false, { cooldownMs: 8000 });
@@ -433,7 +474,7 @@ function registerIpc() {
   safeHandle("api:speedtest:cancel", () => {
     const ok = speedtest.cancelRun();
     if (monitor) monitor.setProbeSuppress(false, { cooldownMs: 8000 });
-    return ok;
+    return { ...ok, status: ok.cancelled ? "cancelled" : "idle" };
   });
   safeHandle("api:speedtest:install", async () => {
     const installed = await speedtest.installOfficialCli(userData());
@@ -444,6 +485,11 @@ function registerIpc() {
 function boot() {
   return TrackerDb.open().then((opened) => {
     db = opened;
+    try {
+      db.pruneProbes();
+    } catch (err) {
+      console.error("initial probe prune failed", err);
+    }
     const settings = db.getSettings();
     // Settings are source of truth — re-write Run key / login item with the
     // current stable exe path (critical for portable builds).
@@ -492,6 +538,7 @@ app.on("before-quit", () => {
   if (monitor) monitor.stop();
   if (db) {
     try {
+      db.flushPersist();
       db.close();
     } catch {
       /* ignore */

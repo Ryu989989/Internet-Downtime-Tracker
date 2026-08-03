@@ -30,6 +30,38 @@ function looksLikeIpv4(value) {
   });
 }
 
+/** Deny loopback, RFC1918, and link-local targets for probe settings (SSRF guard). */
+function isBlockedProbeHost(host) {
+  if (host == null || typeof host !== "string") return true;
+  const raw = host.trim().toLowerCase();
+  if (!raw) return true;
+  if (raw === "localhost" || raw.endsWith(".localhost") || raw.endsWith(".local")) {
+    return true;
+  }
+  const bare = raw.replace(/^\[|\]$/g, "");
+  if (bare === "::1") return true;
+  if (bare.startsWith("fe80:")) return true;
+  if (bare.startsWith("fc") || bare.startsWith("fd")) return true;
+  if (looksLikeIpv4(bare)) {
+    const parts = bare.split(".").map(Number);
+    const [a, b] = parts;
+    if (a === 127 || a === 10 || a === 0) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+  }
+  return false;
+}
+
+function isBlockedHttpUrl(urlStr) {
+  try {
+    const u = new URL(String(urlStr));
+    return isBlockedProbeHost(u.hostname);
+  } catch {
+    return true;
+  }
+}
+
 function parseWanTargets(raw, fallback = WAN_TARGETS) {
   if (Array.isArray(raw) && raw.length) {
     const out = [];
@@ -472,6 +504,8 @@ module.exports = {
   checkHttp,
   parseWanTargets,
   classifyDomain,
+  isBlockedProbeHost,
+  isBlockedHttpUrl,
   getActiveAdapter,
   probe,
 };

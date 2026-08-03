@@ -4,8 +4,10 @@ const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
 const initSqlJs = require("sql.js");
+const { isBlockedProbeHost, isBlockedHttpUrl } = require("./netcheck");
 
 const APP_DIR_NAME = "InternetDowntimeTracker";
+const PERSIST_DEBOUNCE_MS = 10_000;
 
 const DEFAULT_SETTINGS = {
   poll_interval_s: 5,
@@ -93,9 +95,21 @@ function normalizeSettingValue(key, value) {
       try {
         const u = new URL(s);
         if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+        if (isBlockedHttpUrl(s)) return null;
       } catch {
         return null;
       }
+      return s;
+    }
+    if (key === "dns_resolver") {
+      if (isBlockedProbeHost(s)) return null;
+      return s;
+    }
+    for (const part of s.split(",")) {
+      const bit = part.trim();
+      if (!bit) continue;
+      const host = bit.split(":")[0].trim();
+      if (isBlockedProbeHost(host)) return null;
     }
     return s;
   }
@@ -131,7 +145,11 @@ function dbPath() {
 function wasmPath() {
   // sql.js exports block package.json; resolve main then sibling wasm.
   const main = require.resolve("sql.js");
-  return path.join(path.dirname(main), "sql-wasm.wasm");
+  const normal = path.join(path.dirname(main), "sql-wasm.wasm");
+  if (fs.existsSync(normal)) return normal;
+  const unpacked = normal.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+  if (fs.existsSync(unpacked)) return unpacked;
+  return normal;
 }
 
 function rowsFromExec(result) {
@@ -154,8 +172,10 @@ class TrackerDb {
   constructor(db, filePath) {
     this.db = db;
     this.path = filePath;
+    this._persistTimer = null;
+    this._persistDirty = false;
     this._initSchema();
-    this._persist();
+    this._persistImmediate();
   }
 
   static async open(filePath = null) {
@@ -173,7 +193,7 @@ class TrackerDb {
     return new TrackerDb(db, fp);
   }
 
-  _persist() {
+  _persistNow() {
     const data = Buffer.from(this.db.export());
     const dir = path.dirname(this.path);
     fs.mkdirSync(dir, { recursive: true });
@@ -199,6 +219,39 @@ class TrackerDb {
         throw err2;
       }
     }
+  }
+
+  _schedulePersist() {
+    this._persistDirty = true;
+    if (this._persistTimer) return;
+    this._persistTimer = setTimeout(() => {
+      this._persistTimer = null;
+      this._flushPersist();
+    }, PERSIST_DEBOUNCE_MS);
+  }
+
+  _flushPersist() {
+    if (!this._persistDirty) return;
+    this._persistDirty = false;
+    this._persistNow();
+  }
+
+  _persistImmediate() {
+    if (this._persistTimer) {
+      clearTimeout(this._persistTimer);
+      this._persistTimer = null;
+    }
+    this._persistDirty = false;
+    this._persistNow();
+  }
+
+  /** Flush any debounced probe writes (e.g. before quit). */
+  flushPersist() {
+    this._persistImmediate();
+  }
+
+  _persist() {
+    this._schedulePersist();
   }
 
   _run(sql, params = []) {
@@ -324,7 +377,7 @@ class TrackerDb {
 
   close() {
     try {
-      this._persist();
+      this._persistImmediate();
     } finally {
       this.db.close();
     }
@@ -355,7 +408,7 @@ class TrackerDb {
         [key, JSON.stringify(normalized)]
       );
     }
-    this._persist();
+    this._persistImmediate();
     return this.getSettings();
   }
 
@@ -373,7 +426,7 @@ class TrackerDb {
       [typ, ts, notes, snap]
     );
     const row = this._get("SELECT last_insert_rowid() AS id");
-    this._persist();
+    this._persistImmediate();
     return Number(row.id);
   }
 
@@ -382,7 +435,7 @@ class TrackerDb {
     if (!Number.isFinite(id)) return null;
     const text = notes == null ? null : String(notes).slice(0, 2000);
     this._run("UPDATE outages SET notes=? WHERE id=?", [text, id]);
-    this._persist();
+    this._persistImmediate();
     return this._get("SELECT * FROM outages WHERE id=?", [id]);
   }
 
@@ -402,7 +455,7 @@ class TrackerDb {
     const merged = { ...cur, ...(typeof patch === "object" ? patch : {}) };
     const text = encodeSnapshotJson(merged);
     this._run("UPDATE outages SET snapshot_json=? WHERE id=?", [text, id]);
-    this._persist();
+    this._persistImmediate();
     return this._get("SELECT * FROM outages WHERE id=?", [id]);
   }
 
@@ -437,7 +490,7 @@ class TrackerDb {
       "UPDATE outages SET ended_at=?, duration_ms=?, notes=?, snapshot_json=? WHERE id=?",
       [ts, durationMs, merged, snapText, outageId]
     );
-    this._persist();
+    this._persistImmediate();
   }
 
   getOpenOutages() {
@@ -540,7 +593,7 @@ class TrackerDb {
     }
     const cutoff = Date.now() / 1000 - days * 86400;
     this._run("DELETE FROM probes WHERE timestamp < ?", [cutoff]);
-    this._persist();
+    this._persistImmediate();
     return 0;
   }
 
@@ -573,7 +626,7 @@ class TrackerDb {
       ]
     );
     const idRow = this._get("SELECT last_insert_rowid() AS id");
-    this._persist();
+    this._persistImmediate();
     return this.getSpeedTest(idRow.id);
   }
 
@@ -597,9 +650,10 @@ class TrackerDb {
       params.push(toTs);
     }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    const lim = Math.max(1, Math.min(1000, Number(limit) || 100));
+    const lim = Math.max(1, Math.min(1000, Math.trunc(Number(limit)) || 100));
+    params.push(lim);
     return this._all(
-      `SELECT * FROM speed_tests ${where} ORDER BY tested_at DESC LIMIT ${lim}`,
+      `SELECT * FROM speed_tests ${where} ORDER BY tested_at DESC LIMIT ?`,
       params
     );
   }

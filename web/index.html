@@ -49,65 +49,69 @@
         Monitoring looks stalled — last probe is older than expected. Check Pause, or restart the app.
       </div>
 
-      <div class="status-hero" id="statusHero">
-        <div class="status-hero-main">
-          <div class="status-kicker">Live connectivity</div>
-          <div class="status-title" id="statusTitle">Checking…</div>
-          <div class="status-sub muted" id="statusSub"></div>
-          <div class="adapter-line muted" id="adapterLine" hidden></div>
+      <div class="overview-top">
+        <div class="status-hero" id="statusHero">
+          <div class="status-hero-main">
+            <div class="status-kicker">Live connectivity</div>
+            <div class="status-title" id="statusTitle">Checking…</div>
+            <div class="status-sub muted" id="statusSub"></div>
+            <div class="adapter-line muted" id="adapterLine" hidden></div>
+          </div>
+          <div class="status-hero-meta">
+            <div class="meta-chip"><span class="meta-label">Open</span> <span id="openCount">0</span></div>
+            <div class="meta-chip"><span class="meta-label">Gateway</span> <span id="heroGateway">—</span></div>
+            <div class="meta-chip"><span class="meta-label">Latency</span> <span id="heroLatency">—</span></div>
+          </div>
         </div>
-        <div class="status-hero-meta">
-          <div class="meta-chip"><span class="meta-label">Open</span> <span id="openCount">0</span></div>
-          <div class="meta-chip"><span class="meta-label">Gateway</span> <span id="heroGateway">—</span></div>
-          <div class="meta-chip"><span class="meta-label">Latency</span> <span id="heroLatency">—</span></div>
-        </div>
-      </div>
 
-      <div class="quality-strip" id="qualityStrip" aria-live="polite">
-        <div class="quality-kicker">Live quality</div>
-        <div class="quality-body">
-          <div class="meta-chip quality-chip">
-            <span class="meta-label">Loss</span>
-            <span id="qualityLoss">—</span>
+        <div class="overview-side">
+          <div class="quality-strip" id="qualityStrip" aria-live="polite">
+            <div class="quality-kicker">Live quality</div>
+            <div class="quality-body">
+              <div class="meta-chip quality-chip">
+                <span class="meta-label">Loss</span>
+                <span id="qualityLoss">—</span>
+              </div>
+              <div class="meta-chip quality-chip">
+                <span class="meta-label">Jitter</span>
+                <span id="qualityJitter">—</span>
+              </div>
+              <div class="meta-chip quality-chip">
+                <span class="meta-label">Avg</span>
+                <span id="qualityAvg">—</span>
+              </div>
+              <div class="meta-chip quality-chip">
+                <span class="meta-label">Last</span>
+                <span id="qualityLast">—</span>
+              </div>
+            </div>
+            <p class="quality-empty muted" id="qualityEmpty">Rolling ping burst updates every ~30s — informational only (never opens outages).</p>
           </div>
-          <div class="meta-chip quality-chip">
-            <span class="meta-label">Jitter</span>
-            <span id="qualityJitter">—</span>
-          </div>
-          <div class="meta-chip quality-chip">
-            <span class="meta-label">Avg</span>
-            <span id="qualityAvg">—</span>
-          </div>
-          <div class="meta-chip quality-chip">
-            <span class="meta-label">Last</span>
-            <span id="qualityLast">—</span>
-          </div>
-        </div>
-        <p class="quality-empty muted" id="qualityEmpty">Rolling ping burst updates every ~30s — informational only (never opens outages).</p>
-      </div>
 
-      <div class="provider-strip is-empty" id="providerStrip" aria-live="polite">
-        <div class="provider-kicker">Provider</div>
-        <div class="provider-body">
-          <div class="provider-main">
-            <div class="provider-isp" id="providerIsp">—</div>
-            <div class="provider-server muted" id="providerServer"></div>
-          </div>
-          <div class="provider-meta">
-            <div class="meta-chip provider-chip" id="providerPingChip" hidden>
-              <span class="meta-label">Ping</span>
-              <span id="providerPing">—</span>
+          <div class="provider-strip is-empty" id="providerStrip" aria-live="polite">
+            <div class="provider-kicker">Provider</div>
+            <div class="provider-body">
+              <div class="provider-main">
+                <div class="provider-isp" id="providerIsp">—</div>
+                <div class="provider-server muted" id="providerServer"></div>
+              </div>
+              <div class="provider-meta">
+                <div class="meta-chip provider-chip" id="providerPingChip" hidden>
+                  <span class="meta-label">Ping</span>
+                  <span id="providerPing">—</span>
+                </div>
+                <div class="meta-chip provider-chip" id="providerWhenChip" hidden>
+                  <span class="meta-label">Measured</span>
+                  <span id="providerWhen">—</span>
+                </div>
+              </div>
             </div>
-            <div class="meta-chip provider-chip" id="providerWhenChip" hidden>
-              <span class="meta-label">Measured</span>
-              <span id="providerWhen">—</span>
-            </div>
+            <p class="provider-empty muted" id="providerEmpty">
+              Run a speed test to detect ISP and closest server —
+              <button type="button" class="text-link" data-goto-tab="speed">open Speed tab</button>
+            </p>
           </div>
         </div>
-        <p class="provider-empty muted" id="providerEmpty">
-          Run a speed test to detect ISP and closest server —
-          <button type="button" class="text-link" data-goto-tab="speed">open Speed tab</button>
-        </p>
       </div>
 
       <div class="timeline-wrap" id="timelineWrap">
@@ -158,12 +162,16 @@
       <div class="charts-grid">
         <div class="chart-wrap">
           <h2>Last 24h downtime by hour</h2>
-          <canvas id="sparkChart" height="120"></canvas>
+          <div class="chart-box chart-box-sm">
+            <canvas id="sparkChart"></canvas>
+          </div>
         </div>
         <div class="chart-wrap">
           <h2>Probe latency (6h)</h2>
-          <canvas id="latencyChart" height="120"></canvas>
-          <p class="chart-empty muted" id="latencyEmpty" hidden>No latency samples yet — waiting for successful LAN probes.</p>
+          <div class="chart-box chart-box-sm">
+            <canvas id="latencyChart"></canvas>
+            <p class="chart-empty muted" id="latencyEmpty" hidden>No latency samples yet — waiting for successful LAN probes.</p>
+          </div>
         </div>
       </div>
 
@@ -229,6 +237,7 @@
         <button type="submit" class="btn">Apply</button>
         <button type="button" class="btn btn-secondary" id="historyReset">Reset (last 7 days → now)</button>
         <span class="muted" id="historyMeta" aria-live="polite"></span>
+        <span class="sr-only" id="notesLive" aria-live="polite"></span>
       </form>
       <div class="table-wrap">
         <table>
@@ -248,14 +257,23 @@
     </section>
 
     <section id="panel-patterns" class="panel" role="tabpanel" aria-labelledby="tab-patterns" hidden>
+      <p class="patterns-summary" id="patternsSummary" aria-live="polite">
+        Loading pattern summary…
+      </p>
       <div class="charts-grid">
         <div class="chart-wrap">
           <h2>Outages by hour of day</h2>
-          <canvas id="hourChart" height="160"></canvas>
+          <div class="chart-box">
+            <canvas id="hourChart"></canvas>
+            <p class="chart-empty muted" id="hourEmpty" hidden>No outage starts in the last 30 days.</p>
+          </div>
         </div>
         <div class="chart-wrap">
           <h2>Outages by day of week</h2>
-          <canvas id="dowChart" height="160"></canvas>
+          <div class="chart-box">
+            <canvas id="dowChart"></canvas>
+            <p class="chart-empty muted" id="dowEmpty" hidden>No outage starts in the last 30 days.</p>
+          </div>
         </div>
       </div>
       <div class="table-wrap">
@@ -263,7 +281,7 @@
           <h2>Longest outages (30d)</h2>
           <span class="muted" id="longestMeta"></span>
         </div>
-        <p class="panel-lead muted">Filter and sort below. Notes save on Enter or blur.</p>
+        <p class="panel-lead muted">Filter and sort below. Notes save on Enter or blur. New outages get an automatic status note you can edit.</p>
         <form id="patternsFilters" class="filters">
           <label>Domain
             <select name="type">
@@ -349,31 +367,34 @@
         <span class="muted" id="speedStatus" aria-live="polite"></span>
       </div>
       <div class="stats stats-dense" id="speedLastCards">
-        <div class="stat">
+        <div class="stat has-tip pressable" tabindex="0" data-tip="speed-down">
           <div class="stat-label">Download</div>
           <div class="stat-value" id="speedDown">—</div>
           <div class="stat-sub">Mbps</div>
         </div>
-        <div class="stat">
+        <div class="stat has-tip pressable" tabindex="0" data-tip="speed-up">
           <div class="stat-label">Upload</div>
           <div class="stat-value" id="speedUp">—</div>
           <div class="stat-sub">Mbps</div>
         </div>
-        <div class="stat">
+        <div class="stat has-tip pressable" tabindex="0" data-tip="speed-ping">
           <div class="stat-label">Ping</div>
           <div class="stat-value" id="speedPing">—</div>
           <div class="stat-sub" id="speedJitter">jitter —</div>
         </div>
-        <div class="stat">
+        <div class="stat has-tip pressable" tabindex="0" data-tip="speed-loss">
           <div class="stat-label">Loss</div>
           <div class="stat-value" id="speedLoss">—</div>
+          <div class="stat-sub" id="speedLossHint">typical home &lt;1%</div>
           <div class="stat-sub" id="speedIsp"></div>
         </div>
       </div>
       <div class="chart-wrap">
         <h2>Throughput trend</h2>
-        <canvas id="speedTrendChart" height="140"></canvas>
-        <p class="chart-empty muted" id="speedTrendEmpty" hidden>No speed tests yet. Run a test to build history.</p>
+        <div class="chart-box">
+          <canvas id="speedTrendChart"></canvas>
+          <p class="chart-empty muted" id="speedTrendEmpty" hidden>No speed tests yet. Run a test to build history.</p>
+        </div>
       </div>
       <div class="table-wrap">
         <h2>Speed test history</h2>
@@ -410,29 +431,29 @@
           </label>
           <label class="check">
             <input type="checkbox" name="paused" id="settingsPaused" />
-            Pause monitoring
+            <span class="check-text">Pause monitoring</span>
           </label>
           <label class="check">
             <input type="checkbox" name="toast_alerts" />
-            Windows toast alerts on outage open/close
+            <span class="check-text">Windows toast alerts on outage open/close</span>
           </label>
           <label class="check">
             <input type="checkbox" name="autostart" />
-            Start with Windows
+            <span class="check-text">Start with Windows</span>
           </label>
           <p class="field-hint" id="autostartHint">
             Registers this app to run at sign-in (current exe path). Prefer the
             installed Setup build, or keep the portable .exe in a fixed folder —
             don’t move/rename it after enabling.
           </p>
-          <label class="check wide">
+          <label class="check">
             <input type="checkbox" name="minimize_to_tray" />
-            Minimize to tray when closed or minimized
-            <span class="field-hint">
-              On (default): the X button and minimize hide the dashboard to the tray — monitoring keeps running. Use tray → Quit to exit.
-              Off: minimize stays on the taskbar; closing the window quits the app.
-            </span>
+            <span class="check-text">Minimize to tray when closed or minimized</span>
           </label>
+          <p class="field-hint">
+            On (default): the X button and minimize hide the dashboard to the tray — monitoring keeps running. Use tray → Quit to exit.
+            Off: minimize stays on the taskbar; closing the window quits the app.
+          </p>
         </fieldset>
         <fieldset>
           <legend>Probe targets</legend>

@@ -215,6 +215,9 @@ function normalizeRawEvents(rawList) {
   return out;
 }
 
+/** @type {null | typeof runPowerShell} */
+let runPowerShellOverride = null;
+
 function runPowerShell(script, timeoutMs) {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -350,8 +353,9 @@ async function scanWindowsLogs(params = {}) {
   const sourcesTried = QUERY_SPECS.map((s) => s.label);
 
   let raw;
+  const runPs = runPowerShellOverride || runPowerShell;
   try {
-    const { stdout, stderr } = await runPowerShell(buildScanScript(fromIso, toIso), SCAN_TIMEOUT_MS);
+    const { stdout, stderr } = await runPs(buildScanScript(fromIso, toIso), SCAN_TIMEOUT_MS);
     const text = stdout.trim();
     if (!text) {
       warnings.push(stderr.trim() || "No events returned (logs empty or inaccessible without elevation).");
@@ -369,7 +373,17 @@ async function scanWindowsLogs(params = {}) {
     }
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
-    throw new Error(msg);
+    warnings.push(msg);
+    return {
+      from,
+      to,
+      scanned_at: Date.now() / 1000,
+      gaps: [],
+      count: 0,
+      event_count: 0,
+      sources: sourcesTried,
+      warnings,
+    };
   }
 
   const events = normalizeRawEvents(raw);
@@ -448,6 +462,13 @@ module.exports = {
   getOrScan,
   getCached,
   clearCache,
+  powershellExe,
+  setRunPowerShellForTest: (fn) => {
+    runPowerShellOverride = fn;
+  },
+  resetRunPowerShellForTest: () => {
+    runPowerShellOverride = null;
+  },
   DEFAULT_DAYS,
   MAX_DAYS,
   MAX_GAPS,

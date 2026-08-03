@@ -91,3 +91,7 @@ temp/
 
 # Local agent review prompt packs (not product docs)
 docs/code-review-prompts/
+
+dist-fresh/
+dist-build/
+dist-verify/

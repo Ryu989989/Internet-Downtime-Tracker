@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const https = require("https");
 const { createWriteStream } = require("fs");
+const { powershellExe } = require("./system-logs");
 
 // Official Ookla Windows x64 CLI package (personal / non-commercial use per Ookla terms).
 const OFFICIAL_WIN64_ZIP =
@@ -41,11 +42,11 @@ function sha256File(filePath) {
   return hash.digest("hex");
 }
 
-function verifyOfficialZip(filePath) {
+function verifyOfficialZip(filePath, expectedSha256 = OFFICIAL_WIN64_SHA256) {
   const digest = sha256File(filePath);
-  if (digest !== OFFICIAL_WIN64_SHA256) {
+  if (digest !== expectedSha256) {
     throw new Error(
-      `Official CLI zip failed integrity check (got ${digest}, expected ${OFFICIAL_WIN64_SHA256})`
+      `Official CLI zip failed integrity check (got ${digest}, expected ${expectedSha256})`
     );
   }
   return digest;
@@ -88,6 +89,31 @@ function isTrustedCliPath(cliPath, userDataDir) {
 
 /** @type {import('child_process').ChildProcess | null} */
 let running = null;
+/** True after cancelRun until the child process closes. */
+let cancelRequested = false;
+
+function speedtestChildEnv() {
+  const pick = (key) => {
+    const v = process.env[key];
+    return v != null && v !== "" ? v : undefined;
+  };
+  const env = {};
+  for (const key of [
+    "SystemRoot",
+    "PATH",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ComSpec",
+  ]) {
+    const v = pick(key);
+    if (v !== undefined) env[key] = v;
+  }
+  return env;
+}
 
 function round(n, digits = 2) {
   if (n == null || Number.isNaN(Number(n))) return null;
@@ -270,7 +296,7 @@ async function installOfficialCli(userDataDir) {
 
   await new Promise((resolve, reject) => {
     const ps = spawn(
-      "powershell.exe",
+      powershellExe(),
       [
         "-NoProfile",
         "-NonInteractive",
@@ -328,14 +354,22 @@ function runCli(exePath, args, timeoutMs) {
       reject(new Error("A speed test is already running"));
       return;
     }
+    cancelRequested = false;
     const child = spawn(exePath, args, {
       windowsHide: true,
-      env: { ...process.env },
+      env: speedtestChildEnv(),
     });
     running = child;
     let stdout = "";
     let stderr = "";
     let settled = false;
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      running = null;
+      fn();
+    };
     const timer = setTimeout(() => {
       if (settled) return;
       try {
@@ -343,9 +377,9 @@ function runCli(exePath, args, timeoutMs) {
       } catch {
         /* ignore */
       }
-      settled = true;
-      running = null;
-      reject(new Error(`Speed test timed out after ${Math.round(timeoutMs / 1000)}s`));
+      finish(() => {
+        reject(new Error(`Speed test timed out after ${Math.round(timeoutMs / 1000)}s`));
+      });
     }, timeoutMs);
 
     child.stdout.on("data", (c) => {
@@ -355,34 +389,36 @@ function runCli(exePath, args, timeoutMs) {
       stderr += c.toString("utf8");
     });
     child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      running = null;
-      reject(err);
+      finish(() => reject(err));
     });
     child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      running = null;
-      if (code !== 0 && !stdout.trim()) {
-        reject(new Error(stderr.trim() || `speedtest exited with code ${code}`));
+      if (cancelRequested) {
+        finish(() => {
+          const err = new Error("Speed test cancelled");
+          err.code = "CANCELLED";
+          reject(err);
+        });
         return;
       }
-      resolve({ stdout, stderr, code });
+      finish(() => {
+        if (code !== 0 && !stdout.trim()) {
+          reject(new Error(stderr.trim() || `speedtest exited with code ${code}`));
+          return;
+        }
+        resolve({ stdout, stderr, code });
+      });
     });
   });
 }
 
 function cancelRun() {
   if (!running) return { cancelled: false };
+  cancelRequested = true;
   try {
     running.kill();
   } catch {
     /* ignore */
   }
-  running = null;
   return { cancelled: true };
 }
 
@@ -418,6 +454,8 @@ module.exports = {
   installOfficialCli,
   runSpeedTest,
   cancelRun,
+  runCli,
+  speedtestChildEnv,
   isAllowedDownloadUrl,
   isTrustedCliPath,
   verifyOfficialZip,

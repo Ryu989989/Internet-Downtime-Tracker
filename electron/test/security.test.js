@@ -144,7 +144,16 @@ describe("Ookla download trust (H3/M10)", () => {
     // Temporarily not equal to official pin — still rejects.
     assert.notEqual(digest, OFFICIAL_WIN64_SHA256);
     assert.throws(() => verifyOfficialZip(good), /integrity check/);
+    assert.equal(verifyOfficialZip(good, digest), digest);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects private probe targets in settings (SSRF)", () => {
+    assert.equal(normalizeSettingValue("http_url", "http://127.0.0.1/"), null);
+    assert.equal(normalizeSettingValue("http_url", "http://192.168.1.1/"), null);
+    assert.equal(normalizeSettingValue("dns_resolver", "127.0.0.1"), null);
+    assert.equal(normalizeSettingValue("wan_targets", "192.168.0.1:443"), null);
+    assert.equal(normalizeSettingValue("wan_targets", "1.1.1.1:443"), "1.1.1.1:443");
   });
 });
 

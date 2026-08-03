@@ -1,8 +1,12 @@
 "use strict";
 
-const { describe, it } = require("node:test");
+const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { parseSpeedtestJson, bandwidthToMbps } = require("../speedtest");
+const { parseSpeedtestJson, bandwidthToMbps, runCli, cancelRun, getStatus, verifyOfficialZip } = require("../speedtest");
+const crypto = require("crypto");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 describe("bandwidthToMbps", () => {
   it("converts bytes/sec to Mbps", () => {
@@ -46,5 +50,36 @@ describe("parseSpeedtestJson", () => {
     });
     assert.equal(row.packet_loss, null);
     assert.equal(row.download_mbps, 8);
+  });
+});
+
+describe("runCli cancel lifecycle", () => {
+  it("blocks overlap until child closes and rejects with CANCELLED", async () => {
+    const node = process.execPath;
+    const script = "setInterval(()=>{}, 1000)";
+    const run = runCli(node, ["-e", script], 60_000);
+    await new Promise((r) => setImmediate(r));
+    const status = await getStatus(os.tmpdir());
+    assert.equal(status.running, true);
+    assert.equal(cancelRun().cancelled, true);
+    await assert.rejects(
+      () => runCli(node, ["-e", "process.exit(0)"], 5000),
+      /already running/
+    );
+    await assert.rejects(run, (err) => err.code === "CANCELLED");
+    const done = await runCli(node, ["-e", "process.exit(0)"], 5000);
+    assert.equal(done.code, 0);
+  });
+});
+
+describe("verifyOfficialZip happy path", () => {
+  it("accepts file matching injected pin", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "idt-zip-ok-"));
+    const file = path.join(dir, "ok.zip");
+    const payload = Buffer.from("fixture-zip-bytes");
+    fs.writeFileSync(file, payload);
+    const pin = crypto.createHash("sha256").update(payload).digest("hex");
+    assert.equal(verifyOfficialZip(file, pin), pin);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

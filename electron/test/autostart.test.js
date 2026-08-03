@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { resolvedExePath } = require("../autostart");
+const { resolvedExePath, registryCommandMatchesExe } = require("../autostart");
 
 describe("autostart resolvedExePath", () => {
   it("uses PORTABLE_EXECUTABLE_FILE when present and exists", () => {
@@ -34,5 +34,21 @@ describe("autostart resolvedExePath", () => {
     } finally {
       if (prev != null) process.env.PORTABLE_EXECUTABLE_FILE = prev;
     }
+  });
+});
+
+describe("autostart registry path match", () => {
+  it("registryCommandMatchesExe requires exact exe path", () => {
+    const exe = "C:\\Apps\\Internet Downtime Tracker.exe";
+    const stale = "C:\\Old\\Internet Downtime Tracker.exe";
+    assert.equal(
+      registryCommandMatchesExe(`"${exe}"`, exe),
+      true
+    );
+    assert.equal(
+      registryCommandMatchesExe(`"${stale}"`, exe),
+      false
+    );
+    assert.equal(registryCommandMatchesExe(`"${exe}" "C:\\proj"`, exe), true);
   });
 });

@@ -1,12 +1,15 @@
 "use strict";
 
-const { describe, it } = require("node:test");
+const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   mergeGaps,
   eventsToGaps,
   normalizeRawEvents,
   classifyEvent,
+  scanWindowsLogs,
+  setRunPowerShellForTest,
+  resetRunPowerShellForTest,
 } = require("../system-logs");
 
 describe("classifyEvent", () => {
@@ -101,5 +104,19 @@ describe("normalizeRawEvents", () => {
     assert.equal(events[0].kind, "disconnect");
     assert.equal(events[1].kind, "connect");
     assert.ok(events[0].time > 0);
+  });
+});
+
+describe("scanWindowsLogs soft-fail", () => {
+  after(() => {
+    resetRunPowerShellForTest();
+  });
+
+  it("returns empty gaps with warning when PowerShell fails", async () => {
+    setRunPowerShellForTest(() => Promise.reject(new Error("PS unavailable")));
+    const result = await scanWindowsLogs({ days: 1 });
+    assert.deepEqual(result.gaps, []);
+    assert.equal(result.count, 0);
+    assert.ok(result.warnings.some((w) => /PS unavailable/i.test(w)));
   });
 });

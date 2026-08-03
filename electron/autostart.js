@@ -68,6 +68,28 @@ function setElectron(enabled) {
   app.setLoginItemSettings(opts);
 }
 
+function extractRegistryCommand(regQueryOutput) {
+  if (!regQueryOutput || typeof regQueryOutput !== "string") return null;
+  for (const line of regQueryOutput.split(/\r?\n/)) {
+    if (!line.includes(VALUE_NAME)) continue;
+    const match = line.match(/REG_SZ\s+(.*)$/i);
+    if (match) return match[1].trim();
+  }
+  return null;
+}
+
+/** True when the Run-key value points at the current stable exe path. */
+function registryCommandMatchesExe(regValue, exePath) {
+  if (!regValue || !exePath) return false;
+  const quoted = regValue.match(/^"([^"]+)"/);
+  if (!quoted) return false;
+  try {
+    return path.resolve(quoted[1]) === path.resolve(exePath);
+  } catch {
+    return false;
+  }
+}
+
 function isEnabledRegistry() {
   if (process.platform !== "win32") return false;
   try {
@@ -77,16 +99,10 @@ function isEnabledRegistry() {
       ["query", `HKCU\\${RUN_KEY}`, "/v", VALUE_NAME],
       { windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
     );
-    if (!out.includes(VALUE_NAME)) return false;
-    // Treat as enabled only if the registered command still points at an existing file.
-    try {
-      const exe = resolvedExePath();
-      const base = path.basename(exe).toLowerCase();
-      if (base && out.toLowerCase().includes(base.toLowerCase())) return true;
-    } catch {
-      /* fall through */
-    }
-    return true;
+    const regValue = extractRegistryCommand(out);
+    if (!regValue) return false;
+    const exe = resolvedExePath();
+    return registryCommandMatchesExe(regValue, exe);
   } catch {
     return false;
   }
@@ -168,5 +184,7 @@ module.exports = {
   setEnabled,
   syncFromSettings,
   resolvedExePath,
+  registryCommandMatchesExe,
+  extractRegistryCommand,
   VALUE_NAME,
 };

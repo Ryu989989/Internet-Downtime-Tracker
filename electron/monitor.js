@@ -44,6 +44,29 @@ function buildIncidentSnapshot(state, type) {
   };
 }
 
+/** Human-readable note captured when an outage opens (for techs / history). */
+function buildAutoOutageNote(state, type) {
+  const flag = (ok) => (ok === true ? "up" : ok === false ? "down" : "unknown");
+  const layers = `LAN ${flag(state.lan_ok)}, WAN ${flag(state.wan_ok)}, DNS ${flag(state.dns_ok)}, HTTP ${flag(state.http_ok)}`;
+  const gw = state.gateway ? ` Gateway ${state.gateway}.` : "";
+  const lat =
+    state.latency_ms != null && Number.isFinite(Number(state.latency_ms))
+      ? ` Latency ${Math.round(Number(state.latency_ms))} ms.`
+      : "";
+  switch (String(type || "").toLowerCase()) {
+    case "lan":
+      return `Auto: LAN/gateway unreachable — local network path failed.${gw}${lat} Upper layers (WAN/DNS/HTTP) are not opened while LAN is down. Status: ${layers}.`;
+    case "wan":
+      return `Auto: WAN failed while LAN stayed up — local network OK; problem is past the gateway (ISP/upstream).${gw}${lat} Status: ${layers}.`;
+    case "dns":
+      return `Auto: DNS failed while LAN and WAN were up — name resolution problem (resolver or DNS path).${gw} Status: ${layers}.`;
+    case "http":
+      return `Auto: HTTP check failed while LAN, WAN, and DNS were up — web path issue or captive portal. Status: ${layers}.`;
+    default:
+      return `Auto: ${type} outage opened. Status: ${layers}.`;
+  }
+}
+
 class Monitor {
   constructor(db, { probeFn = null, onState = null, onOutage = null } = {}) {
     this.db = db;
@@ -82,6 +105,8 @@ class Monitor {
     this._qualityRunning = false;
     /** Skip closing open outages for N successful layer updates after resume. */
     this._resumeGraceTicks = 0;
+    /** Bumped on pause/suppress so in-flight probes are ignored after await. */
+    this._probeGen = 0;
   }
 
   start() {
@@ -100,6 +125,7 @@ class Monitor {
 
   pause() {
     this.state.paused = true;
+    this._probeGen += 1;
     this._emit();
   }
 
@@ -125,6 +151,7 @@ class Monitor {
       this._suppressCooldownUntil = 0;
       this._resetFailStreaks();
       this.state.probe_suppressed = true;
+      this._probeGen += 1;
     } else {
       this._suppressProbes = false;
       this._suppressCooldownUntil = Date.now() + Math.max(0, Number(cooldownMs) || 0);
@@ -302,7 +329,16 @@ class Monitor {
       const debounce = Number(settings.debounce_fail_count ?? 2);
       if (!this.state.paused && !this._suppressProbes) {
         try {
+          const gen = this._probeGen;
           const result = await this._runProbe();
+          if (
+            this._stopped ||
+            this.state.paused ||
+            this._suppressProbes ||
+            gen !== this._probeGen
+          ) {
+            return;
+          }
           const inCooldown = Date.now() < this._suppressCooldownUntil;
           // During cool-down: update live status, apply successes only (no new outages).
           this._applyProbe(result, debounce, true, { successesOnly: inCooldown });
@@ -425,7 +461,8 @@ class Monitor {
     this.state[streakKey] += 1;
     if (this.state[openKey] == null && this.state[streakKey] >= debounceFail) {
       const snap = buildIncidentSnapshot(this.state, type);
-      const id = this.db.openOutage(type, now, null, { at_open: snap });
+      const note = buildAutoOutageNote(this.state, type);
+      const id = this.db.openOutage(type, now, note, { at_open: snap });
       this.state[openKey] = id;
       this._notifyOutage({ action: "open", type, id, started_at: now, snapshot: snap });
     }
@@ -436,6 +473,7 @@ module.exports = {
   Monitor,
   OUTAGE_TYPES,
   buildIncidentSnapshot,
+  buildAutoOutageNote,
   QUALITY_EVERY_N,
   isMonitorStale,
 };

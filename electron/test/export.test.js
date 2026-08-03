@@ -137,4 +137,18 @@ describe("export CSV / HTML", () => {
     );
     assert.match(csv, /,1\r?\n$/);
   });
+
+  it("escapes notes with commas, quotes, and newlines", () => {
+    const csv = outagesToCsv([
+      {
+        id: 3,
+        type: "http",
+        started_at: 1_700_000_000,
+        ended_at: 1_700_000_030,
+        duration_ms: 30000,
+        notes: 'line1, "quoted"\nline2',
+      },
+    ]);
+    assert.match(csv, /"line1, ""quoted""\nline2"/);
+  });
 });
