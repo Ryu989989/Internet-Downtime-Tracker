@@ -435,12 +435,22 @@ function registerIpc() {
   const userData = () => app.getPath("userData");
   safeHandle("api:speedtest:status", () => speedtest.getStatus(userData()));
   safeHandle("api:speedtest:history", (_e, params = {}) => {
-    const rows = db.listSpeedTests({
-      fromTs: params.from != null ? Number(params.from) : null,
-      toTs: params.to != null ? Number(params.to) : null,
-      limit: params.limit != null ? Number(params.limit) : 100,
-    });
-    return { tests: rows, count: rows.length, latest: db.latestSpeedTest() };
+    try {
+      const rows = db.listSpeedTests({
+        fromTs: params.from != null ? Number(params.from) : null,
+        toTs: params.to != null ? Number(params.to) : null,
+        limit: params.limit != null ? Number(params.limit) : 100,
+      });
+      return { tests: rows, count: rows.length, latest: db.latestSpeedTest() };
+    } catch (err) {
+      console.error("speedtest history failed", err);
+      return {
+        tests: [],
+        count: 0,
+        latest: null,
+        error: String((err && err.message) || err || "database unavailable"),
+      };
+    }
   });
   safeHandle("api:speedtest:run", async () => {
     if (monitor) monitor.setProbeSuppress(true);

@@ -13,10 +13,10 @@ const cssVar = (name, fallback) => {
 };
 
 const chartTheme = {
-  color: () => cssVar("--muted", "#8b9bb0"),
+  color: () => cssVar("--muted", "#9aabba"),
   border: () => cssVar("--border", "#2c3a4a"),
   grid: "rgba(44, 58, 74, 0.5)",
-  tooltipBg: "#15202b",
+  tooltipBg: cssVar("--tooltip-bg", "#101923"),
   tooltipBorder: cssVar("--border", "#2c3a4a"),
   domain: {
     lan: "rgba(240, 113, 120, 0.55)",
@@ -32,15 +32,15 @@ const chartTheme = {
 function applyChartDefaults() {
   Chart.defaults.color = chartTheme.color();
   Chart.defaults.borderColor = chartTheme.border();
-  Chart.defaults.font.family = '"Segoe UI", "IBM Plex Sans", system-ui, sans-serif';
+  Chart.defaults.font.family = '"Segoe UI Variable", "Segoe UI", system-ui, sans-serif';
   Chart.defaults.devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
   Chart.defaults.animation = false;
   Chart.defaults.transitions = { active: { animation: { duration: 0 } } };
   Chart.defaults.plugins.tooltip.backgroundColor = chartTheme.tooltipBg;
   Chart.defaults.plugins.tooltip.borderColor = chartTheme.tooltipBorder;
   Chart.defaults.plugins.tooltip.borderWidth = 1;
-  Chart.defaults.plugins.tooltip.titleColor = "#e7eef6";
-  Chart.defaults.plugins.tooltip.bodyColor = "#8b9bb0";
+  Chart.defaults.plugins.tooltip.titleColor = cssVar("--text", "#edf3f8");
+  Chart.defaults.plugins.tooltip.bodyColor = cssVar("--muted", "#9aabba");
   Chart.defaults.plugins.tooltip.padding = 10;
   Chart.defaults.plugins.tooltip.cornerRadius = 6;
   Chart.defaults.plugins.tooltip.displayColors = false;
@@ -53,17 +53,17 @@ function prefersReducedMotion() {
 applyChartDefaults();
 
 const LAYER_TIPS = {
-  lan: { name: "LAN", meaning: "Router/gateway unreachable — local network." },
+  lan: { name: "LAN", meaning: "Router or gateway unreachable. This is a local network issue." },
   wan: { name: "WAN", meaning: "Public internet path failed while LAN is up (ISP/upstream)." },
   dns: { name: "DNS", meaning: "Name resolution failed while LAN+WAN are up. Checked only when lower layers are up." },
   http: { name: "HTTP", meaning: "Web connectivity failed while LAN+WAN+DNS are up (captive portal / HTTP path)." },
   "speed-down": {
     name: "Download",
-    meaning: "Last Ookla test download throughput (Mbps) — how fast data arrives from the internet.",
+    meaning: "Last Ookla test download throughput (Mbps), or how fast data arrives from the internet.",
   },
   "speed-up": {
     name: "Upload",
-    meaning: "Last Ookla test upload throughput (Mbps) — how fast you can send data upstream.",
+    meaning: "Last Ookla test upload throughput (Mbps), or how fast you can send data upstream.",
   },
   "speed-ping": {
     name: "Ping",
@@ -72,7 +72,7 @@ const LAYER_TIPS = {
   "speed-loss": {
     name: "Packet loss",
     meaning:
-      "Share of test packets that never arrived. Healthy home broadband is usually under 1% (ideally ~0%). Around 1–2% can cause lag or glitches; above ~2–5% is often noticeable on calls/games.",
+      "Share of test packets that never arrived. Healthy home broadband is usually under 1% (ideally ~0%). Around 1-2% can cause lag or glitches; above ~2-5% is often noticeable on calls and games.",
   },
 };
 
@@ -84,7 +84,7 @@ let chartTipAnchor = null;
 let chartTipScrollWired = false;
 
 function fmtDuration(ms) {
-  if (ms == null || Number.isNaN(ms)) return "—";
+  if (ms == null || Number.isNaN(ms)) return "-";
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -98,7 +98,7 @@ function fmtDuration(ms) {
 }
 
 function fmtTs(ts) {
-  if (ts == null) return "—";
+  if (ts == null) return "-";
   const d = new Date(ts * 1000);
   return d.toLocaleString(undefined, {
     year: "numeric",
@@ -148,12 +148,12 @@ function safeHttpsUrl(url) {
 }
 
 function fmtMbps(n) {
-  if (n == null || Number.isNaN(Number(n))) return "—";
+  if (n == null || Number.isNaN(Number(n))) return "-";
   return Number(n).toFixed(1);
 }
 
 function fmtMs(n) {
-  if (n == null || Number.isNaN(Number(n))) return "—";
+  if (n == null || Number.isNaN(Number(n))) return "-";
   return `${Number(n).toFixed(1)} ms`;
 }
 
@@ -286,13 +286,17 @@ function ensureChartTipEl() {
   el.id = "chartJsTooltip";
   el.className = "chart-js-tooltip";
   el.setAttribute("role", "tooltip");
+  el.hidden = true;
   document.body.appendChild(el);
   return el;
 }
 
 function hideChartTip() {
   const el = document.getElementById("chartJsTooltip");
-  if (el) el.classList.remove("is-open", "is-below");
+  if (el) {
+    el.classList.remove("is-open", "is-below");
+    el.hidden = true;
+  }
   if (chartTipAnchor) {
     chartTipAnchor.removeAttribute("aria-describedby");
     chartTipAnchor = null;
@@ -301,6 +305,7 @@ function hideChartTip() {
 
 function showChartTipHtml(html, clientX, clientY) {
   const el = ensureChartTipEl();
+  el.hidden = false;
   el.innerHTML = html;
   el.classList.remove("is-below");
   el.style.left = `${Math.max(8, Math.min(clientX, window.innerWidth - 8))}px`;
@@ -692,7 +697,7 @@ function ensureSpark(data) {
 function latencySparkLabels(n) {
   const count = Math.max(1, n);
   const start = Date.now() - 6 * 3600_000;
-  // Sparse labels only — Chart.js still plots all points; dense time strings overlap.
+  // Sparse labels only. Chart.js still plots all points; dense time strings overlap.
   const labelEvery = Math.max(1, Math.ceil(count / 6));
   return Array.from({ length: count }, (_, i) => {
     if (i % labelEvery !== 0 && i !== count - 1) return "";
@@ -805,7 +810,7 @@ function ensureHour(data) {
     hideChartTip();
     return;
   }
-  // Never touch Chart.js while Patterns is hidden — resize-to-zero blanks the canvas
+  // Never touch Chart.js while Patterns is hidden. Resize-to-zero blanks the canvas.
   // while tooltips still work off stale scales.
   if (!patternsPanelVisible() || !chartBoxReady(ctx)) return;
   const labels = Array.from({ length: 24 }, (_, i) => (i % 3 === 0 ? `${i}:00` : ""));
@@ -905,7 +910,7 @@ function ensureDow(data) {
 function speedTrendLabels(rows) {
   return rows.map((t) => {
     const d = new Date(Number(t.tested_at) * 1000);
-    if (Number.isNaN(d.getTime())) return "—";
+    if (Number.isNaN(d.getTime())) return "-";
     const md = `${d.getMonth() + 1}/${d.getDate()}`;
     const hm = `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
     return `${md} ${hm}`;
@@ -1037,7 +1042,7 @@ function buildSpeedTrendChart(tests) {
     const title = chart.data.labels?.[index] ?? "";
     const lines = (chart.data.datasets || []).map((ds) => {
       const v = ds.data?.[index];
-      if (v == null || Number.isNaN(Number(v))) return `${ds.label}: —`;
+      if (v == null || Number.isNaN(Number(v))) return `${ds.label}: -`;
       return `${ds.label}: ${Number(v).toFixed(1)} Mbps`;
     });
     return { title, lines };
@@ -1086,15 +1091,15 @@ function formatSnapshotBlock(label, snap) {
       ? `${a.type === "wifi" ? "Wi‑Fi" : a.type === "ethernet" ? "Ethernet" : "Adapter"} ${a.name}${
           a.signal != null ? ` ${a.signal}%` : ""
         }`
-      : "adapter —";
+      : "adapter -";
   const flags = [
-    `LAN ${snap.lan_ok === true ? "up" : snap.lan_ok === false ? "down" : "—"}`,
-    `WAN ${snap.wan_ok === true ? "up" : snap.wan_ok === false ? "down" : "—"}`,
-    `DNS ${snap.dns_ok === true ? "up" : snap.dns_ok === false ? "down" : "—"}`,
-    `HTTP ${snap.http_ok === true ? "up" : snap.http_ok === false ? "down" : "—"}`,
+    `LAN ${snap.lan_ok === true ? "up" : snap.lan_ok === false ? "down" : "-"}`,
+    `WAN ${snap.wan_ok === true ? "up" : snap.wan_ok === false ? "down" : "-"}`,
+    `DNS ${snap.dns_ok === true ? "up" : snap.dns_ok === false ? "down" : "-"}`,
+    `HTTP ${snap.http_ok === true ? "up" : snap.http_ok === false ? "down" : "-"}`,
   ].join(" · ");
-  const lat = snap.latency_ms != null ? `${Math.round(snap.latency_ms)} ms` : "—";
-  const gw = snap.gateway || "—";
+  const lat = snap.latency_ms != null ? `${Math.round(snap.latency_ms)} ms` : "-";
+  const gw = snap.gateway || "-";
   return `<div><strong>${escapeHtml(label)}</strong> · ${escapeHtml(adapter)} · gw ${escapeHtml(gw)} · ${escapeHtml(lat)}<br>${escapeHtml(flags)}</div>`;
 }
 
@@ -1137,11 +1142,11 @@ function renderOutageRows(tbody, rows, {
       : `<td>${o.notes ? escapeHtml(o.notes) : ""}</td>`;
     const expandBtn = expandable
       ? `<td>${hasSnap
-        ? `<button type="button" class="row-expand" aria-expanded="false" aria-label="Show incident snapshot" data-expand="${Number(o.id)}">▸</button>`
+        ? `<button type="button" class="row-expand" aria-expanded="false" aria-controls="snapshot-${Number(o.id)}" aria-label="Show incident snapshot" data-expand="${Number(o.id)}">▸</button>`
         : ""}</td>`
       : "";
     const detail = expandable && hasSnap
-      ? `<tr class="snapshot-row" hidden data-for="${Number(o.id)}">
+      ? `<tr class="snapshot-row" id="snapshot-${Number(o.id)}" hidden data-for="${Number(o.id)}">
           <td colspan="${cols}" class="snapshot-detail">
             ${formatSnapshotBlock("Opened", snap.at_open || (snap.adapter || snap.lan_ok != null ? snap : null))}
             ${formatSnapshotBlock("Closed", snap.at_close)}
@@ -1167,6 +1172,7 @@ function renderOutageRows(tbody, rows, {
         const open = detail.hidden;
         detail.hidden = !open;
         btn.setAttribute("aria-expanded", open ? "true" : "false");
+        btn.setAttribute("aria-label", open ? "Hide incident snapshot" : "Show incident snapshot");
         btn.textContent = open ? "▾" : "▸";
       });
     });
@@ -1190,7 +1196,10 @@ function renderOutageRows(tbody, rows, {
           input.removeAttribute("aria-invalid");
           input.classList.add("saved");
           const notesLive = $("#notesLive");
-          if (notesLive) notesLive.textContent = "";
+          if (notesLive) {
+            notesLive.textContent = "Note saved";
+            setTimeout(() => { notesLive.textContent = ""; }, 1500);
+          }
           setTimeout(() => input.classList.remove("saved"), 800);
         } catch (err) {
           console.error(err);
@@ -1276,7 +1285,7 @@ function paintProvider(provider) {
   const empty = $("#providerEmpty");
   if (empty) empty.hidden = !!has;
   if (!has) {
-    if ($("#providerIsp")) $("#providerIsp").textContent = "—";
+    if ($("#providerIsp")) $("#providerIsp").textContent = "-";
     if ($("#providerServer")) $("#providerServer").textContent = "";
     if ($("#providerPingChip")) $("#providerPingChip").hidden = true;
     if ($("#providerWhenChip")) $("#providerWhenChip").hidden = true;
@@ -1307,44 +1316,46 @@ function paintQuality(q) {
   const has = q && (q.loss_pct != null || q.jitter_ms != null || q.latency_avg_ms != null);
   strip.classList.toggle("has-data", !!has);
   if ($("#qualityLoss")) {
-    $("#qualityLoss").textContent = q && q.loss_pct != null ? `${q.loss_pct}%` : "—";
+    $("#qualityLoss").textContent = q && q.loss_pct != null ? `${q.loss_pct}%` : "-";
   }
   if ($("#qualityJitter")) {
-    $("#qualityJitter").textContent = q && q.jitter_ms != null ? `${q.jitter_ms} ms` : "—";
+    $("#qualityJitter").textContent = q && q.jitter_ms != null ? `${q.jitter_ms} ms` : "-";
   }
   if ($("#qualityAvg")) {
     $("#qualityAvg").textContent =
-      q && q.latency_avg_ms != null ? `${q.latency_avg_ms} ms` : "—";
+      q && q.latency_avg_ms != null ? `${q.latency_avg_ms} ms` : "-";
   }
   if ($("#qualityLast")) {
     $("#qualityLast").textContent =
-      q && q.latency_ms != null ? `${q.latency_ms} ms` : "—";
+      q && q.latency_ms != null ? `${q.latency_ms} ms` : "-";
   }
 }
 
+let lastAnnouncedStatus = "";
+
 function paintStatus(s) {
   if (!s) return;
-  setPill($("#pillLan"), `LAN ${s.lan_ok === true ? "UP" : s.lan_ok === false ? "DOWN" : "—"}`, s.lan_ok);
+  setPill($("#pillLan"), `LAN ${s.lan_ok === true ? "UP" : s.lan_ok === false ? "DOWN" : "-"}`, s.lan_ok);
   if (s.lan_ok === false) {
     $("#pillWan").textContent = `WAN ${s.wan_ok === true ? "UP" : "DOWN"}`;
     $("#pillWan").className = "pill has-tip " + (s.wan_ok ? "pill-ok" : "pill-amber");
   } else {
-    setPill($("#pillWan"), `WAN ${s.wan_ok === true ? "UP" : s.wan_ok === false ? "DOWN" : "—"}`, s.wan_ok);
+    setPill($("#pillWan"), `WAN ${s.wan_ok === true ? "UP" : s.wan_ok === false ? "DOWN" : "-"}`, s.wan_ok);
   }
   if ($("#pillDns")) {
     if (s.lan_ok !== true || s.wan_ok !== true) {
-      $("#pillDns").textContent = "DNS —";
+      $("#pillDns").textContent = "DNS -";
       $("#pillDns").className = "pill pill-unknown has-tip";
     } else {
-      setPill($("#pillDns"), `DNS ${s.dns_ok === true ? "UP" : s.dns_ok === false ? "DOWN" : "—"}`, s.dns_ok);
+      setPill($("#pillDns"), `DNS ${s.dns_ok === true ? "UP" : s.dns_ok === false ? "DOWN" : "-"}`, s.dns_ok);
     }
   }
   if ($("#pillHttp")) {
     if (s.lan_ok !== true || s.wan_ok !== true || s.dns_ok !== true) {
-      $("#pillHttp").textContent = "HTTP —";
+      $("#pillHttp").textContent = "HTTP -";
       $("#pillHttp").className = "pill pill-unknown has-tip";
     } else {
-      setPill($("#pillHttp"), `HTTP ${s.http_ok === true ? "UP" : s.http_ok === false ? "DOWN" : "—"}`, s.http_ok);
+      setPill($("#pillHttp"), `HTTP ${s.http_ok === true ? "UP" : s.http_ok === false ? "DOWN" : "-"}`, s.http_ok);
     }
   }
   const bits = [];
@@ -1356,9 +1367,9 @@ function paintStatus(s) {
   if (s.lan_method) bits.push(s.lan_method);
   $("#metaLine").textContent = bits.join(" · ");
   $("#openCount").textContent = String((s.open_outages || []).length);
-  if ($("#heroGateway")) $("#heroGateway").textContent = s.gateway || "—";
+  if ($("#heroGateway")) $("#heroGateway").textContent = s.gateway || "-";
   if ($("#heroLatency")) {
-    $("#heroLatency").textContent = s.latency_ms != null ? `${Math.round(s.latency_ms)} ms` : "—";
+    $("#heroLatency").textContent = s.latency_ms != null ? `${Math.round(s.latency_ms)} ms` : "-";
   }
 
   const stale = $("#staleBanner");
@@ -1383,16 +1394,16 @@ function paintStatus(s) {
   let sub = "LAN, WAN, DNS, and HTTP path OK";
   if (s.paused) {
     title = "Paused";
-    sub = "Monitoring is paused — resume from Settings or the tray";
+    sub = "Monitoring is paused. Resume from Settings or the tray";
   } else if (s.monitor_stale) {
     title = "Monitor stalled";
-    sub = "Last probe is older than expected — check Pause or restart";
+    sub = "The last probe is older than expected. Check Pause or restart";
   } else if (s.probe_suppressed) {
     title = "Speed test running";
     sub = "Probes paused so the test won’t pollute History";
   } else if (s.lan_ok === false) {
     title = "LAN down";
-    sub = "Gateway unreachable — local network issue likely";
+    sub = "Gateway unreachable. A local network issue is likely";
   } else if (s.wan_ok === false) {
     title = "WAN down";
     sub = "LAN up, public internet unreachable";
@@ -1408,6 +1419,12 @@ function paintStatus(s) {
   }
   if ($("#statusTitle")) $("#statusTitle").textContent = title;
   if ($("#statusSub")) $("#statusSub").textContent = sub;
+  const announcement = `${title}. ${sub}`;
+  if (announcement !== lastAnnouncedStatus) {
+    const live = $("#statusAnnouncement");
+    if (live) live.textContent = announcement;
+    lastAnnouncedStatus = announcement;
+  }
 
   const pausedBox = $("#settingsPaused");
   if (pausedBox && document.activeElement !== pausedBox) {
@@ -1446,18 +1463,43 @@ function paintStatus(s) {
   }
 }
 
+let lastGoodStatus = null;
+
 async function refreshStatus() {
   try {
-    paintStatus(await api("/api/status"));
+    const s = await api("/api/status");
+    if (!s) return; // don't clobber a good paint with a null IPC result
+    lastGoodStatus = s;
+    paintStatus(s);
+    if (s.db_degraded && $("#metaLine")) {
+      const cur = $("#metaLine").textContent || "";
+      if (!/db sync/i.test(cur)) {
+        $("#metaLine").textContent = cur ? `${cur} · db sync delayed` : "db sync delayed";
+      }
+    }
   } catch (e) {
+    // Keep the last good connectivity paint. A transient DB/IPC failure does not mean the network is down.
+    if (lastGoodStatus) {
+      if ($("#metaLine")) {
+        const cur = $("#metaLine").textContent || "";
+        if (!/sync delayed/i.test(cur)) {
+          $("#metaLine").textContent = cur ? `${cur} · sync delayed` : "sync delayed";
+        }
+      }
+      return;
+    }
     $("#metaLine").textContent = "status unavailable";
     if ($("#statusTitle")) $("#statusTitle").textContent = "Status unavailable";
+    if ($("#statusAnnouncement")) $("#statusAnnouncement").textContent = "Status unavailable";
   }
 }
+
+let lastGoodSummary = null;
 
 async function refreshSummary() {
   try {
     const sum = await api("/api/summary");
+    lastGoodSummary = sum;
     $("#uptimeStreak").textContent = sum.in_outage
       ? "In outage"
       : fmtDuration(sum.uptime_streak_s * 1000);
@@ -1503,6 +1545,18 @@ async function refreshSummary() {
     return sum;
   } catch (e) {
     console.error(e);
+    if (lastGoodSummary) {
+      if ($("#timelineMeta")) $("#timelineMeta").textContent = "Summary refresh delayed";
+      return lastGoodSummary;
+    }
+    const timeline = $("#timeline24");
+    if (timeline) {
+      timeline.innerHTML = `<div class="timeline-empty empty-state state-error">
+        <p class="empty-state-title">Summary unavailable</p>
+        <p class="empty-state-body">Live monitoring continues. Reopen Overview to retry.</p>
+      </div>`;
+    }
+    if ($("#timelineMeta")) $("#timelineMeta").textContent = "Load failed";
     return null;
   }
 }
@@ -1543,7 +1597,7 @@ async function refreshHistory() {
       editableNotes: true,
       expandable: true,
       emptyTitle: "No outages",
-      emptyMsg: "No outages in this range — try widening From/To or clearing filters",
+      emptyMsg: "No outages in this range. Try widening From/To or clearing filters.",
     });
     if (meta) {
       const capped = rows.length >= HISTORY_ROW_LIMIT ? ` (showing first ${HISTORY_ROW_LIMIT})` : "";
@@ -1555,7 +1609,7 @@ async function refreshHistory() {
       tbody.innerHTML = emptyStateHtml(
         6,
         "Load failed",
-        "Could not load history — try Apply again."
+        "Could not load history. Try Apply again."
       );
     }
     if (meta) meta.textContent = "Load failed";
@@ -1587,7 +1641,7 @@ function buildPatternsNarrative(sum, longestRows) {
   const byDow = sum?.by_dow || [];
   const total = byHour.reduce((a, b) => a + (Number(b) || 0), 0);
   if (!total) {
-    return "Over the last 30 days there were no recorded outage starts while this tracker was watching. That usually means the path stayed up during observation — if a tech is investigating a report from outside this window, confirm monitoring was running at that time.";
+    return "Over the last 30 days there were no recorded outage starts while this tracker was watching. That usually means the path stayed up during observation. If a technician is investigating a report from outside this window, confirm monitoring was running at that time.";
   }
   const hourPeak = peakIndex(byHour);
   const dowPeak = peakIndex(byDow);
@@ -1625,7 +1679,7 @@ function buildPatternsNarrative(sum, longestRows) {
     const dur = durMs != null ? fmtDuration(durMs) : "unknown length";
     longestBit = ` The longest outage in the table below is ${String(top.type || "?").toUpperCase()}, about ${dur}${open ? " and still open" : ""}.`;
   }
-  return `Over the last 30 days this tracker recorded ${total} outage start${total === 1 ? "" : "s"}. They clustered most often around ${hourLabel}–${nextHour} local time, and more often on ${DOW_NAMES[dowPeak.index]}s than other days.${domainBit}${longestBit} Share this with a visiting tech: timing peaks and which layer fails first usually separate a local/wifi issue from an ISP or DNS problem.`;
+  return `Over the last 30 days this tracker recorded ${total} outage start${total === 1 ? "" : "s"}. They clustered most often around ${hourLabel}-${nextHour} local time, and more often on ${DOW_NAMES[dowPeak.index]}s than other days.${domainBit}${longestBit} Share this with a visiting technician: timing peaks and the layer that fails first usually separate a local Wi-Fi issue from an ISP or DNS problem.`;
 }
 
 function paintPatternsSummary(sum, longestRows) {
@@ -1638,6 +1692,8 @@ async function refreshLongest() {
   const form = $("#patternsFilters");
   const tbody = $("#longestBody");
   if (!tbody) return;
+  const table = tbody.closest("table");
+  const applyBtn = form?.querySelector('button[type="submit"]');
   const now = Date.now() / 1000;
   const params = new URLSearchParams();
   params.set("from", String(now - 30 * 86400));
@@ -1653,6 +1709,9 @@ async function refreshLongest() {
     params.set("sort", "duration");
     params.set("dir", "DESC");
   }
+  tbody.innerHTML = `<tr><td colspan="4" class="muted">Loading...</td></tr>`;
+  if (table) table.setAttribute("aria-busy", "true");
+  if (applyBtn) applyBtn.disabled = true;
   try {
     const data = await api(`/api/outages?${params}`);
     const rows = data.outages || [];
@@ -1667,8 +1726,11 @@ async function refreshLongest() {
     paintPatternsSummary(lastPatternsSum, rows);
   } catch (e) {
     console.error(e);
-    tbody.innerHTML = `<tr><td colspan="4" class="muted state-error">Failed to load</td></tr>`;
+    tbody.innerHTML = emptyStateHtml(4, "Load failed", "Could not load outage patterns. Try Apply again.");
     paintPatternsSummary(lastPatternsSum, []);
+  } finally {
+    if (table) table.removeAttribute("aria-busy");
+    if (applyBtn) applyBtn.disabled = false;
   }
 }
 
@@ -1702,7 +1764,11 @@ async function refreshSystemLogs({ refresh = false } = {}) {
   const meta = $("#systemLogsMeta");
   const applyBtn = $("#systemLogsApply");
   const refreshBtn = $("#systemLogsRefresh");
-  meta.textContent = refresh ? "Scanning Windows logs…" : "Loading…";
+  const tbody = $("#systemLogsBody");
+  const table = tbody?.closest("table");
+  meta.textContent = refresh ? "Scanning Windows logs..." : "Loading...";
+  if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="muted">Loading...</td></tr>`;
+  if (table) table.setAttribute("aria-busy", "true");
   if (applyBtn) applyBtn.disabled = true;
   if (refreshBtn) refreshBtn.disabled = true;
   try {
@@ -1725,6 +1791,7 @@ async function refreshSystemLogs({ refresh = false } = {}) {
       `<tr><td colspan="5" class="muted state-error">Scan failed: ${escapeHtml(e.message || e)}</td></tr>`;
     meta.textContent = "Scan failed";
   } finally {
+    if (table) table.removeAttribute("aria-busy");
     if (applyBtn) applyBtn.disabled = false;
     if (refreshBtn) refreshBtn.disabled = false;
   }
@@ -1732,19 +1799,19 @@ async function refreshSystemLogs({ refresh = false } = {}) {
 
 function paintSpeedLast(test) {
   if (!test) {
-    $("#speedDown").textContent = "—";
-    $("#speedUp").textContent = "—";
-    $("#speedPing").textContent = "—";
-    $("#speedJitter").textContent = "jitter —";
-    $("#speedLoss").textContent = "—";
+    $("#speedDown").textContent = "-";
+    $("#speedUp").textContent = "-";
+    $("#speedPing").textContent = "-";
+    $("#speedJitter").textContent = "jitter -";
+    $("#speedLoss").textContent = "-";
     $("#speedIsp").textContent = "";
     return;
   }
   $("#speedDown").textContent = fmtMbps(test.download_mbps);
   $("#speedUp").textContent = fmtMbps(test.upload_mbps);
-  $("#speedPing").textContent = test.ping_ms != null ? Number(test.ping_ms).toFixed(1) : "—";
-  $("#speedJitter").textContent = test.jitter_ms != null ? `jitter ${Number(test.jitter_ms).toFixed(1)} ms` : "jitter —";
-  $("#speedLoss").textContent = test.packet_loss != null ? `${Number(test.packet_loss).toFixed(2)}%` : "—";
+  $("#speedPing").textContent = test.ping_ms != null ? Number(test.ping_ms).toFixed(1) : "-";
+  $("#speedJitter").textContent = test.jitter_ms != null ? `jitter ${Number(test.jitter_ms).toFixed(1)} ms` : "jitter -";
+  $("#speedLoss").textContent = test.packet_loss != null ? `${Number(test.packet_loss).toFixed(2)}%` : "-";
   const bits = [];
   if (test.isp) bits.push(test.isp);
   if (test.server_name) bits.push(test.server_name);
@@ -1763,9 +1830,9 @@ function renderSpeedHistory(rows) {
       <td>${fmtTs(t.tested_at)}</td>
       <td>${fmtMbps(t.download_mbps)}</td>
       <td>${fmtMbps(t.upload_mbps)}</td>
-      <td>${t.ping_ms != null ? Number(t.ping_ms).toFixed(1) : "—"}</td>
-      <td>${t.jitter_ms != null ? Number(t.jitter_ms).toFixed(1) : "—"}</td>
-      <td>${t.packet_loss != null ? Number(t.packet_loss).toFixed(2) + "%" : "—"}</td>
+      <td>${t.ping_ms != null ? Number(t.ping_ms).toFixed(1) : "-"}</td>
+      <td>${t.jitter_ms != null ? Number(t.jitter_ms).toFixed(1) : "-"}</td>
+      <td>${t.packet_loss != null ? Number(t.packet_loss).toFixed(2) + "%" : "-"}</td>
       <td>${escapeHtml(server)}</td>
       <td>${link}</td>
     </tr>`;
@@ -1799,10 +1866,16 @@ async function refreshSpeed() {
     renderSpeedHistory(hist.tests || []);
     ensureSpeedTrend(hist.tests || []);
     scheduleChartsResize();
+    if (hist && hist.error && tbody && !(hist.tests || []).length) {
+      tbody.innerHTML =
+        `<tr><td colspan="8" class="muted state-error">History temporarily unavailable: ${escapeHtml(hist.error)}</td></tr>`;
+    }
     if (!speedRunning) {
       if (st.available) {
-        statusEl.textContent = `CLI ready${st.path ? ` · ${st.path}` : ""}`;
-        statusEl.className = "muted state-ok";
+        statusEl.textContent = hist && hist.error
+          ? `CLI ready · history sync delayed`
+          : `CLI ready${st.path ? ` · ${st.path}` : ""}`;
+        statusEl.className = hist && hist.error ? "muted" : "muted state-ok";
       } else {
         statusEl.textContent = st.install_hint || "Speedtest CLI not found";
         statusEl.className = "muted";
@@ -1844,7 +1917,7 @@ async function runSpeedTest() {
   const cancelBtn = $("#speedCancelBtn");
   runBtn.disabled = true;
   cancelBtn.hidden = false;
-  statusEl.textContent = "Running Ookla Speedtest… this can take ~20–60s";
+  statusEl.textContent = "Running Ookla Speedtest... this can take about 20-60 seconds";
   statusEl.className = "muted";
   try {
     const data = await api("/api/speedtest/run");
@@ -1960,6 +2033,9 @@ function setupForms() {
   if (csvBtn) {
     csvBtn.addEventListener("click", async () => {
       const msg = $("#evidenceMsg");
+      csvBtn.disabled = true;
+      csvBtn.setAttribute("aria-busy", "true");
+      if (msg) msg.textContent = "Exporting CSV...";
       try {
         const res = await api("/api/export/outages", {
           method: "POST",
@@ -1969,6 +2045,9 @@ function setupForms() {
         if (msg) msg.textContent = res.path ? `Saved ${res.path}` : "Exported";
       } catch (err) {
         if (msg) msg.textContent = "CSV export failed";
+      } finally {
+        csvBtn.disabled = false;
+        csvBtn.removeAttribute("aria-busy");
       }
     });
   }
@@ -1976,6 +2055,9 @@ function setupForms() {
   if (reportBtn) {
     reportBtn.addEventListener("click", async () => {
       const msg = $("#evidenceMsg");
+      reportBtn.disabled = true;
+      reportBtn.setAttribute("aria-busy", "true");
+      if (msg) msg.textContent = "Opening report...";
       try {
         const res = await api("/api/export/report", {
           method: "POST",
@@ -1985,6 +2067,9 @@ function setupForms() {
         if (msg) msg.textContent = res.path ? "Report opened" : "Report ready";
       } catch (err) {
         if (msg) msg.textContent = "Report failed";
+      } finally {
+        reportBtn.disabled = false;
+        reportBtn.removeAttribute("aria-busy");
       }
     });
   }
@@ -2018,7 +2103,7 @@ function setupForms() {
       if (form.autostart) form.autostart.checked = !!saved.autostart;
       const hint = $("#autostartHint");
       if (body.autostart && !saved.autostart) {
-        $("#settingsMsg").textContent = "Saved, but Start with Windows failed — try the Setup installer";
+        $("#settingsMsg").textContent = "Saved, but Start with Windows failed. Try the Setup installer";
         if (hint) {
           hint.textContent =
             "Could not register at sign-in. Run the Setup installer, or keep the portable .exe in a fixed folder and try again.";
@@ -2098,6 +2183,7 @@ function ensureTipEl() {
   el.className = "ui-tooltip";
   el.setAttribute("role", "tooltip");
   el.id = "uiTooltip";
+  el.hidden = true;
   document.body.appendChild(el);
   tipController.el = el;
   return el;
@@ -2133,6 +2219,7 @@ function showTip(anchor) {
   const payload = tipPayload(anchor);
   if (!payload) return;
   const tip = ensureTipEl();
+  tip.hidden = false;
   tip.innerHTML = payload.name
     ? `<span class="tip-name">${escapeHtml(payload.name)}</span><span class="tip-body">${escapeHtml(payload.meaning)}</span>`
     : `<span class="tip-body">${escapeHtml(payload.meaning)}</span>`;
@@ -2149,7 +2236,10 @@ function hideTip() {
     tipController.openTimer = null;
   }
   const tip = tipController.el;
-  if (tip) tip.classList.remove("is-open");
+  if (tip) {
+    tip.classList.remove("is-open");
+    tip.hidden = true;
+  }
   if (tipController.anchor) {
     tipController.anchor.removeAttribute("aria-describedby");
     tipController.anchor = null;

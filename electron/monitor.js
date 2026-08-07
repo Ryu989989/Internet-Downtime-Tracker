@@ -162,22 +162,37 @@ class Monitor {
   }
 
   snapshot() {
-    const settings = this.db.getSettings();
-    const open = this.db.getOpenOutages();
     const tNow = Date.now() / 1000;
-    let in_outage = open.length > 0;
+    let settings = { poll_interval_s: 5 };
+    let open = [];
     let uptime_streak_s = 0;
-    if (!in_outage) {
-      const lastClosed = this.db._get(
-        `SELECT ended_at FROM outages WHERE ended_at IS NOT NULL
-         ORDER BY ended_at DESC LIMIT 1`
-      );
-      const baseline =
-        lastClosed && lastClosed.ended_at != null
-          ? Math.max(lastClosed.ended_at, this.state.started_at)
-          : this.state.started_at;
-      uptime_streak_s = Math.max(0, tNow - baseline);
+    let dbOk = true;
+    try {
+      settings = this.db.getSettings();
+      open = this.db.getOpenOutages();
+      if (!open.length) {
+        const lastClosed = this.db._get(
+          `SELECT ended_at FROM outages WHERE ended_at IS NOT NULL
+           ORDER BY ended_at DESC LIMIT 1`
+        );
+        const baseline =
+          lastClosed && lastClosed.ended_at != null
+            ? Math.max(lastClosed.ended_at, this.state.started_at)
+            : this.state.started_at;
+        uptime_streak_s = Math.max(0, tNow - baseline);
+      }
+    } catch (err) {
+      dbOk = false;
+      try {
+        console.error("snapshot db read failed; using live probe state", err);
+      } catch {
+        /* ignore */
+      }
+      // Live lan/wan/dns/http flags remain authoritative; skip inventing outage rows.
+      open = [];
+      uptime_streak_s = Math.max(0, tNow - this.state.started_at);
     }
+    const in_outage = open.length > 0;
     const domains = [...new Set(open.map((o) => o.type))];
     const poll_interval_s = settings.poll_interval_s ?? 5;
     const monitor_stale = isMonitorStale({
@@ -207,6 +222,7 @@ class Monitor {
       uptime_streak_s: Math.round(uptime_streak_s * 10) / 10,
       monitor_stale,
       quality: this.state.quality,
+      db_degraded: !dbOk,
     };
   }
 
@@ -343,7 +359,13 @@ class Monitor {
           // During cool-down: update live status, apply successes only (no new outages).
           this._applyProbe(result, debounce, true, { successesOnly: inCooldown });
           this._probeCount += 1;
-          if (this._probeCount % 60 === 0) this.db.pruneProbes();
+          if (this._probeCount % 60 === 0) {
+            try {
+              this.db.pruneProbes();
+            } catch (err) {
+              console.error("probe prune failed", err);
+            }
+          }
           await this._maybeRefreshAdapter();
           // Fire-and-forget — do not block the probe schedule.
           void this._maybeQualityBurst();

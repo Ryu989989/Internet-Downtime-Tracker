@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta
     http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'"
   />
   <title>Internet Downtime Tracker</title>
   <link rel="stylesheet" href="styles.css" />
@@ -18,12 +18,13 @@
       <span class="logo" role="img" aria-label="Status: Checking…"></span>
       <h1>Internet Downtime Tracker</h1>
     </div>
-    <div class="live" id="liveStatus" aria-live="polite">
-      <span class="pill pill-unknown has-tip" id="pillLan" data-tip="lan" tabindex="0">LAN —</span>
-      <span class="pill pill-unknown has-tip" id="pillWan" data-tip="wan" tabindex="0">WAN —</span>
-      <span class="pill pill-unknown has-tip" id="pillDns" data-tip="dns" tabindex="0">DNS —</span>
-      <span class="pill pill-unknown has-tip" id="pillHttp" data-tip="http" tabindex="0">HTTP —</span>
+    <div class="live" id="liveStatus">
+      <span class="pill pill-unknown has-tip" id="pillLan" data-tip="lan" tabindex="0">LAN -</span>
+      <span class="pill pill-unknown has-tip" id="pillWan" data-tip="wan" tabindex="0">WAN -</span>
+      <span class="pill pill-unknown has-tip" id="pillDns" data-tip="dns" tabindex="0">DNS -</span>
+      <span class="pill pill-unknown has-tip" id="pillHttp" data-tip="http" tabindex="0">HTTP -</span>
       <span class="muted" id="metaLine"></span>
+      <span class="sr-only" id="statusAnnouncement" aria-live="polite" aria-atomic="true"></span>
     </div>
   </header>
 
@@ -45,8 +46,8 @@
         <button type="button" class="tip-dismiss" id="dismissTip" aria-label="Dismiss tip">Dismiss</button>
       </div>
 
-      <div class="stale-banner" id="staleBanner" hidden role="status" aria-live="polite">
-        Monitoring looks stalled — last probe is older than expected. Check Pause, or restart the app.
+      <div class="stale-banner" id="staleBanner" hidden>
+        Monitoring looks stalled. The last probe is older than expected. Check Pause or restart the app.
       </div>
 
       <div class="overview-top">
@@ -59,55 +60,55 @@
           </div>
           <div class="status-hero-meta">
             <div class="meta-chip"><span class="meta-label">Open</span> <span id="openCount">0</span></div>
-            <div class="meta-chip"><span class="meta-label">Gateway</span> <span id="heroGateway">—</span></div>
-            <div class="meta-chip"><span class="meta-label">Latency</span> <span id="heroLatency">—</span></div>
+            <div class="meta-chip"><span class="meta-label">Gateway</span> <span id="heroGateway">-</span></div>
+            <div class="meta-chip"><span class="meta-label">Latency</span> <span id="heroLatency">-</span></div>
           </div>
         </div>
 
         <div class="overview-side">
-          <div class="quality-strip" id="qualityStrip" aria-live="polite">
+          <div class="quality-strip" id="qualityStrip">
             <div class="quality-kicker">Live quality</div>
             <div class="quality-body">
               <div class="meta-chip quality-chip">
                 <span class="meta-label">Loss</span>
-                <span id="qualityLoss">—</span>
+                <span id="qualityLoss">-</span>
               </div>
               <div class="meta-chip quality-chip">
                 <span class="meta-label">Jitter</span>
-                <span id="qualityJitter">—</span>
+                <span id="qualityJitter">-</span>
               </div>
               <div class="meta-chip quality-chip">
                 <span class="meta-label">Avg</span>
-                <span id="qualityAvg">—</span>
+                <span id="qualityAvg">-</span>
               </div>
               <div class="meta-chip quality-chip">
                 <span class="meta-label">Last</span>
-                <span id="qualityLast">—</span>
+                <span id="qualityLast">-</span>
               </div>
             </div>
-            <p class="quality-empty muted" id="qualityEmpty">Rolling ping burst updates every ~30s — informational only (never opens outages).</p>
+            <p class="quality-empty muted" id="qualityEmpty">Rolling ping burst updates about every 30 seconds. It never opens outages.</p>
           </div>
 
-          <div class="provider-strip is-empty" id="providerStrip" aria-live="polite">
+          <div class="provider-strip is-empty" id="providerStrip">
             <div class="provider-kicker">Provider</div>
             <div class="provider-body">
               <div class="provider-main">
-                <div class="provider-isp" id="providerIsp">—</div>
+                <div class="provider-isp" id="providerIsp">-</div>
                 <div class="provider-server muted" id="providerServer"></div>
               </div>
               <div class="provider-meta">
                 <div class="meta-chip provider-chip" id="providerPingChip" hidden>
                   <span class="meta-label">Ping</span>
-                  <span id="providerPing">—</span>
+                  <span id="providerPing">-</span>
                 </div>
                 <div class="meta-chip provider-chip" id="providerWhenChip" hidden>
                   <span class="meta-label">Measured</span>
-                  <span id="providerWhen">—</span>
+                  <span id="providerWhen">-</span>
                 </div>
               </div>
             </div>
             <p class="provider-empty muted" id="providerEmpty">
-              Run a speed test to detect ISP and closest server —
+              Run a speed test to detect your ISP and closest server.
               <button type="button" class="text-link" data-goto-tab="speed">open Speed tab</button>
             </p>
           </div>
@@ -115,11 +116,18 @@
       </div>
 
       <div class="timeline-wrap" id="timelineWrap">
-        <div class="section-head">
+        <div class="section-head timeline-head">
           <h2>Last 24h outage timeline</h2>
-          <span class="muted" id="timelineMeta"></span>
+          <div class="timeline-actions">
+            <span class="muted" id="timelineMeta"></span>
+            <div class="export-actions" id="exportActions">
+              <button type="button" class="btn btn-secondary" id="exportCsvBtn">Export CSV</button>
+              <button type="button" class="btn btn-secondary" id="exportReportBtn">Open report</button>
+              <span class="muted" id="evidenceMsg" aria-live="polite"></span>
+            </div>
+          </div>
         </div>
-        <div class="timeline" id="timeline24" role="img" aria-label="24 hour outage timeline"></div>
+        <div class="timeline" id="timeline24" role="group" aria-label="24 hour outage timeline"></div>
         <div class="timeline-legend" role="list" aria-label="Outage domain legend">
           <span class="tl-key lan has-tip pressable" role="listitem" tabindex="0" data-tip="lan">LAN</span>
           <span class="tl-key wan has-tip pressable" role="listitem" tabindex="0" data-tip="wan">WAN</span>
@@ -128,33 +136,27 @@
         </div>
       </div>
 
-      <div class="export-actions" id="exportActions">
-        <button type="button" class="btn btn-ghost" id="exportCsvBtn">Export CSV</button>
-        <button type="button" class="btn btn-ghost" id="exportReportBtn">Open report</button>
-        <span class="muted" id="evidenceMsg" aria-live="polite"></span>
-      </div>
-
       <div class="stats stats-dense">
         <div class="stat">
           <div class="stat-label">Uptime streak</div>
-          <div class="stat-value" id="uptimeStreak">—</div>
+          <div class="stat-value" id="uptimeStreak">-</div>
           <div class="stat-sub" id="uptimeSub"></div>
         </div>
         <div class="stat">
           <div class="stat-label">24h downtime</div>
-          <div class="stat-value" id="down24">—</div>
+          <div class="stat-value" id="down24">-</div>
           <div class="stat-sub" id="down24pct"></div>
           <div class="stat-split" id="split24"></div>
         </div>
         <div class="stat">
           <div class="stat-label">7d downtime</div>
-          <div class="stat-value" id="down7">—</div>
+          <div class="stat-value" id="down7">-</div>
           <div class="stat-sub" id="down7pct"></div>
           <div class="stat-split" id="split7"></div>
         </div>
         <div class="stat">
           <div class="stat-label">Events (7d)</div>
-          <div class="stat-value" id="events7">—</div>
+          <div class="stat-value" id="events7">-</div>
           <div class="stat-sub" id="events7sub"></div>
         </div>
       </div>
@@ -163,14 +165,14 @@
         <div class="chart-wrap">
           <h2>Last 24h downtime by hour</h2>
           <div class="chart-box chart-box-sm">
-            <canvas id="sparkChart"></canvas>
+            <canvas id="sparkChart" aria-label="Downtime by hour for the last 24 hours"></canvas>
           </div>
         </div>
         <div class="chart-wrap">
           <h2>Probe latency (6h)</h2>
           <div class="chart-box chart-box-sm">
-            <canvas id="latencyChart"></canvas>
-            <p class="chart-empty muted" id="latencyEmpty" hidden>No latency samples yet — waiting for successful LAN probes.</p>
+            <canvas id="latencyChart" aria-label="Probe latency for the last 6 hours"></canvas>
+            <p class="chart-empty muted" id="latencyEmpty" hidden>No latency samples yet. Waiting for successful LAN probes.</p>
           </div>
         </div>
       </div>
@@ -182,12 +184,13 @@
         </div>
         <div class="table-wrap compact">
           <table>
+            <caption class="sr-only">Recent outages</caption>
             <thead>
               <tr>
-                <th>Type</th>
-                <th>Started</th>
-                <th>Duration</th>
-                <th>Notes</th>
+                <th scope="col">Type</th>
+                <th scope="col">Started</th>
+                <th scope="col">Duration</th>
+                <th scope="col">Notes</th>
               </tr>
             </thead>
             <tbody id="recentBody"></tbody>
@@ -198,7 +201,7 @@
 
     <section id="panel-history" class="panel" role="tabpanel" aria-labelledby="tab-history" hidden>
       <p class="panel-lead muted">
-        Probe-detected outages for the selected range. Expand a row for adapter/latency snapshot. Edit Notes — saved on Enter or blur.
+        Probe-detected outages for the selected range. Expand a row for its adapter and latency snapshot. Notes save on Enter or blur.
       </p>
       <form id="historyFilters" class="filters">
         <label>From
@@ -235,20 +238,21 @@
           </select>
         </label>
         <button type="submit" class="btn">Apply</button>
-        <button type="button" class="btn btn-secondary" id="historyReset">Reset (last 7 days → now)</button>
+        <button type="button" class="btn btn-secondary" id="historyReset">Last 7 days</button>
         <span class="muted" id="historyMeta" aria-live="polite"></span>
         <span class="sr-only" id="notesLive" aria-live="polite"></span>
       </form>
       <div class="table-wrap">
         <table>
+          <caption class="sr-only">Outage history</caption>
           <thead>
             <tr>
-              <th></th>
-              <th>Type</th>
-              <th>Started</th>
-              <th>Ended</th>
-              <th>Duration</th>
-              <th>Notes</th>
+              <th scope="col"><span class="sr-only">Incident details</span></th>
+              <th scope="col">Type</th>
+              <th scope="col">Started</th>
+              <th scope="col">Ended</th>
+              <th scope="col">Duration</th>
+              <th scope="col">Notes</th>
             </tr>
           </thead>
           <tbody id="outageBody"></tbody>
@@ -258,20 +262,20 @@
 
     <section id="panel-patterns" class="panel" role="tabpanel" aria-labelledby="tab-patterns" hidden>
       <p class="patterns-summary" id="patternsSummary" aria-live="polite">
-        Loading pattern summary…
+        Loading pattern summary...
       </p>
       <div class="charts-grid">
         <div class="chart-wrap">
           <h2>Outages by hour of day</h2>
           <div class="chart-box">
-            <canvas id="hourChart"></canvas>
+            <canvas id="hourChart" aria-label="Outages by hour of day"></canvas>
             <p class="chart-empty muted" id="hourEmpty" hidden>No outage starts in the last 30 days.</p>
           </div>
         </div>
         <div class="chart-wrap">
           <h2>Outages by day of week</h2>
           <div class="chart-box">
-            <canvas id="dowChart"></canvas>
+            <canvas id="dowChart" aria-label="Outages by day of week"></canvas>
             <p class="chart-empty muted" id="dowEmpty" hidden>No outage starts in the last 30 days.</p>
           </div>
         </div>
@@ -308,12 +312,13 @@
           <button type="submit" class="btn">Apply</button>
         </form>
         <table>
+          <caption class="sr-only">Longest outages in the last 30 days</caption>
           <thead>
             <tr>
-              <th>Type</th>
-              <th>Started</th>
-              <th>Duration</th>
-              <th>Notes</th>
+              <th scope="col">Type</th>
+              <th scope="col">Started</th>
+              <th scope="col">Duration</th>
+              <th scope="col">Notes</th>
             </tr>
           </thead>
           <tbody id="longestBody"></tbody>
@@ -323,7 +328,7 @@
 
     <section id="panel-system-logs" class="panel" role="tabpanel" aria-labelledby="tab-system-logs" hidden>
       <p class="disclaimer">
-        OS-inferred connectivity gaps from Windows Event Logs — not the same as live probe History.
+        OS-inferred connectivity gaps from Windows Event Logs. These are not the same as live probe History.
         Only periods the OS logged are visible. Pure ISP outages may be missed if the NIC stayed up;
         local Wi‑Fi drops may appear as downtime. Sleep, hibernate, or shutdown gaps may show up or be missing.
       </p>
@@ -339,13 +344,14 @@
       </form>
       <div class="table-wrap">
         <table>
+          <caption class="sr-only">Connectivity gaps inferred from Windows Event Logs</caption>
           <thead>
             <tr>
-              <th>Started</th>
-              <th>Ended</th>
-              <th>Duration</th>
-              <th>Source</th>
-              <th>Reason</th>
+              <th scope="col">Started</th>
+              <th scope="col">Ended</th>
+              <th scope="col">Duration</th>
+              <th scope="col">Source</th>
+              <th scope="col">Reason</th>
             </tr>
           </thead>
           <tbody id="systemLogsBody"></tbody>
@@ -358,7 +364,7 @@
         Uses the official Ookla Speedtest CLI (not a website scrape). Personal non-commercial use.
         Results are stored separately from outage History. A test briefly uses full bandwidth;
         LAN/WAN probing pauses during the run (+ short cool-down) so it won’t open false outages.
-        Manual only — no automatic schedule.
+        Tests run only when requested.
       </p>
       <div class="speed-toolbar">
         <button type="button" class="btn btn-primary" id="speedRunBtn">Run test</button>
@@ -369,22 +375,22 @@
       <div class="stats stats-dense" id="speedLastCards">
         <div class="stat has-tip pressable" tabindex="0" data-tip="speed-down">
           <div class="stat-label">Download</div>
-          <div class="stat-value" id="speedDown">—</div>
+          <div class="stat-value" id="speedDown">-</div>
           <div class="stat-sub">Mbps</div>
         </div>
         <div class="stat has-tip pressable" tabindex="0" data-tip="speed-up">
           <div class="stat-label">Upload</div>
-          <div class="stat-value" id="speedUp">—</div>
+          <div class="stat-value" id="speedUp">-</div>
           <div class="stat-sub">Mbps</div>
         </div>
         <div class="stat has-tip pressable" tabindex="0" data-tip="speed-ping">
           <div class="stat-label">Ping</div>
-          <div class="stat-value" id="speedPing">—</div>
-          <div class="stat-sub" id="speedJitter">jitter —</div>
+          <div class="stat-value" id="speedPing">-</div>
+          <div class="stat-sub" id="speedJitter">jitter -</div>
         </div>
         <div class="stat has-tip pressable" tabindex="0" data-tip="speed-loss">
           <div class="stat-label">Loss</div>
-          <div class="stat-value" id="speedLoss">—</div>
+          <div class="stat-value" id="speedLoss">-</div>
           <div class="stat-sub" id="speedLossHint">typical home &lt;1%</div>
           <div class="stat-sub" id="speedIsp"></div>
         </div>
@@ -392,23 +398,24 @@
       <div class="chart-wrap">
         <h2>Throughput trend</h2>
         <div class="chart-box">
-          <canvas id="speedTrendChart"></canvas>
+          <canvas id="speedTrendChart" aria-label="Download and upload speed trend"></canvas>
           <p class="chart-empty muted" id="speedTrendEmpty" hidden>No speed tests yet. Run a test to build history.</p>
         </div>
       </div>
       <div class="table-wrap">
         <h2>Speed test history</h2>
         <table>
+          <caption class="sr-only">Speed test history</caption>
           <thead>
             <tr>
-              <th>When</th>
-              <th>Down</th>
-              <th>Up</th>
-              <th>Ping</th>
-              <th>Jitter</th>
-              <th>Loss</th>
-              <th>Server</th>
-              <th>Link</th>
+              <th scope="col">When</th>
+              <th scope="col">Down</th>
+              <th scope="col">Up</th>
+              <th scope="col">Ping</th>
+              <th scope="col">Jitter</th>
+              <th scope="col">Loss</th>
+              <th scope="col">Server</th>
+              <th scope="col">Link</th>
             </tr>
           </thead>
           <tbody id="speedHistoryBody"></tbody>
@@ -438,20 +445,20 @@
             <span class="check-text">Windows toast alerts on outage open/close</span>
           </label>
           <label class="check">
-            <input type="checkbox" name="autostart" />
+            <input type="checkbox" name="autostart" aria-describedby="autostartHint" />
             <span class="check-text">Start with Windows</span>
           </label>
           <p class="field-hint" id="autostartHint">
             Registers this app to run at sign-in (current exe path). Prefer the
-            installed Setup build, or keep the portable .exe in a fixed folder —
+            installed Setup build, or keep the portable .exe in a fixed folder.
             don’t move/rename it after enabling.
           </p>
           <label class="check">
-            <input type="checkbox" name="minimize_to_tray" />
+            <input type="checkbox" name="minimize_to_tray" aria-describedby="minimizeHint" />
             <span class="check-text">Minimize to tray when closed or minimized</span>
           </label>
-          <p class="field-hint">
-            On (default): the X button and minimize hide the dashboard to the tray — monitoring keeps running. Use tray → Quit to exit.
+          <p class="field-hint" id="minimizeHint">
+            On (default): the X button and minimize hide the dashboard to the tray. Monitoring keeps running. Use tray &gt; Quit to exit.
             Off: minimize stays on the taskbar; closing the window quits the app.
           </p>
         </fieldset>

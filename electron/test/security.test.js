@@ -103,6 +103,26 @@ describe("settings clamp (H2)", () => {
     assert.ok(text.length <= 800);
     assert.doesNotThrow(() => JSON.parse(text));
   });
+
+  it("persist failures do not break later queries", () => {
+    const real = db._persistNow.bind(db);
+    let calls = 0;
+    db._persistNow = () => {
+      calls += 1;
+      if (calls === 1) return false;
+      return real();
+    };
+    try {
+      db.insertProbe(true, true, 1.2);
+      db.flushPersist();
+      const rows = db.listSpeedTests({ limit: 5 });
+      assert.ok(Array.isArray(rows));
+      const open = db.getOpenOutages();
+      assert.ok(Array.isArray(open));
+    } finally {
+      db._persistNow = real;
+    }
+  });
 });
 
 describe("Ookla download trust (H3/M10)", () => {

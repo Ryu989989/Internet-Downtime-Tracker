@@ -7,7 +7,8 @@ const initSqlJs = require("sql.js");
 const { isBlockedProbeHost, isBlockedHttpUrl } = require("./netcheck");
 
 const APP_DIR_NAME = "InternetDowntimeTracker";
-const PERSIST_DEBOUNCE_MS = 10_000;
+/** Full sql.js export is expensive; debounce aggressively (probes are high-churn). */
+const PERSIST_DEBOUNCE_MS = 30_000;
 
 const DEFAULT_SETTINGS = {
   poll_interval_s: 5,
@@ -169,11 +170,14 @@ class TrackerDb {
    * @param {import('sql.js').Database} db
    * @param {string} filePath
    */
-  constructor(db, filePath) {
+  constructor(db, filePath, SQL = null) {
     this.db = db;
     this.path = filePath;
+    this._SQL = SQL;
     this._persistTimer = null;
     this._persistDirty = false;
+    this._persistFailCount = 0;
+    this._recovering = false;
     this._initSchema();
     this._persistImmediate();
   }
@@ -190,34 +194,55 @@ class TrackerDb {
     } else {
       db = new SQL.Database();
     }
-    return new TrackerDb(db, fp);
+    return new TrackerDb(db, fp, SQL);
   }
 
+  /**
+   * Atomic-ish write. Never throws — probe loop / IPC must stay alive if AV
+   * briefly locks tracker.db (common source of intermittent "disk I/O error").
+   */
   _persistNow() {
-    const data = Buffer.from(this.db.export());
-    const dir = path.dirname(this.path);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmp = path.join(dir, `.${path.basename(this.path)}.${process.pid}.tmp`);
-    fs.writeFileSync(tmp, data);
+    let tmp = null;
     try {
-      fs.renameSync(tmp, this.path);
-    } catch (err) {
-      // Windows cannot always rename over an existing file.
-      try {
-        fs.unlinkSync(this.path);
-      } catch {
-        /* missing */
-      }
+      const data = Buffer.from(this.db.export());
+      const dir = path.dirname(this.path);
+      fs.mkdirSync(dir, { recursive: true });
+      tmp = path.join(dir, `.${path.basename(this.path)}.${process.pid}.tmp`);
+      fs.writeFileSync(tmp, data);
       try {
         fs.renameSync(tmp, this.path);
-      } catch (err2) {
+        tmp = null;
+      } catch {
+        // Windows: rename-over often fails while readers/AV hold the file.
+        try {
+          fs.copyFileSync(tmp, this.path);
+          try {
+            fs.unlinkSync(tmp);
+          } catch {
+            /* ignore */
+          }
+          tmp = null;
+        } catch (err2) {
+          throw err2;
+        }
+      }
+      this._persistFailCount = 0;
+      return true;
+    } catch (err) {
+      this._persistFailCount += 1;
+      try {
+        console.error("db persist failed", err);
+      } catch {
+        /* ignore */
+      }
+      if (tmp) {
         try {
           fs.unlinkSync(tmp);
         } catch {
           /* ignore */
         }
-        throw err2;
       }
+      return false;
     }
   }
 
@@ -226,14 +251,40 @@ class TrackerDb {
     if (this._persistTimer) return;
     this._persistTimer = setTimeout(() => {
       this._persistTimer = null;
-      this._flushPersist();
+      try {
+        this._flushPersist();
+      } catch (err) {
+        // Belt-and-suspenders — _persistNow should not throw.
+        try {
+          console.error("db flush persist failed", err);
+        } catch {
+          /* ignore */
+        }
+      }
     }, PERSIST_DEBOUNCE_MS);
   }
 
   _flushPersist() {
     if (!this._persistDirty) return;
     this._persistDirty = false;
-    this._persistNow();
+    if (!this._persistNow()) {
+      // Retry later; keep dirty so we don't drop probe history.
+      this._persistDirty = true;
+      if (!this._persistTimer) {
+        this._persistTimer = setTimeout(() => {
+          this._persistTimer = null;
+          try {
+            this._flushPersist();
+          } catch (err) {
+            try {
+              console.error("db flush persist retry failed", err);
+            } catch {
+              /* ignore */
+            }
+          }
+        }, Math.min(60_000, PERSIST_DEBOUNCE_MS));
+      }
+    }
   }
 
   _persistImmediate() {
@@ -242,7 +293,10 @@ class TrackerDb {
       this._persistTimer = null;
     }
     this._persistDirty = false;
-    this._persistNow();
+    if (!this._persistNow()) {
+      this._persistDirty = true;
+      this._schedulePersist();
+    }
   }
 
   /** Flush any debounced probe writes (e.g. before quit). */
@@ -254,19 +308,81 @@ class TrackerDb {
     this._schedulePersist();
   }
 
+  _isTransientDbError(err) {
+    const msg = String((err && err.message) || err || "");
+    return /disk I\/O|SQLITE_IOERR|malformed|corrupt|out of memory/i.test(msg);
+  }
+
+  /** Reload in-memory DB from the last on-disk snapshot after IOERR. */
+  _tryRecoverFromDisk() {
+    if (this._recovering || !this._SQL || !this.path) return false;
+    if (!fs.existsSync(this.path)) return false;
+    this._recovering = true;
+    try {
+      const buf = fs.readFileSync(this.path);
+      const next = new this._SQL.Database(buf);
+      try {
+        this.db.close();
+      } catch {
+        /* ignore */
+      }
+      this.db = next;
+      try {
+        console.error("db recovered from disk after transient error");
+      } catch {
+        /* ignore */
+      }
+      return true;
+    } catch (err) {
+      try {
+        console.error("db recover failed", err);
+      } catch {
+        /* ignore */
+      }
+      return false;
+    } finally {
+      this._recovering = false;
+    }
+  }
+
   _run(sql, params = []) {
-    this.db.run(sql, params);
+    try {
+      this.db.run(sql, params);
+    } catch (err) {
+      if (this._isTransientDbError(err) && this._tryRecoverFromDisk()) {
+        this.db.run(sql, params);
+        return;
+      }
+      throw err;
+    }
   }
 
   _all(sql, params = []) {
-    const stmt = this.db.prepare(sql);
-    stmt.bind(params);
-    const rows = [];
-    while (stmt.step()) {
-      rows.push(stmt.getAsObject());
+    const run = () => {
+      const stmt = this.db.prepare(sql);
+      try {
+        stmt.bind(params);
+        const rows = [];
+        while (stmt.step()) {
+          rows.push(stmt.getAsObject());
+        }
+        return rows;
+      } finally {
+        try {
+          stmt.free();
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+    try {
+      return run();
+    } catch (err) {
+      if (this._isTransientDbError(err) && this._tryRecoverFromDisk()) {
+        return run();
+      }
+      throw err;
     }
-    stmt.free();
-    return rows;
   }
 
   _get(sql, params = []) {
