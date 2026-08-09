@@ -12,6 +12,8 @@ const net = require("net");
 const { spawn, execFileSync } = require("child_process");
 
 const PIPE_PREFIX = "IdtUsageHelper";
+const CONNECT_ATTEMPTS = 25;
+const CONNECT_GAP_MS = 400;
 const HELPER_REL = path.join(
   "helper",
   "IdtUsageHelper",
@@ -23,7 +25,7 @@ const HELPER_REL = path.join(
 );
 const HELPER_PUBLISH = path.join("helper", "IdtUsageHelper", "publish", "IdtUsageHelper.exe");
 
-/** @type {{ socket: net.Socket | null, token: string | null, elevated: boolean, lastLive: object | null, suppress: boolean, starting: boolean, lastError: string | null }} */
+/** @type {{ socket: net.Socket | null, token: string | null, elevated: boolean, lastLive: object | null, suppress: boolean, starting: boolean, lastError: string | null, child: import("child_process").ChildProcess | null, helperExit: { code: number|null, signal: string|null, stderr: string } | null, buf: string, pending: Map, seq: number }} */
 const state = {
   socket: null,
   token: null,
@@ -36,6 +38,7 @@ const state = {
   pending: new Map(),
   seq: 0,
   child: null,
+  helperExit: null,
 };
 
 function projectRoot() {
@@ -125,7 +128,44 @@ function pipePath(token) {
   return `\\\\.\\pipe\\${PIPE_PREFIX}-${token.slice(0, 16)}`;
 }
 
-function status() {
+function pipeNameForToken(token) {
+  return `${PIPE_PREFIX}-${token.slice(0, 16)}`;
+}
+
+function trimStderr(stderr) {
+  return String(stderr || "")
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(-3)
+    .join(" ");
+}
+
+function formatHelperExit(exitInfo) {
+  if (!exitInfo) return null;
+  const code = exitInfo.code ?? exitInfo.signal ?? "?";
+  const detail = trimStderr(exitInfo.stderr);
+  return detail
+    ? `Helper exited early (${code}): ${detail}`
+    : `Helper exited early (${code})`;
+}
+
+/** Map raw net.connect failures to actionable Usage-tab copy. */
+function formatConnectError(err, pipeName, exitInfo) {
+  const exitMsg = formatHelperExit(exitInfo);
+  if (exitMsg) return exitMsg;
+  const msg = String((err && err.message) || err || "helper pipe connect failed");
+  if (/ENOENT/i.test(msg) || /connect timeout/i.test(msg)) {
+    return (
+      `Usage helper is not listening on \\\\.\\pipe\\${pipeName}. ` +
+      `IdtUsageHelper did not start, crashed before the pipe opened, or UAC was cancelled. ` +
+      `Click Enable again and approve UAC if prompted.`
+    );
+  }
+  return msg;
+}
+
+function snapshotStatus() {
   return {
     available: !!resolveHelperExe(),
     connected: !!(state.socket && !state.socket.destroyed),
@@ -136,6 +176,10 @@ function status() {
     last_live: state.lastLive,
     helper_path: resolveHelperExe(),
   };
+}
+
+function status() {
+  return snapshotStatus();
 }
 
 function send(cmd, extra = {}) {
@@ -244,6 +288,24 @@ function connect(userDataDir) {
   });
 }
 
+function trackChildExit(child) {
+  state.child = child;
+  state.helperExit = null;
+  let stderr = "";
+  if (child.stderr) {
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      if (stderr.length > 4000) stderr = stderr.slice(-4000);
+      if (state.helperExit) state.helperExit.stderr = stderr;
+    });
+  }
+  child.on("exit", (code, signal) => {
+    state.helperExit = { code, signal, stderr };
+    if (state.child === child) state.child = null;
+  });
+}
+
 /**
  * Spawn helper in the current process integrity level (no UAC).
  * Used when Electron is already elevated.
@@ -254,17 +316,10 @@ function spawnHelperDirect(exe, pipeName, tokFile) {
     const child = spawn(exe, ["--pipe", pipeName, "--token-file", tokFile], {
       windowsHide: true,
       detached: true,
+      cwd: path.dirname(exe),
       stdio: ["ignore", "ignore", "pipe"],
     });
-    state.child = child;
-    let stderr = "";
-    if (child.stderr) {
-      child.stderr.setEncoding("utf8");
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk;
-        if (stderr.length > 2000) stderr = stderr.slice(-2000);
-      });
-    }
+    trackChildExit(child);
     child.on("error", (err) => {
       if (settled) return;
       settled = true;
@@ -273,18 +328,16 @@ function spawnHelperDirect(exe, pipeName, tokFile) {
     child.once("exit", (code, signal) => {
       if (settled) return;
       settled = true;
-      const detail = (stderr || "").trim().split(/\r?\n/).filter(Boolean).slice(-2).join(" ");
-      reject(
-        new Error(
-          detail
-            ? `Helper exited early (${code ?? signal}): ${detail}`
-            : `Helper exited early (${code ?? signal})`
-        )
-      );
+      reject(new Error(formatHelperExit({ code, signal, stderr: state.helperExit?.stderr || "" })));
     });
-    // Give it a moment; if still alive, treat spawn as OK and let connect retry.
+    // Resolve once the process is actually running; exit listener keeps tracking afterward.
     setTimeout(() => {
       if (settled) return;
+      if (state.helperExit) {
+        settled = true;
+        reject(new Error(formatHelperExit(state.helperExit)));
+        return;
+      }
       settled = true;
       try {
         child.unref();
@@ -292,8 +345,59 @@ function spawnHelperDirect(exe, pipeName, tokFile) {
         /* ignore */
       }
       resolve(child);
-    }, 500);
+    }, 300);
   });
+}
+
+function launchHelperElevated(exe, pipeName, tokFile) {
+  const workDir = path.dirname(exe);
+  const argList = ["--pipe", pipeName, "--token-file", tokFile]
+    .map((a) => `'${String(a).replace(/'/g, "''")}'`)
+    .join(",");
+  return new Promise((resolve, reject) => {
+    const ps = spawn(
+      path.join(
+        process.env.SystemRoot || "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe"
+      ),
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `Start-Process -FilePath '${exe.replace(/'/g, "''")}' -WorkingDirectory '${workDir.replace(/'/g, "''")}' -ArgumentList @(${argList}) -Verb RunAs`,
+      ],
+      { windowsHide: true }
+    );
+    ps.on("error", reject);
+    ps.on("close", (code) => {
+      // RunAs returns quickly after UAC; non-zero often means user cancelled.
+      if (code !== 0) reject(new Error("UAC elevation cancelled or failed"));
+      else resolve();
+    });
+  });
+}
+
+async function waitForHelperPipe(userDataDir, pipeName) {
+  let lastErr = null;
+  for (let i = 0; i < CONNECT_ATTEMPTS; i++) {
+    if (state.helperExit) {
+      throw new Error(formatHelperExit(state.helperExit));
+    }
+    await new Promise((r) => setTimeout(r, CONNECT_GAP_MS));
+    if (state.helperExit) {
+      throw new Error(formatHelperExit(state.helperExit));
+    }
+    try {
+      await connect(userDataDir);
+      return;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw new Error(formatConnectError(lastErr, pipeName, state.helperExit));
 }
 
 /**
@@ -301,11 +405,11 @@ function spawnHelperDirect(exe, pipeName, tokFile) {
  * If Electron is already elevated, spawn directly — no second UAC.
  */
 async function startElevated(userDataDir) {
-  if (state.starting) return status();
+  if (state.starting) return snapshotStatus();
   // Already connected (e.g. helper still running from prior enable).
   if (state.socket && !state.socket.destroyed && state.elevated) {
     state.lastError = null;
-    return status();
+    return snapshotStatus();
   }
   const exe = resolveHelperExe();
   if (!exe) {
@@ -315,89 +419,49 @@ async function startElevated(userDataDir) {
       resourcesPath: process.resourcesPath || null,
       projectRoot: projectRoot(),
     });
-    return status();
+    return snapshotStatus();
   }
   state.starting = true;
+  state.helperExit = null;
   try {
     // Reattach if a prior helper is already listening.
     try {
       await connect(userDataDir);
       state.lastError = null;
       console.log("[usage-bridge] attached to existing helper", exe);
-      return status();
     } catch {
-      /* not running — launch */
-    }
-
-    const token = ensureToken(userDataDir);
-    const tokFile = tokenPath(userDataDir);
-    hardenTokenFileAcl(tokFile);
-    // Pass token via file path — avoid putting the secret on the elevated process command line.
-    const pipeName = `${PIPE_PREFIX}-${token.slice(0, 16)}`;
-    const alreadyElevated = isProcessElevated();
-    console.log("[usage-bridge] starting helper", {
-      exe,
-      pipeName,
-      alreadyElevated,
-    });
-
-    if (alreadyElevated) {
-      await spawnHelperDirect(exe, pipeName, tokFile);
-    } else {
-      const argList = ["--pipe", pipeName, "--token-file", tokFile]
-        .map((a) => `'${String(a).replace(/'/g, "''")}'`)
-        .join(",");
-      await new Promise((resolve, reject) => {
-        const ps = spawn(
-          path.join(
-            process.env.SystemRoot || "C:\\Windows",
-            "System32",
-            "WindowsPowerShell",
-            "v1.0",
-            "powershell.exe"
-          ),
-          [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `Start-Process -FilePath '${exe.replace(/'/g, "''")}' -ArgumentList @(${argList}) -Verb RunAs`,
-          ],
-          { windowsHide: true }
-        );
-        ps.on("error", reject);
-        ps.on("close", (code) => {
-          // RunAs returns quickly after UAC; non-zero often means user cancelled.
-          if (code !== 0) reject(new Error("UAC elevation cancelled or failed"));
-          else resolve();
-        });
+      const token = ensureToken(userDataDir);
+      const tokFile = tokenPath(userDataDir);
+      hardenTokenFileAcl(tokFile);
+      // Pass token via file path — avoid putting the secret on the elevated process command line.
+      const pipeName = pipeNameForToken(token);
+      const alreadyElevated = isProcessElevated();
+      console.log("[usage-bridge] starting helper", {
+        exe,
+        pipeName,
+        alreadyElevated,
+        cwd: path.dirname(exe),
       });
-    }
 
-    // Retry connect a few times while helper boots.
-    let lastErr = null;
-    for (let i = 0; i < 15; i++) {
-      await new Promise((r) => setTimeout(r, 400));
-      try {
-        await connect(userDataDir);
-        state.lastError = null;
-        console.log("[usage-bridge] helper connected");
-        return status();
-      } catch (err) {
-        lastErr = err;
+      if (alreadyElevated) {
+        await spawnHelperDirect(exe, pipeName, tokFile);
+      } else {
+        await launchHelperElevated(exe, pipeName, tokFile);
       }
+
+      await waitForHelperPipe(userDataDir, pipeName);
+      state.lastError = null;
+      console.log("[usage-bridge] helper connected");
     }
-    state.lastError = String(
-      (lastErr && lastErr.message) || lastErr || "helper pipe connect timeout"
-    );
-    console.error("[usage-bridge] connect failed:", state.lastError);
-    return status();
   } catch (err) {
-    state.lastError = String(err.message || err);
+    const token = state.token || ensureToken(userDataDir);
+    const pipeName = pipeNameForToken(token);
+    state.lastError = formatConnectError(err, pipeName, state.helperExit);
     console.error("[usage-bridge] start failed:", state.lastError);
-    return status();
   } finally {
     state.starting = false;
   }
+  return snapshotStatus();
 }
 
 async function stop() {
@@ -416,7 +480,7 @@ async function stop() {
 }
 
 async function getLive() {
-  if (!state.socket || state.socket.destroyed) return { ok: false, ...status(), apps: [] };
+  if (!state.socket || state.socket.destroyed) return { ok: false, ...snapshotStatus(), apps: [] };
   try {
     const msg = await send("get_live");
     state.lastLive = {
@@ -424,9 +488,9 @@ async function getLive() {
       ts: msg.ts || Date.now(),
       suppressed: !!msg.suppressed,
     };
-    return { ok: true, ...status(), apps: state.lastLive.apps, ts: state.lastLive.ts };
+    return { ok: true, ...snapshotStatus(), apps: state.lastLive.apps, ts: state.lastLive.ts };
   } catch (err) {
-    return { ok: false, ...status(), apps: [], error: String(err.message || err) };
+    return { ok: false, ...snapshotStatus(), apps: [], error: String(err.message || err) };
   }
 }
 
@@ -463,6 +527,8 @@ function disconnectForTests() {
   state.lastError = null;
   state.buf = "";
   state.pending.clear();
+  state.helperExit = null;
+  state.child = null;
 }
 
 module.exports = {
@@ -481,6 +547,11 @@ module.exports = {
   tokenPath,
   hardenTokenFileAcl,
   pipePath,
+  pipeNameForToken,
+  formatConnectError,
+  formatHelperExit,
+  waitForHelperPipe,
   PIPE_PREFIX,
+  CONNECT_ATTEMPTS,
   disconnectForTests,
 };

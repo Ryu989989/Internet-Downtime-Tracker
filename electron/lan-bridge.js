@@ -146,9 +146,7 @@ async function wakeDevice(body = {}) {
   return wol.wake({ mac: row.mac });
 }
 
-/**
- * Star map from Devices inventory when SNMP is off — Topology still usable after Devices refresh.
- */
+/** Inventory map when SNMP is off — Topology still works after Devices refresh. */
 function neighborTopologyFromDevices(devices) {
   return lanDevices.neighborTopologyFromDevices(devices);
 }
@@ -156,26 +154,43 @@ function neighborTopologyFromDevices(devices) {
 async function topology() {
   const s = settings();
   const devices = db ? db.listLanDevices() : [];
+  let result;
   if (!s.snmp_enabled) {
-    return neighborTopologyFromDevices(devices);
-  }
-  const seeds = [];
-  if (s.snmp_targets) {
-    for (const part of String(s.snmp_targets).split(/[,\s]+/)) {
-      if (part) seeds.push(part);
+    result = neighborTopologyFromDevices(devices);
+  } else {
+    const seeds = [];
+    if (s.snmp_targets) {
+      for (const part of String(s.snmp_targets).split(/[,\s]+/)) {
+        if (part) seeds.push(part);
+      }
+    }
+    for (const d of devices) {
+      if (d.ip) seeds.push(d.ip);
+    }
+    if (!seeds.length && devices.length) {
+      const fallback = neighborTopologyFromDevices(devices);
+      result = { ...fallback, warning: "No SNMP seeds yet — showing Devices inventory radial map." };
+    } else {
+      result = await snmpTopology.discoverTopology({
+        seeds,
+        community: s.snmp_community || "public",
+      });
+      result = lanDevices.enrichTopologyWithDevices(result, devices);
     }
   }
-  for (const d of devices) {
-    if (d.ip) seeds.push(d.ip);
+
+  // Cheap live Connections cross-ref (best-effort; never blocks Topology).
+  if (s.connections_enabled !== false) {
+    try {
+      const snap = await connections.snapshot({ establishedOnly: true });
+      if (snap && snap.ok !== false && Array.isArray(snap.connections)) {
+        result = lanDevices.attachConnectionCounts(result, snap.connections);
+      }
+    } catch {
+      /* ignore */
+    }
   }
-  if (!seeds.length && devices.length) {
-    const fallback = neighborTopologyFromDevices(devices);
-    return { ...fallback, warning: "No SNMP seeds yet — showing Devices inventory star map." };
-  }
-  return snmpTopology.discoverTopology({
-    seeds,
-    community: s.snmp_community || "public",
-  });
+  return result;
 }
 
 function stopTopology() {

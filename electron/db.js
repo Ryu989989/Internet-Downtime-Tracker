@@ -622,6 +622,9 @@ class TrackerDb {
         vendor TEXT,
         alias TEXT,
         notes TEXT,
+        hostname TEXT,
+        state TEXT,
+        iface TEXT,
         first_seen REAL,
         last_seen REAL,
         online INTEGER NOT NULL DEFAULT 0,
@@ -692,6 +695,19 @@ class TrackerDb {
     }
     if (!probeCols.has("http_ok")) {
       this._run("ALTER TABLE probes ADD COLUMN http_ok INTEGER");
+    }
+
+    const lanCols = new Set(
+      this._all("PRAGMA table_info(lan_devices)").map((c) => c.name)
+    );
+    if (!lanCols.has("hostname")) {
+      this._run("ALTER TABLE lan_devices ADD COLUMN hostname TEXT");
+    }
+    if (!lanCols.has("state")) {
+      this._run("ALTER TABLE lan_devices ADD COLUMN state TEXT");
+    }
+    if (!lanCols.has("iface")) {
+      this._run("ALTER TABLE lan_devices ADD COLUMN iface TEXT");
     }
   }
 
@@ -1359,13 +1375,16 @@ class TrackerDb {
     const mac = String(row.mac || "").toUpperCase();
     if (!mac) return null;
     this._run(
-      `INSERT INTO lan_devices (mac, ip, vendor, alias, notes, first_seen, last_seen, online, source, gateway)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO lan_devices (mac, ip, vendor, alias, notes, hostname, state, iface, first_seen, last_seen, online, source, gateway)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(mac) DO UPDATE SET
          ip=excluded.ip,
          vendor=COALESCE(excluded.vendor, lan_devices.vendor),
          alias=COALESCE(excluded.alias, lan_devices.alias),
          notes=COALESCE(excluded.notes, lan_devices.notes),
+         hostname=COALESCE(excluded.hostname, lan_devices.hostname),
+         state=COALESCE(excluded.state, lan_devices.state),
+         iface=COALESCE(excluded.iface, lan_devices.iface),
          last_seen=excluded.last_seen,
          online=excluded.online,
          source=excluded.source,
@@ -1376,6 +1395,9 @@ class TrackerDb {
         row.vendor != null ? String(row.vendor).slice(0, 120) : null,
         row.alias != null ? String(row.alias).slice(0, 120) : null,
         row.notes != null ? String(row.notes).slice(0, 500) : null,
+        row.hostname != null ? String(row.hostname).slice(0, 120) : null,
+        row.state != null ? String(row.state).slice(0, 32) : null,
+        row.iface != null ? String(row.iface).slice(0, 64) : null,
         row.first_seen != null ? Number(row.first_seen) : Date.now() / 1000,
         row.last_seen != null ? Number(row.last_seen) : Date.now() / 1000,
         row.online ? 1 : 0,

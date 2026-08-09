@@ -90,6 +90,8 @@ describe("helper pipe auth contracts", () => {
     assert.match(bridge, /isProcessElevated/);
     assert.match(bridge, /spawnHelperDirect/);
     assert.match(bridge, /resourcesPath/);
+    assert.match(bridge, /formatConnectError/);
+    assert.match(bridge, /WorkingDirectory/);
     const files = pkg.build.files.join("\n");
     assert.doesNotMatch(files, /helper\/IdtUsageHelper\/publish/);
     const filters = (pkg.build.extraResources || [])

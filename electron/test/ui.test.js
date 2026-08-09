@@ -76,6 +76,22 @@ describe("dashboard redesign contracts", () => {
     assert.doesNotMatch(app, /status:update[\s\S]{0,200}connectionsSnapshot/);
   });
 
+  it("renders topology as accessible radial rings with node and row tooltips", () => {
+    assert.match(app, /function topologyLayout\(/);
+    assert.match(app, /function topologyNodeTip\(/);
+    assert.match(app, /function topologyDetailHtml\(/);
+    assert.match(app, /class="topo-node-group has-tip"/);
+    assert.match(app, /class="topo-row has-tip"/);
+    assert.match(app, /topo-expand/);
+    assert.match(app, /bindTooltips\(graph\)/);
+    assert.match(app, /bindTooltips\(tbody\)/);
+    assert.match(html, /<th scope="col">Neighbor<\/th>/);
+    assert.match(html, /<th scope="col">Conns<\/th>/);
+    assert.match(css, /\.topo-edge/);
+    assert.match(css, /\.topo-detail/);
+    assert.match(css, /\.topo-node-group:focus-visible/);
+  });
+
   it("exposes Usage caps/alerts Settings form wired to usage_*_json keys", () => {
     assert.match(html, /Usage caps &amp; alerts/);
     assert.match(html, /id="usageCapGlobalDailyMib"/);

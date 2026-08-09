@@ -9,7 +9,9 @@ const dgram = require("dgram");
 const net = require("net");
 
 const SYS_DESCR = "1.3.6.1.2.1.1.1.0";
+const SYS_OBJECT_ID = "1.3.6.1.2.1.1.2.0";
 const SYS_NAME = "1.3.6.1.2.1.1.5.0";
+const IF_NUMBER = "1.3.6.1.2.1.2.1.0";
 const IF_DESCR = "1.3.6.1.2.1.2.2.1.2";
 const LLDP_REM_SYS = "1.0.8802.1.1.2.1.4.1.1.9";
 
@@ -133,12 +135,26 @@ function snmpSubtree(target, community, oid, timeoutMs, maxResults = 32) {
 }
 
 async function pollHost(ip, community, timeoutMs) {
-  const get = await snmpGet(ip, community, [SYS_NAME, SYS_DESCR], timeoutMs);
+  const get = await snmpGet(ip, community, [SYS_NAME, SYS_DESCR, SYS_OBJECT_ID, IF_NUMBER], timeoutMs);
   if (!get.ok) {
-    return { ip, ok: false, error: get.error, sysName: null, sysDescr: null, interfaces: [], neighbors: [] };
+    return {
+      ip,
+      ok: false,
+      error: get.error,
+      sysName: null,
+      sysDescr: null,
+      sysObjectID: null,
+      ifCount: null,
+      interfaces: [],
+      neighbors: [],
+    };
   }
   const sysName = get.values[SYS_NAME] || null;
   const sysDescr = get.values[SYS_DESCR] || null;
+  const sysObjectID = get.values[SYS_OBJECT_ID] || null;
+  const ifNumberRaw = get.values[IF_NUMBER];
+  const ifCount =
+    ifNumberRaw != null && Number.isFinite(Number(ifNumberRaw)) ? Number(ifNumberRaw) : null;
   const ifs = await snmpSubtree(ip, community, IF_DESCR, timeoutMs, 24);
   const lldp = await snmpSubtree(ip, community, LLDP_REM_SYS, timeoutMs, 24);
   return {
@@ -147,6 +163,8 @@ async function pollHost(ip, community, timeoutMs) {
     error: null,
     sysName,
     sysDescr: sysDescr ? String(sysDescr).slice(0, 200) : null,
+    sysObjectID: sysObjectID != null ? String(sysObjectID).slice(0, 128) : null,
+    ifCount,
     interfaces: (ifs.rows || []).slice(0, 24).map((r) => r.value),
     neighbors: (lldp.rows || []).slice(0, 24).map((r) => r.value),
   };
@@ -212,8 +230,12 @@ async function discoverTopology(opts = {}) {
       ip: h.ip,
       ok: !!h.ok,
       error: h.error || null,
+      sysName: h.sysName || null,
       sysDescr: h.sysDescr,
+      sysObjectID: h.sysObjectID || null,
+      ifCount: h.ifCount != null ? h.ifCount : h.interfaces ? h.interfaces.length : null,
       interfaces: h.interfaces || [],
+      source: "snmp",
     });
     for (const n of h.neighbors || []) {
       edges.push({ from: h.ip, to: String(n).slice(0, 64), type: "lldp" });
@@ -264,6 +286,8 @@ function udpReachable(host, port = 161, timeoutMs = 500) {
 module.exports = {
   SYS_NAME,
   SYS_DESCR,
+  SYS_OBJECT_ID,
+  IF_NUMBER,
   isPrivateIpv4,
   stop,
   snmpGet,

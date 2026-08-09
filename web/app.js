@@ -2050,6 +2050,205 @@ async function refreshDevicesPanel() {
   }
 }
 
+function topologyLayout(nodes, edges) {
+  if (!nodes.length) return { width: 720, height: 300, positions: [], rootIndex: -1 };
+  const degree = new Map();
+  for (const edge of edges || []) {
+    for (const id of [edge.from, edge.to]) degree.set(String(id), (degree.get(String(id)) || 0) + 1);
+  }
+  let rootIndex = nodes.findIndex((node) => node.gateway);
+  if (rootIndex < 0) {
+    rootIndex = nodes.reduce((best, node, index) => {
+      const score = degree.get(String(node.ip || node.label || "")) || 0;
+      const bestScore = degree.get(String(nodes[best].ip || nodes[best].label || "")) || 0;
+      return score > bestScore ? index : best;
+    }, 0);
+  }
+
+  const placed = [];
+  let offset = 0;
+  let ring = 0;
+  const remaining = nodes.map((node, index) => ({ node, index })).filter(({ index }) => index !== rootIndex);
+  while (offset < remaining.length) {
+    const capacity = 14 + ring * 8;
+    const count = Math.min(capacity, remaining.length - offset);
+    const radius = 92 + ring * 72;
+    for (let i = 0; i < count; i += 1) {
+      const angle = -Math.PI / 2 + (i / count) * Math.PI * 2;
+      placed.push({ ...remaining[offset + i], angle, radius });
+    }
+    offset += count;
+    ring += 1;
+  }
+  const maxRadius = placed.reduce((max, item) => Math.max(max, item.radius), 0);
+  const width = Math.max(720, maxRadius * 2 + 100);
+  const height = Math.max(300, maxRadius * 2 + 60);
+  const cx = width / 2;
+  const cy = height / 2;
+  const positions = nodes.map((node, index) => ({ node, index, x: cx, y: cy }));
+  for (const item of placed) {
+    positions[item.index] = {
+      node: item.node,
+      index: item.index,
+      x: cx + Math.cos(item.angle) * item.radius,
+      y: cy + Math.sin(item.angle) * item.radius,
+    };
+  }
+  return { width, height, positions, rootIndex };
+}
+
+function topologyNodeTip(node) {
+  if (typeof window !== "undefined" && window.__idtTopologyDetailLines) {
+    return window.__idtTopologyDetailLines(node).join(" · ");
+  }
+  const lines = [];
+  const push = (label, value) => {
+    const text = value == null || value === "" ? "" : String(value).trim();
+    if (!text) return;
+    lines.push(`${label}: ${text}`);
+  };
+  const status =
+    node.ok === true ? "online" : node.ok === false ? node.error || "offline" : null;
+  push("IP", node.ip);
+  if (node.label && node.label !== node.ip) push("Name", node.label);
+  push("Alias", node.alias);
+  push("Hostname", node.hostname);
+  push("sysName", node.sysName);
+  push("Vendor", node.vendor);
+  push("MAC", node.mac);
+  push("Status", status);
+  if (node.gateway) push("Role", "Gateway");
+  push("Neighbor", node.state);
+  push("IP scope", node.ip_scope);
+  push("Adapter", node.iface);
+  push("Source", node.source);
+  if (node.first_seen) {
+    try {
+      push("First seen", new Date(Number(node.first_seen) * 1000).toISOString().replace("T", " ").slice(0, 19) + "Z");
+    } catch {
+      /* ignore */
+    }
+  }
+  if (node.last_seen) {
+    try {
+      push("Last seen", new Date(Number(node.last_seen) * 1000).toISOString().replace("T", " ").slice(0, 19) + "Z");
+    } catch {
+      /* ignore */
+    }
+  }
+  if (node.conn_count != null) push("Connections", String(node.conn_count));
+  push("sysDescr", node.sysDescr);
+  push("sysObjectID", node.sysObjectID);
+  if (node.ifCount != null) push("Interfaces", String(node.ifCount));
+  return lines.join(" · ") || String(node.ip || "device");
+}
+
+function topologyDetailHtml(node) {
+  const rows = [
+    ["MAC", node.mac],
+    ["Vendor", node.vendor],
+    ["Alias", node.alias],
+    ["Hostname", node.hostname],
+    ["sysName", node.sysName],
+    ["Adapter", node.iface],
+    ["IP scope", node.ip_scope],
+    ["Neighbor state", node.state],
+    ["Source", node.source],
+    ["Gateway", node.gateway ? "yes" : ""],
+    [
+      "First seen",
+      node.first_seen
+        ? (() => {
+            try {
+              return new Date(Number(node.first_seen) * 1000).toLocaleString();
+            } catch {
+              return "";
+            }
+          })()
+        : "",
+    ],
+    [
+      "Last seen",
+      node.last_seen
+        ? (() => {
+            try {
+              return new Date(Number(node.last_seen) * 1000).toLocaleString();
+            } catch {
+              return "";
+            }
+          })()
+        : "",
+    ],
+    ["Connections", node.conn_count != null ? String(node.conn_count) : ""],
+    ["sysObjectID", node.sysObjectID],
+    ["Interface count", node.ifCount != null ? String(node.ifCount) : ""],
+    ["sysDescr", node.sysDescr],
+  ]
+    .filter(([, v]) => v != null && String(v).trim() !== "")
+    .map(
+      ([k, v]) =>
+        `<div class="topo-kv"><span class="topo-k">${escapeHtml(k)}</span><span class="topo-v">${escapeHtml(String(v))}</span></div>`
+    )
+    .join("");
+  return rows || `<span class="muted">No extra fields</span>`;
+}
+
+function bindTopoExpands(root) {
+  if (!root) return;
+  root.querySelectorAll(".topo-expand").forEach((btn) => {
+    if (btn.dataset.boundExpand) return;
+    btn.dataset.boundExpand = "1";
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("aria-controls");
+      const panel = id ? document.getElementById(id) : null;
+      if (!panel) return;
+      const open = panel.hasAttribute("hidden");
+      if (open) panel.removeAttribute("hidden");
+      else panel.setAttribute("hidden", "");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      btn.textContent = open ? "▾" : "▸";
+    });
+  });
+}
+
+function topologyGraphHtml(nodes, edges) {
+  if (!nodes.length) return `<div class="topo-empty muted">No topology nodes yet</div>`;
+  const layout = topologyLayout(nodes, edges);
+  const byId = new Map();
+  for (const point of layout.positions) {
+    byId.set(String(point.node.ip || point.node.label || point.index), point);
+  }
+  const lines = (edges || [])
+    .map((edge) => {
+      const from = byId.get(String(edge.from));
+      const to = byId.get(String(edge.to));
+      return from && to
+        ? `<line class="topo-edge" x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}"></line>`
+        : "";
+    })
+    .join("");
+  const nodeGroups = layout.positions
+    .map(({ node, index, x, y }) => {
+      const isRoot = index === layout.rootIndex;
+      const tip = topologyNodeTip(node);
+      const rootLabel = isRoot ? String(node.gateway ? "Gateway" : node.label || node.ip || "Root").slice(0, 18) : "";
+      return `<g class="topo-node-group has-tip" tabindex="0" role="img"
+        aria-label="${escapeHtml(tip)}" data-tip-text="${escapeHtml(tip)}">
+        <circle cx="${x}" cy="${y}" r="${isRoot ? 16 : 10}"
+          class="topo-node ${node.ok ? "ok" : "bad"}${isRoot ? " root" : ""}"></circle>
+        ${isRoot ? `<text x="${x}" y="${y + 30}" text-anchor="middle" class="topo-label">${escapeHtml(rootLabel)}</text>` : ""}
+      </g>`;
+    })
+    .join("");
+  const online = nodes.filter((node) => node.ok).length;
+  return `<div class="topo-graph-head">
+      <span>${nodes.length} devices · ${online} online</span>
+      <span class="muted">Hover or focus a node for details</span>
+    </div>
+    <svg viewBox="0 0 ${layout.width} ${layout.height}" role="img"
+      aria-label="Radial topology map with ${nodes.length} nodes">${lines}${nodeGroups}</svg>`;
+}
+
 async function refreshTopologyPanel() {
   const meta = $("#topoMeta");
   const tbody = $("#topoBody");
@@ -2066,33 +2265,32 @@ async function refreshTopologyPanel() {
     if (tbody) {
       tbody.innerHTML =
         (data.nodes || [])
-          .map(
-            (n) => `<tr>
+          .map((n, idx) => {
+            const tip = topologyNodeTip(n);
+            const detailId = `topo-detail-${idx}`;
+            const status = n.ok ? "ok" : n.error || "fail";
+            return `<tr class="topo-row has-tip" tabindex="0" data-tip-text="${escapeHtml(tip)}">
+            <td><button type="button" class="row-expand topo-expand" aria-expanded="false" aria-controls="${detailId}" aria-label="Show node details">▸</button></td>
             <td>${escapeHtml(n.ip || "")}</td>
             <td>${escapeHtml(n.label || "")}</td>
-            <td>${n.ok ? "ok" : escapeHtml(n.error || "fail")}</td>
-            <td>${escapeHtml(n.sysDescr || "")}</td>
-          </tr>`
-          )
-          .join("") || `<tr><td colspan="4" class="muted">No SNMP nodes</td></tr>`;
+            <td>${escapeHtml(status)}</td>
+            <td>${escapeHtml(n.state || "")}</td>
+            <td>${escapeHtml(n.source || "")}</td>
+            <td>${n.conn_count != null ? escapeHtml(String(n.conn_count)) : "—"}</td>
+            <td>${escapeHtml(n.sysDescr || "Device")}</td>
+          </tr>
+          <tr id="${detailId}" class="topo-detail-row" hidden>
+            <td colspan="8"><div class="topo-detail">${topologyDetailHtml(n)}</div></td>
+          </tr>`;
+          })
+          .join("") || `<tr><td colspan="8" class="muted">No topology nodes</td></tr>`;
+      bindTooltips(tbody);
+      bindTopoExpands(tbody);
     }
     if (graph) {
       const nodes = data.nodes || [];
-      const w = 640;
-      const h = 220;
-      const cx = w / 2;
-      const cy = h / 2;
-      const r = Math.min(80, 30 + nodes.length * 8);
-      const circles = nodes
-        .map((n, i) => {
-          const a = (i / Math.max(nodes.length, 1)) * Math.PI * 2;
-          const x = cx + Math.cos(a) * r;
-          const y = cy + Math.sin(a) * r;
-          return `<circle cx="${x}" cy="${y}" r="14" class="topo-node ${n.ok ? "ok" : "bad"}"></circle>
-            <text x="${x}" y="${y + 28}" text-anchor="middle" class="topo-label">${escapeHtml(n.label || n.ip || "")}</text>`;
-        })
-        .join("");
-      graph.innerHTML = `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" role="img">${circles}</svg>`;
+      graph.innerHTML = topologyGraphHtml(nodes, data.edges || []);
+      bindTooltips(graph);
     }
   } catch (e) {
     if (meta) meta.textContent = e.message || "Topology failed";
@@ -2725,19 +2923,18 @@ async function enableUsageMonitoring() {
   try {
     const result = await api("/api/usage/enable");
     if (result && !result.connected) {
+      const err =
+        result.last_error ||
+        "Failed to start IdtUsageHelper (missing resources/helper, UAC cancelled, or pipe timeout).";
       paintUsageHelperStatus({
         available: result.available !== false,
         elevated: false,
         connected: false,
-        last_error:
-          result.last_error ||
-          "Failed to start elevated helper (path missing, spawn error, or pipe timeout).",
+        last_error: err,
       });
       const tbody = $("#usageLiveBody");
       if (tbody) {
-        tbody.innerHTML = `<tr><td colspan="7" class="muted state-error">${escapeHtml(
-          result.last_error || "Enable failed — helper did not connect."
-        )}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" class="muted state-error">${escapeHtml(err)}</td></tr>`;
       }
       return;
     }

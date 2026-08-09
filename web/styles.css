@@ -1563,11 +1563,115 @@ a:hover {
 
 .topo-graph {
   margin: 0.75rem 0;
-  min-height: 220px;
-  border: 1px solid var(--border, #333);
-  border-radius: 6px;
-  overflow: hidden;
+  min-height: 300px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  overflow-x: auto;
+  overflow-y: hidden;
 }
-.topo-node.ok { fill: #3d8b6e; }
-.topo-node.bad { fill: #8b4545; }
-.topo-label { fill: currentColor; font-size: 11px; }
+
+.topo-graph-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.topo-graph svg {
+  display: block;
+  width: 100%;
+  min-width: 34rem;
+  height: auto;
+  max-height: 30rem;
+  background:
+    radial-gradient(circle at center, color-mix(in srgb, var(--blue) 7%, transparent), transparent 55%);
+}
+
+.topo-edge {
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+  opacity: 0.72;
+}
+
+.topo-node-group {
+  cursor: help;
+}
+
+.topo-node {
+  stroke: var(--surface-1);
+  stroke-width: 4;
+  transition: stroke-width var(--dur-fast) var(--ease-out);
+}
+
+.topo-node.ok { fill: var(--green); }
+.topo-node.bad { fill: var(--red); }
+.topo-node.root {
+  stroke: var(--blue);
+  stroke-width: 5;
+}
+
+.topo-node-group:hover .topo-node,
+.topo-node-group:focus-visible .topo-node {
+  stroke: var(--focus-ring);
+  stroke-width: 6;
+}
+
+.topo-node-group:focus-visible {
+  outline: none;
+}
+
+.topo-label {
+  fill: var(--text);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.topo-empty {
+  display: grid;
+  min-height: 300px;
+  place-items: center;
+}
+
+.topo-row {
+  cursor: help;
+}
+
+.topo-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.topo-detail-row td {
+  background: color-mix(in srgb, var(--panel, #15202b) 88%, #000);
+  border-top: none;
+  padding: 0.55rem 0.75rem 0.75rem;
+}
+
+.topo-detail {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  gap: 0.35rem 1rem;
+  font-size: 0.85rem;
+}
+
+.topo-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.topo-k {
+  color: var(--muted, #9aabba);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.topo-v {
+  word-break: break-word;
+}

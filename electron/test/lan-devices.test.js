@@ -9,6 +9,8 @@ const {
   formatPowerShellFailure,
   setRunPowerShellForTest,
   resetRunPowerShellForTest,
+  deviceDescriptor,
+  enrichTopologyWithDevices,
 } = require("../lan-devices");
 const { lookupOui, formatMac, normalizeMac } = require("../oui");
 const { buildMagicPacket } = require("../wol");
@@ -119,17 +121,122 @@ describe("LAN devices snapshot", () => {
 });
 
 describe("Topology neighbor fallback", () => {
-  it("builds star map from devices when SNMP would be off", () => {
+  it("builds topology nodes with useful inventory descriptors", () => {
     const { neighborTopologyFromDevices } = require("../lan-devices");
     const topo = neighborTopologyFromDevices([
-      { ip: "192.168.1.1", mac: "AA", gateway: 1, online: 1, vendor: "Router" },
-      { ip: "192.168.1.10", mac: "BB", gateway: 0, online: 1, alias: "Pi" },
+      {
+        ip: "192.168.1.1",
+        mac: "AA:BB:CC:DD:EE:FF",
+        gateway: 1,
+        online: 1,
+        vendor: "Router Co",
+        alias: "Main router",
+        hostname: "gateway.local",
+        state: "Reachable",
+        iface: "Ethernet",
+        source: "neighbor",
+        last_seen: 1_700_000_000,
+      },
+      { ip: "192.168.1.10", mac: "BB", gateway: 0, online: 0, alias: "Pi" },
     ]);
     assert.equal(topo.ok, true);
     assert.equal(topo.mode, "neighbor");
     assert.equal(topo.nodes.length, 2);
     assert.equal(topo.edges.length, 1);
     assert.equal(topo.edges[0].from, "192.168.1.1");
+    assert.match(topo.nodes[0].sysDescr, /Main router/);
+    assert.match(topo.nodes[0].sysDescr, /gateway\.local/);
+    assert.match(topo.nodes[0].sysDescr, /Router Co/);
+    assert.match(topo.nodes[0].sysDescr, /Gateway/);
+    assert.match(topo.nodes[0].sysDescr, /online/);
+    assert.match(topo.nodes[0].sysDescr, /Reachable/);
+    assert.match(topo.nodes[0].sysDescr, /Ethernet/);
+    assert.match(topo.nodes[0].sysDescr, /AA:BB:CC:DD:EE:FF/);
+    assert.equal(topo.nodes[0].gateway, true);
+    assert.equal(topo.nodes[0].ip_scope, "unicast");
+    assert.match(topo.nodes[1].sysDescr, /^Pi · offline · unicast · neighbor · MAC BB$/);
+  });
+
+  it("always describes a known inventory device", () => {
+    assert.equal(deviceDescriptor({ ip: "192.168.1.20", online: 1 }), "Device · online · unicast");
+  });
+
+  it("fills missing SNMP descriptions from matching inventory", () => {
+    const topo = enrichTopologyWithDevices(
+      {
+        nodes: [
+          { ip: "192.168.1.2", label: "192.168.1.2", ok: false, sysDescr: null },
+          { ip: "192.168.1.3", label: "switch", ok: true, sysDescr: "Managed switch" },
+        ],
+      },
+      [{ ip: "192.168.1.2", alias: "NAS", vendor: "Synology", mac: "AA", online: 1 }]
+    );
+    assert.equal(topo.nodes[0].label, "NAS");
+    assert.match(topo.nodes[0].sysDescr, /NAS · Synology · online/);
+    assert.match(topo.nodes[0].sysDescr, /MAC AA/);
+    assert.equal(topo.nodes[1].sysDescr, "Managed switch");
+  });
+
+  it("classifies link-local vs unicast and attaches connection counts", () => {
+    const {
+      classifyIpScope,
+      attachConnectionCounts,
+      topologyNodeDetailLines,
+      countConnectionsByIp,
+    } = require("../lan-devices");
+    assert.equal(classifyIpScope("169.254.10.2"), "link-local");
+    assert.equal(classifyIpScope("192.168.1.5"), "unicast");
+    const counts = countConnectionsByIp([
+      { local: "192.168.1.5:50000", remote: "1.1.1.1:443" },
+      { local: "192.168.1.5:50001", remote: "8.8.8.8:53" },
+      { local: "10.0.0.2:80", remote: "192.168.1.5:443" },
+    ]);
+    assert.equal(counts.get("192.168.1.5"), 3);
+    const topo = attachConnectionCounts(
+      {
+        nodes: [
+          { ip: "192.168.1.5", label: "Pi", ok: true, sysDescr: "Pi · online", source: "neighbor" },
+          { ip: "10.0.0.9", label: "idle", ok: true, sysDescr: "idle" },
+        ],
+      },
+      [
+        { local: "192.168.1.5:1", remote: "1.1.1.1:443" },
+        { local: "192.168.1.5:2", remote: "1.0.0.1:443" },
+      ]
+    );
+    assert.equal(topo.nodes[0].conn_count, 2);
+    assert.match(topo.nodes[0].sysDescr, /2 conns/);
+    assert.equal(topo.nodes[1].conn_count, 0);
+    const tip = topologyNodeDetailLines({
+      ip: "169.254.1.1",
+      mac: "AA",
+      state: "Stale",
+      iface: "Wi-Fi",
+      ip_scope: "link-local",
+      source: "neighbor",
+      conn_count: 1,
+      ok: true,
+    });
+    assert.ok(tip.some((line) => /IP: 169\.254\.1\.1/.test(line)));
+    assert.ok(tip.some((line) => /Neighbor: Stale/.test(line)));
+    assert.ok(tip.some((line) => /Adapter: Wi-Fi/.test(line)));
+    assert.ok(tip.some((line) => /Connections: 1/.test(line)));
+  });
+
+  it("shapes neighbor with iface/state/ip_scope", () => {
+    const row = shapeNeighbor(
+      {
+        ip: "169.254.22.3",
+        mac: "B8-27-EB-01-02-03",
+        state: "Permanent",
+        iface: "Ethernet 2",
+      },
+      null,
+      1000
+    );
+    assert.equal(row.state, "Permanent");
+    assert.equal(row.iface, "Ethernet 2");
+    assert.equal(row.ip_scope, "link-local");
   });
 });
 
