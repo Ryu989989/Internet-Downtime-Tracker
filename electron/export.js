@@ -261,6 +261,54 @@ function buildHtmlReport({
 </html>`;
 }
 
+function lanDevicesToCsv(devices) {
+  const header = [
+    "mac",
+    "ip",
+    "vendor",
+    "alias",
+    "notes",
+    "first_seen",
+    "last_seen",
+    "online",
+    "source",
+    "gateway",
+  ];
+  const lines = [header.join(",")];
+  for (const d of devices || []) {
+    lines.push(
+      [
+        d.mac,
+        d.ip,
+        d.vendor,
+        d.alias,
+        d.notes,
+        d.first_seen,
+        d.last_seen,
+        d.online ? 1 : 0,
+        d.source,
+        d.gateway ? 1 : 0,
+      ]
+        .map(csvEscape)
+        .join(",")
+    );
+  }
+  return lines.join("\r\n") + "\r\n";
+}
+
+function lanDevicesToJson(devices) {
+  return JSON.stringify(
+    {
+      exported_at: new Date().toISOString(),
+      count: (devices || []).length,
+      disclaimer: "Passive/active LAN inventory export — not a complete network map.",
+      devices: devices || [],
+    },
+    null,
+    2
+  );
+}
+
 module.exports = {
   csvEscape,
   outagesToCsv,
@@ -269,4 +317,6 @@ module.exports = {
   buildHtmlReport,
   fmtDuration,
   uptimePct,
+  lanDevicesToCsv,
+  lanDevicesToJson,
 };

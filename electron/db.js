@@ -5,6 +5,7 @@ const path = require("path");
 const { URL } = require("url");
 const initSqlJs = require("sql.js");
 const { isBlockedProbeHost, isBlockedHttpUrl } = require("./netcheck");
+const { normalizeWebhookUrl, parseWebhookList } = require("./notify-webhooks");
 
 const APP_DIR_NAME = "InternetDowntimeTracker";
 /** Full sql.js export is expensive; debounce aggressively (probes are high-churn). */
@@ -22,6 +23,36 @@ const DEFAULT_SETTINGS = {
   wan_targets: "1.1.1.1:443,8.8.8.8:53",
   dns_resolver: "1.1.1.1",
   http_url: "http://connectivitycheck.gstatic.com/generate_204",
+  connections_enabled: true,
+  usage_monitoring: false,
+  network_control_enabled: false,
+  usage_caps_json: "{}",
+  usage_alerts_json: "{}",
+  lan_devices_enabled: true,
+  lan_new_device_toast: false,
+  snmp_enabled: false,
+  snmp_community: "public",
+  snmp_targets: "",
+  sniffer_enabled: false,
+  sniffer_always_on: false,
+  notify_webhooks_json: "[]",
+  notify_quiet_hours_json: "{}",
+  influx_enabled: false,
+  influx_url: "",
+  influx_token: "",
+  influx_org: "",
+  influx_bucket: "",
+  es_enabled: false,
+  es_url: "",
+  es_api_key: "",
+  prom_metrics_enabled: false,
+  http_api_enabled: false,
+  http_api_token: "",
+  lan_active_discovery: false,
+  lan_discovery_interval_min: 15,
+  router_webhook_url: "",
+  router_webhook_template: "",
+  router_webhook_auto_new: false,
 };
 
 const SETTINGS_BOUNDS = {
@@ -29,6 +60,50 @@ const SETTINGS_BOUNDS = {
   debounce_fail_count: { min: 1, max: 20 },
   probe_retention_days: { min: 1, max: 365 },
   port: { min: 1, max: 65535 },
+  lan_discovery_interval_min: { min: 5, max: 1440 },
+};
+
+const BOOL_SETTINGS = new Set([
+  "autostart",
+  "toast_alerts",
+  "minimize_to_tray",
+  "connections_enabled",
+  "usage_monitoring",
+  "network_control_enabled",
+  "lan_devices_enabled",
+  "lan_new_device_toast",
+  "snmp_enabled",
+  "sniffer_enabled",
+  "sniffer_always_on",
+  "influx_enabled",
+  "es_enabled",
+  "prom_metrics_enabled",
+  "http_api_enabled",
+  "lan_active_discovery",
+  "router_webhook_auto_new",
+]);
+
+const JSON_SETTINGS = new Set([
+  "usage_caps_json",
+  "usage_alerts_json",
+  "notify_webhooks_json",
+  "notify_quiet_hours_json",
+]);
+
+const STRING_SETTINGS_MAX = {
+  snmp_community: 64,
+  snmp_targets: 500,
+  notify_webhooks_json: 8000,
+  notify_quiet_hours_json: 500,
+  influx_url: 500,
+  influx_token: 500,
+  influx_org: 120,
+  influx_bucket: 120,
+  es_url: 500,
+  es_api_key: 500,
+  http_api_token: 128,
+  router_webhook_url: 2000,
+  router_webhook_template: 4000,
 };
 
 const OUTAGE_TYPES = new Set(["lan", "wan", "dns", "http"]);
@@ -48,6 +123,31 @@ function coerceBoolSetting(value) {
   if (value === true || value === 1) return true;
   if (value === false || value === 0) return false;
   return null;
+}
+
+const USAGE_JSON_SETTINGS_MAX = 8000;
+
+/** Normalize usage_caps_json / usage_alerts_json to a compact object JSON string. */
+function normalizeUsageJsonSetting(value) {
+  let obj;
+  if (value == null) return null;
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return null;
+    try {
+      obj = JSON.parse(s);
+    } catch {
+      return null;
+    }
+  } else if (typeof value === "object") {
+    obj = value;
+  } else {
+    return null;
+  }
+  if (obj === null || Array.isArray(obj) || typeof obj !== "object") return null;
+  const text = JSON.stringify(obj);
+  if (text.length > USAGE_JSON_SETTINGS_MAX) return null;
+  return text;
 }
 
 /** Serialize snapshot JSON without mid-string truncation (keeps parseable JSON). */
@@ -84,9 +184,57 @@ function encodeSnapshotJson(snapshot, maxLen = 8000) {
   return JSON.stringify({ truncated: true, type: slim.type || null });
 }
 
+function normalizeJsonArrayOrObjectSetting(value, preferArray) {
+  if (value == null) return null;
+  let obj;
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return preferArray ? "[]" : "{}";
+    try {
+      obj = JSON.parse(s);
+    } catch {
+      return null;
+    }
+  } else {
+    obj = value;
+  }
+  if (preferArray) {
+    if (!Array.isArray(obj)) return null;
+  } else if (obj === null || Array.isArray(obj) || typeof obj !== "object") {
+    return null;
+  }
+  const text = JSON.stringify(obj);
+  if (text.length > USAGE_JSON_SETTINGS_MAX) return null;
+  return text;
+}
+
 function normalizeSettingValue(key, value) {
-  if (key === "autostart" || key === "toast_alerts" || key === "minimize_to_tray") {
+  if (BOOL_SETTINGS.has(key)) {
     return coerceBoolSetting(value);
+  }
+  if (key === "usage_caps_json" || key === "usage_alerts_json") {
+    return normalizeUsageJsonSetting(value);
+  }
+  if (key === "notify_webhooks_json") {
+    const raw = normalizeJsonArrayOrObjectSetting(value, true);
+    if (raw == null) return null;
+    const cleaned = parseWebhookList(raw);
+    return JSON.stringify(cleaned);
+  }
+  if (key === "notify_quiet_hours_json") {
+    return normalizeJsonArrayOrObjectSetting(value, false);
+  }
+  if (key === "router_webhook_url") {
+    if (value == null || value === "") return "";
+    const s = String(value).trim();
+    if (s.length > STRING_SETTINGS_MAX.router_webhook_url) return null;
+    return normalizeWebhookUrl(s) || null;
+  }
+  if (STRING_SETTINGS_MAX[key] != null && key !== "notify_webhooks_json" && key !== "notify_quiet_hours_json") {
+    if (value == null) return "";
+    const s = String(value).trim();
+    if (s.length > STRING_SETTINGS_MAX[key]) return null;
+    return s;
   }
   if (key === "wan_targets" || key === "dns_resolver" || key === "http_url") {
     if (value == null) return null;
@@ -437,6 +585,62 @@ class TrackerDb {
         raw_json TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_speed_tests_at ON speed_tests(tested_at);
+
+      CREATE TABLE IF NOT EXISTS usage_apps (
+        app_key TEXT PRIMARY KEY,
+        display_name TEXT,
+        exe_path TEXT,
+        ignored INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS usage_hourly (
+        app_key TEXT NOT NULL,
+        bucket_ts INTEGER NOT NULL,
+        bytes_in INTEGER NOT NULL DEFAULT 0,
+        bytes_out INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(app_key, bucket_ts)
+      );
+      CREATE INDEX IF NOT EXISTS idx_usage_hourly_ts ON usage_hourly(bucket_ts);
+
+      CREATE TABLE IF NOT EXISTS usage_daily (
+        app_key TEXT NOT NULL,
+        bucket_ts INTEGER NOT NULL,
+        bytes_in INTEGER NOT NULL DEFAULT 0,
+        bytes_out INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(app_key, bucket_ts)
+      );
+      CREATE INDEX IF NOT EXISTS idx_usage_daily_ts ON usage_daily(bucket_ts);
+
+      CREATE TABLE IF NOT EXISTS usage_alert_state (
+        rule_key TEXT PRIMARY KEY,
+        last_fired_at REAL
+      );
+
+      CREATE TABLE IF NOT EXISTS lan_devices (
+        mac TEXT PRIMARY KEY,
+        ip TEXT,
+        vendor TEXT,
+        alias TEXT,
+        notes TEXT,
+        first_seen REAL,
+        last_seen REAL,
+        online INTEGER NOT NULL DEFAULT 0,
+        source TEXT,
+        gateway INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_lan_devices_ip ON lan_devices(ip);
+      CREATE INDEX IF NOT EXISTS idx_lan_devices_last ON lan_devices(last_seen);
+
+      CREATE TABLE IF NOT EXISTS lan_scan_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_ip TEXT NOT NULL,
+        started_at REAL NOT NULL,
+        finished_at REAL,
+        ports_json TEXT,
+        cve_json TEXT,
+        status TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_lan_scan_at ON lan_scan_results(started_at);
     `);
     this._migrateSchema();
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
@@ -774,6 +978,192 @@ class TrackerDb {
     );
   }
 
+  upsertUsageApp({ app_key, display_name, exe_path, ignored = undefined }) {
+    const key = String(app_key || "").trim();
+    if (!key) return null;
+    const name = display_name == null ? null : String(display_name).slice(0, 256);
+    const exe = exe_path == null ? null : String(exe_path).slice(0, 1024);
+    const existing = this._get("SELECT ignored FROM usage_apps WHERE app_key=?", [key]);
+    const ign =
+      ignored !== undefined ? (ignored ? 1 : 0) : existing ? existing.ignored : 0;
+    this._run(
+      `INSERT INTO usage_apps (app_key, display_name, exe_path, ignored)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(app_key) DO UPDATE SET
+         display_name=excluded.display_name,
+         exe_path=excluded.exe_path,
+         ignored=excluded.ignored`,
+      [key, name, exe, ign]
+    );
+    this._persist();
+    return this._get("SELECT * FROM usage_apps WHERE app_key=?", [key]);
+  }
+
+  setUsageIgnored(app_key, ignored) {
+    const key = String(app_key || "").trim();
+    if (!key) return null;
+    this._run("UPDATE usage_apps SET ignored=? WHERE app_key=?", [
+      ignored ? 1 : 0,
+      key,
+    ]);
+    this._persist();
+    return this._get("SELECT * FROM usage_apps WHERE app_key=?", [key]);
+  }
+
+  listUsageApps({ includeIgnored = false } = {}) {
+    if (includeIgnored) {
+      return this._all(
+        "SELECT * FROM usage_apps ORDER BY display_name, app_key"
+      );
+    }
+    return this._all(
+      "SELECT * FROM usage_apps WHERE ignored=0 ORDER BY display_name, app_key"
+    );
+  }
+
+  addUsageBytes({ app_key, bytes_in = 0, bytes_out = 0, atMs = null } = {}) {
+    const key = String(app_key || "").trim();
+    if (!key) return;
+    const bi = Math.max(0, Math.trunc(Number(bytes_in)) || 0);
+    const bo = Math.max(0, Math.trunc(Number(bytes_out)) || 0);
+    if (!bi && !bo) return;
+    const ms = atMs != null ? Number(atMs) : Date.now();
+    if (!Number.isFinite(ms)) return;
+    const sec = Math.floor(ms / 1000);
+    const hourTs = Math.floor(sec / 3600) * 3600;
+    const dayTs = Math.floor(sec / 86400) * 86400;
+    this._run(
+      `INSERT INTO usage_hourly (app_key, bucket_ts, bytes_in, bytes_out)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(app_key, bucket_ts) DO UPDATE SET
+         bytes_in=bytes_in+excluded.bytes_in,
+         bytes_out=bytes_out+excluded.bytes_out`,
+      [key, hourTs, bi, bo]
+    );
+    this._run(
+      `INSERT INTO usage_daily (app_key, bucket_ts, bytes_in, bytes_out)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(app_key, bucket_ts) DO UPDATE SET
+         bytes_in=bytes_in+excluded.bytes_in,
+         bytes_out=bytes_out+excluded.bytes_out`,
+      [key, dayTs, bi, bo]
+    );
+    this._persist();
+  }
+
+  listUsageHourly({ fromTs = null, toTs = null, app_key = null } = {}) {
+    const clauses = [];
+    const params = [];
+    if (fromTs != null) {
+      clauses.push("bucket_ts >= ?");
+      params.push(Math.trunc(Number(fromTs)));
+    }
+    if (toTs != null) {
+      clauses.push("bucket_ts <= ?");
+      params.push(Math.trunc(Number(toTs)));
+    }
+    if (app_key != null && String(app_key).trim()) {
+      clauses.push("app_key = ?");
+      params.push(String(app_key).trim());
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return this._all(
+      `SELECT app_key, bucket_ts, bytes_in, bytes_out
+       FROM usage_hourly ${where} ORDER BY bucket_ts, app_key`,
+      params
+    );
+  }
+
+  listUsageDaily({ fromTs = null, toTs = null, app_key = null } = {}) {
+    const clauses = [];
+    const params = [];
+    if (fromTs != null) {
+      clauses.push("bucket_ts >= ?");
+      params.push(Math.trunc(Number(fromTs)));
+    }
+    if (toTs != null) {
+      clauses.push("bucket_ts <= ?");
+      params.push(Math.trunc(Number(toTs)));
+    }
+    if (app_key != null && String(app_key).trim()) {
+      clauses.push("app_key = ?");
+      params.push(String(app_key).trim());
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return this._all(
+      `SELECT app_key, bucket_ts, bytes_in, bytes_out
+       FROM usage_daily ${where} ORDER BY bucket_ts, app_key`,
+      params
+    );
+  }
+
+  usageTotals({ fromTs = null, toTs = null, granularity = "hourly" } = {}) {
+    const table = granularity === "daily" ? "usage_daily" : "usage_hourly";
+    const clauses = [];
+    const params = [];
+    if (fromTs != null) {
+      clauses.push("bucket_ts >= ?");
+      params.push(Math.trunc(Number(fromTs)));
+    }
+    if (toTs != null) {
+      clauses.push("bucket_ts <= ?");
+      params.push(Math.trunc(Number(toTs)));
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return this._all(
+      `SELECT app_key,
+              SUM(bytes_in) AS bytes_in,
+              SUM(bytes_out) AS bytes_out,
+              SUM(bytes_in + bytes_out) AS bytes_total
+       FROM ${table} ${where}
+       GROUP BY app_key
+       ORDER BY bytes_total DESC`,
+      params
+    );
+  }
+
+  pruneUsage({ hourlyDays = 14, dailyDays = 90 } = {}) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const hDays = Math.max(1, Math.trunc(Number(hourlyDays)) || 14);
+    const dDays = Math.max(1, Math.trunc(Number(dailyDays)) || 90);
+    const hourCutoff = nowSec - hDays * 86400;
+    const dayCutoff = nowSec - dDays * 86400;
+    this._run("DELETE FROM usage_hourly WHERE bucket_ts < ?", [hourCutoff]);
+    this._run("DELETE FROM usage_daily WHERE bucket_ts < ?", [dayCutoff]);
+    this._persistImmediate();
+  }
+
+  clearUsageHistory() {
+    this._run("DELETE FROM usage_hourly");
+    this._run("DELETE FROM usage_daily");
+    this._run("DELETE FROM usage_apps");
+    this._run("DELETE FROM usage_alert_state");
+    this._persistImmediate();
+  }
+
+  getAlertLastFired(rule_key) {
+    const key = String(rule_key || "").trim();
+    if (!key) return null;
+    const row = this._get(
+      "SELECT last_fired_at FROM usage_alert_state WHERE rule_key=?",
+      [key]
+    );
+    return row && row.last_fired_at != null ? row.last_fired_at : null;
+  }
+
+  setAlertLastFired(rule_key, atSec) {
+    const key = String(rule_key || "").trim();
+    if (!key) return;
+    const ts = Number(atSec);
+    if (!Number.isFinite(ts)) return;
+    this._run(
+      `INSERT INTO usage_alert_state (rule_key, last_fired_at) VALUES (?, ?)
+       ON CONFLICT(rule_key) DO UPDATE SET last_fired_at=excluded.last_fired_at`,
+      [key, ts]
+    );
+    this._persist();
+  }
+
   summary(now = null, { observeSince = null } = {}) {
     const tNow = now != null ? now : Date.now() / 1000;
     const windows = { "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400 };
@@ -964,6 +1354,89 @@ class TrackerDb {
     }
     return result;
   }
+
+  upsertLanDevice(row) {
+    const mac = String(row.mac || "").toUpperCase();
+    if (!mac) return null;
+    this._run(
+      `INSERT INTO lan_devices (mac, ip, vendor, alias, notes, first_seen, last_seen, online, source, gateway)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(mac) DO UPDATE SET
+         ip=excluded.ip,
+         vendor=COALESCE(excluded.vendor, lan_devices.vendor),
+         alias=COALESCE(excluded.alias, lan_devices.alias),
+         notes=COALESCE(excluded.notes, lan_devices.notes),
+         last_seen=excluded.last_seen,
+         online=excluded.online,
+         source=excluded.source,
+         gateway=excluded.gateway`,
+      [
+        mac,
+        row.ip != null ? String(row.ip).slice(0, 64) : null,
+        row.vendor != null ? String(row.vendor).slice(0, 120) : null,
+        row.alias != null ? String(row.alias).slice(0, 120) : null,
+        row.notes != null ? String(row.notes).slice(0, 500) : null,
+        row.first_seen != null ? Number(row.first_seen) : Date.now() / 1000,
+        row.last_seen != null ? Number(row.last_seen) : Date.now() / 1000,
+        row.online ? 1 : 0,
+        row.source != null ? String(row.source).slice(0, 32) : "neighbor",
+        row.gateway ? 1 : 0,
+      ]
+    );
+    return this.getLanDevice(mac);
+  }
+
+  getLanDevice(mac) {
+    return this._get("SELECT * FROM lan_devices WHERE mac = ?", [String(mac || "").toUpperCase()]);
+  }
+
+  listLanDevices() {
+    return this._all(
+      "SELECT * FROM lan_devices ORDER BY gateway DESC, online DESC, last_seen DESC LIMIT 500"
+    );
+  }
+
+  updateLanDeviceMeta(mac, { alias, notes } = {}) {
+    const row = this.getLanDevice(mac);
+    if (!row) return null;
+    const nextAlias = alias !== undefined ? String(alias || "").slice(0, 120) : row.alias;
+    const nextNotes = notes !== undefined ? String(notes || "").slice(0, 500) : row.notes;
+    this._run("UPDATE lan_devices SET alias = ?, notes = ? WHERE mac = ?", [
+      nextAlias,
+      nextNotes,
+      String(mac).toUpperCase(),
+    ]);
+    return this.getLanDevice(mac);
+  }
+
+  markLanDevicesOffline(beforeTs) {
+    this._run("UPDATE lan_devices SET online = 0 WHERE last_seen < ? AND online = 1", [
+      Number(beforeTs) || 0,
+    ]);
+  }
+
+  insertLanScanResult(row) {
+    this._run(
+      `INSERT INTO lan_scan_results (target_ip, started_at, finished_at, ports_json, cve_json, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        String(row.target_ip || "").slice(0, 64),
+        Number(row.started_at) || Date.now() / 1000,
+        row.finished_at != null ? Number(row.finished_at) : null,
+        row.ports_json != null ? String(row.ports_json).slice(0, 20000) : null,
+        row.cve_json != null ? String(row.cve_json).slice(0, 20000) : null,
+        row.status != null ? String(row.status).slice(0, 32) : "done",
+      ]
+    );
+    return this._get("SELECT * FROM lan_scan_results ORDER BY id DESC LIMIT 1");
+  }
+
+  listLanScanResults({ limit = 20 } = {}) {
+    const lim = Math.min(100, Math.max(1, Number(limit) || 20));
+    return this._all(
+      `SELECT * FROM lan_scan_results ORDER BY started_at DESC LIMIT ${lim}`
+    );
+  }
 }
 
 module.exports = {
@@ -972,6 +1445,7 @@ module.exports = {
   SETTINGS_BOUNDS,
   OUTAGE_TYPES,
   LIST_OUTAGES_LIMIT_MAX,
+  BOOL_SETTINGS,
   normalizeSettingValue,
   normalizeSettingsObject,
   encodeSnapshotJson,

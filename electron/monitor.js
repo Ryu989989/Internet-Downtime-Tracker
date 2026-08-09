@@ -101,6 +101,8 @@ class Monitor {
     this._probeCount = 0;
     this._running = false;
     this._suppressProbes = false;
+    /** Nested holders (scan + discovery + speedtest) — clear only at 0. */
+    this._suppressDepth = 0;
     this._suppressCooldownUntil = 0;
     this._qualityRunning = false;
     /** Skip closing open outages for N successful layer updates after resume. */
@@ -147,12 +149,19 @@ class Monitor {
    */
   setProbeSuppress(active, { cooldownMs = 8000 } = {}) {
     if (active) {
+      this._suppressDepth = (this._suppressDepth || 0) + 1;
       this._suppressProbes = true;
       this._suppressCooldownUntil = 0;
       this._resetFailStreaks();
       this.state.probe_suppressed = true;
       this._probeGen += 1;
     } else {
+      this._suppressDepth = Math.max(0, (this._suppressDepth || 0) - 1);
+      if (this._suppressDepth > 0) {
+        // Another holder still needs suppress (e.g. scan + discovery overlap).
+        this._emit();
+        return;
+      }
       this._suppressProbes = false;
       this._suppressCooldownUntil = Date.now() + Math.max(0, Number(cooldownMs) || 0);
       this._resetFailStreaks();

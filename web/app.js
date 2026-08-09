@@ -74,10 +74,44 @@ const LAYER_TIPS = {
     meaning:
       "Share of test packets that never arrived. Healthy home broadband is usually under 1% (ideally ~0%). Around 1-2% can cause lag or glitches; above ~2-5% is often noticeable on calls and games.",
   },
+  "conn-proto": {
+    name: "Protocol",
+    meaning: "TCP or UDP for this endpoint.",
+  },
+  "conn-process": {
+    name: "Process",
+    meaning:
+      "Executable that owns the socket. \"?\" means the name could not be resolved (other users or protected system processes often need Run as administrator).",
+  },
+  "conn-pid": {
+    name: "PID",
+    meaning: "Windows process ID that owns this connection (OwningProcess).",
+  },
+  "conn-local": {
+    name: "Local",
+    meaning: "Local IP address and port on this machine.",
+  },
+  "conn-remote": {
+    name: "Remote",
+    meaning: "Remote peer address and port. UDP endpoints show \"-\" (no remote).",
+  },
+  "conn-state": {
+    name: "State",
+    meaning: "TCP state (e.g. Established, Listen, TimeWait). UDP endpoints are shown as Listen.",
+  },
+  "conn-adapter-mbps": {
+    name: "Adapter throughput",
+    meaning:
+      "Estimated receive (↓) and send (↑) rate in Mbps from consecutive snapshots. \"-\" until a second sample arrives (or after refresh resets the baseline).",
+  },
 };
 
-let sparkChart, hourChart, dowChart, latencyChart, speedTrendChart;
+let sparkChart, hourChart, dowChart, latencyChart, speedTrendChart, usageTrendChart;
 let speedRunning = false;
+let connAutoRefreshTimer = null;
+let connView = "devices";
+let sniffPollTimer = null;
+let lastUsageLiveApps = [];
 let chartEnterDone = { spark: false, latency: false, hour: false, dow: false, speed: false };
 const HISTORY_ROW_LIMIT = 100;
 let chartTipAnchor = null;
@@ -152,6 +186,15 @@ function fmtMbps(n) {
   return Number(n).toFixed(1);
 }
 
+function fmtBytes(n) {
+  const b = Number(n);
+  if (!Number.isFinite(b)) return "-";
+  if (b < 1024) return `${Math.round(b)} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
 function fmtMs(n) {
   if (n == null || Number.isNaN(Number(n))) return "-";
   return `${Number(n).toFixed(1)} ms`;
@@ -206,6 +249,89 @@ async function api(path, opts) {
     if (path === "/api/speedtest/run") return window.idt.speedtestRun();
     if (path === "/api/speedtest/cancel") return window.idt.speedtestCancel();
     if (path === "/api/speedtest/install") return window.idt.speedtestInstall();
+    if (path.startsWith("/api/connections/snapshot")) {
+      const q = path.includes("?") ? new URLSearchParams(path.split("?")[1]) : new URLSearchParams();
+      const params = {};
+      if (q.get("establishedOnly") === "1" || q.get("established_only") === "1") {
+        params.establishedOnly = true;
+      }
+      return window.idt.connectionsSnapshot(params);
+    }
+    if (path === "/api/usage/status") return window.idt.usageStatus();
+    if (path === "/api/usage/live") return window.idt.usageLive();
+    if (path === "/api/usage/enable") return window.idt.usageEnable();
+    if (path.startsWith("/api/usage/history")) {
+      const q = path.includes("?") ? new URLSearchParams(path.split("?")[1]) : new URLSearchParams();
+      const params = {};
+      if (q.get("from")) params.from = q.get("from");
+      if (q.get("to")) params.to = q.get("to");
+      if (q.get("granularity")) params.granularity = q.get("granularity");
+      if (q.get("app_key")) params.app_key = q.get("app_key");
+      return window.idt.usageHistory(params);
+    }
+    if (path === "/api/usage/clear") return window.idt.usageClear();
+    if (path === "/api/usage/ignore") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      return window.idt.usageIgnore(body);
+    }
+    if (path.startsWith("/api/usage/export")) {
+      const q = path.includes("?") ? new URLSearchParams(path.split("?")[1]) : new URLSearchParams();
+      const params = {};
+      if (q.get("from")) params.from = q.get("from");
+      if (q.get("to")) params.to = q.get("to");
+      if (q.get("granularity")) params.granularity = q.get("granularity");
+      return window.idt.usageExport(params);
+    }
+    if (path === "/api/usage/block") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      return window.idt.usageBlock(body);
+    }
+    if (path === "/api/usage/unblock") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      return window.idt.usageUnblock(body);
+    }
+    if (path === "/api/lan/devices") return window.idt.lanDevices();
+    if (path === "/api/lan/devices/refresh") return window.idt.lanDevicesRefresh();
+    if (path === "/api/lan/devices/update") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      return window.idt.lanDevicesUpdate(body);
+    }
+    if (path.startsWith("/api/lan/devices/export")) {
+      const q = path.includes("?") ? new URLSearchParams(path.split("?")[1]) : new URLSearchParams();
+      return window.idt.lanDevicesExport({ format: q.get("format") || "csv" });
+    }
+    if (path === "/api/lan/wol") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      return window.idt.lanWol(body);
+    }
+    if (path === "/api/lan/topology") return window.idt.lanTopology();
+    if (path === "/api/lan/topology/stop") return window.idt.lanTopologyStop();
+    if (path === "/api/lan/sniffer/status") return window.idt.lanSnifferStatus();
+    if (path === "/api/lan/sniffer/start") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      return window.idt.lanSnifferStart(body);
+    }
+    if (path === "/api/lan/sniffer/stop") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      return window.idt.lanSnifferStop(body);
+    }
+    if (path.startsWith("/api/lan/sniffer/events")) {
+      const q = path.includes("?") ? new URLSearchParams(path.split("?")[1]) : new URLSearchParams();
+      const params = {};
+      if (q.get("proto")) params.proto = q.get("proto");
+      if (q.get("host")) params.host = q.get("host");
+      if (q.get("port")) params.port = q.get("port");
+      return window.idt.lanSnifferEvents(params);
+    }
+    if (path === "/api/lan/scan") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      return window.idt.lanScan(body);
+    }
+    if (path === "/api/lan/discovery") return window.idt.lanDiscovery();
+    if (path === "/api/lan/router-notify") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      return window.idt.lanRouterNotify(body);
+    }
     if (path === "/api/monitor/pause") {
       const body = opts && opts.body ? JSON.parse(opts.body) : {};
       return window.idt.setPaused(!!body.paused);
@@ -256,6 +382,15 @@ function activateTab(tab, { focusPanel = false } = {}) {
     refreshHistory();
   }
   if (tab === "system-logs") refreshSystemLogs({ refresh: false });
+  if (tab === "connections") {
+    setConnView(connView || "devices");
+  } else {
+    stopConnAutoRefresh();
+    stopSniffPoll();
+    if (window.idt && window.idt.lanSnifferStop) {
+      window.idt.lanSnifferStop({}).catch(() => {});
+    }
+  }
   if (tab === "speed") {
     resetSpeedTrendChart();
     refreshSpeed().then(() => queueSpeedTrendMount(lastSpeedTrendTests));
@@ -542,7 +677,7 @@ function scheduleChartsResize() {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       Chart.defaults.devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
-      for (const c of [sparkChart, latencyChart, hourChart, dowChart, speedTrendChart]) {
+      for (const c of [sparkChart, latencyChart, hourChart, dowChart, speedTrendChart, usageTrendChart]) {
         fitChartToBox(c);
       }
     });
@@ -1385,8 +1520,12 @@ function paintStatus(s) {
       const sig = a.type === "wifi" && a.signal != null ? ` · ${a.signal}%` : "";
       adapterEl.textContent = `${kind} · ${a.name}${sig}`;
       adapterEl.hidden = false;
+      const viewConn = $("#viewConnectionsLink");
+      if (viewConn) viewConn.hidden = false;
     } else {
       adapterEl.hidden = true;
+      const viewConn = $("#viewConnectionsLink");
+      if (viewConn) viewConn.hidden = true;
     }
   }
 
@@ -1797,6 +1936,882 @@ async function refreshSystemLogs({ refresh = false } = {}) {
   }
 }
 
+const CONN_AUTO_REFRESH_MS = 45000;
+
+function stopConnAutoRefresh() {
+  if (connAutoRefreshTimer) {
+    clearInterval(connAutoRefreshTimer);
+    connAutoRefreshTimer = null;
+  }
+}
+
+function syncConnAutoRefresh() {
+  stopConnAutoRefresh();
+  const panel = $("#panel-connections");
+  const auto = $("#connAutoRefresh");
+  if (!panel || panel.hidden || connView !== "connections") return;
+  if (!auto || !auto.checked) return;
+  connAutoRefreshTimer = setInterval(() => refreshConnectionsPanel(), CONN_AUTO_REFRESH_MS);
+}
+
+function stopSniffPoll() {
+  if (sniffPollTimer) {
+    clearInterval(sniffPollTimer);
+    sniffPollTimer = null;
+  }
+}
+
+function setConnView(view) {
+  const allowed = new Set(["devices", "connections", "usage", "topology", "sniffer", "scan"]);
+  const prev = connView;
+  connView = allowed.has(view) ? view : "devices";
+  const views = {
+    devices: $("#devicesView"),
+    connections: $("#connectionsView"),
+    usage: $("#usageView"),
+    topology: $("#topologyView"),
+    sniffer: $("#snifferView"),
+    scan: $("#scanView"),
+  };
+  document.querySelectorAll(".conn-seg .seg-btn").forEach((btn) => {
+    const v = btn.getAttribute("data-conn-view") || "";
+    btn.classList.toggle("active", v === connView);
+  });
+  for (const [k, el] of Object.entries(views)) {
+    if (el) el.hidden = k !== connView;
+  }
+  stopConnAutoRefresh();
+  if (prev === "sniffer" && connView !== "sniffer") {
+    stopSniffPoll();
+    api("/api/lan/sniffer/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    }).catch(() => {});
+  }
+  if (prev === "topology" && connView !== "topology") {
+    api("/api/lan/topology/stop").catch(() => {});
+  }
+  if (connView === "devices") refreshDevicesPanel();
+  else if (connView === "connections") {
+    refreshConnectionsPanel();
+    syncConnAutoRefresh();
+  } else if (connView === "usage") refreshUsagePanel();
+  else if (connView === "topology") refreshTopologyPanel();
+  else if (connView === "sniffer") refreshSnifferPanel();
+  else if (connView === "scan") {
+    /* idle until run */
+  }
+}
+
+async function refreshDevicesPanel() {
+  const meta = $("#devicesMeta");
+  const tbody = $("#devicesBody");
+  const strip = $("#devicesGatewayStrip");
+  try {
+    const data = await api("/api/lan/devices/refresh");
+    const devices = data.devices || [];
+    if (strip) {
+      strip.innerHTML = data.gateway
+        ? `<span class="meta-chip"><span class="meta-label">Gateway</span> ${escapeHtml(data.gateway)}</span>`
+        : `<span class="muted">No gateway detected</span>`;
+    }
+    if (meta) {
+      meta.textContent = `${devices.length} devices · passive neighbor cache`;
+    }
+    if (tbody) {
+      tbody.innerHTML =
+        devices
+          .map((d) => {
+            const pills = [];
+            if (d.online) pills.push(`<span class="pill pill-ok">online</span>`);
+            else pills.push(`<span class="pill pill-unknown">offline</span>`);
+            if (d.gateway) pills.push(`<span class="pill">gw</span>`);
+            if (d.source === "active_scan") pills.push(`<span class="pill">active scan</span>`);
+            const mac = escapeHtml(d.mac || "");
+            return `<tr data-mac="${mac}">
+              <td>${pills.join(" ")}</td>
+              <td>${escapeHtml(d.ip || "")}</td>
+              <td>${mac}</td>
+              <td>${escapeHtml(d.vendor || "")}</td>
+              <td><input type="text" class="device-alias" data-mac="${mac}" value="${escapeHtml(d.alias || "")}" maxlength="120" aria-label="Alias" /></td>
+              <td>
+                <button type="button" class="btn btn-secondary device-wol" data-mac="${mac}">WOL</button>
+                <button type="button" class="btn btn-secondary device-router" data-mac="${mac}">Notify router</button>
+                <button type="button" class="btn btn-secondary device-scan" data-ip="${escapeHtml(d.ip || "")}">Scan</button>
+                <button type="button" class="btn btn-secondary device-filter" data-ip="${escapeHtml(d.ip || "")}">Connections</button>
+              </td>
+            </tr>`;
+          })
+          .join("") || `<tr><td colspan="6" class="muted">No devices yet — click Refresh</td></tr>`;
+    }
+  } catch (e) {
+    if (meta) meta.textContent = e.message || "Devices failed";
+  }
+}
+
+async function refreshTopologyPanel() {
+  const meta = $("#topoMeta");
+  const tbody = $("#topoBody");
+  const graph = $("#topoGraph");
+  if (meta) meta.textContent = "Loading topology…";
+  try {
+    const data = await api("/api/lan/topology");
+    if (meta) {
+      const mode = data.mode === "neighbor" ? "neighbor map" : "SNMP";
+      meta.textContent = data.ok
+        ? `${(data.nodes || []).length} nodes · ${mode}${data.warning ? " — " + data.warning : ""}`
+        : data.error || "Topology failed";
+    }
+    if (tbody) {
+      tbody.innerHTML =
+        (data.nodes || [])
+          .map(
+            (n) => `<tr>
+            <td>${escapeHtml(n.ip || "")}</td>
+            <td>${escapeHtml(n.label || "")}</td>
+            <td>${n.ok ? "ok" : escapeHtml(n.error || "fail")}</td>
+            <td>${escapeHtml(n.sysDescr || "")}</td>
+          </tr>`
+          )
+          .join("") || `<tr><td colspan="4" class="muted">No SNMP nodes</td></tr>`;
+    }
+    if (graph) {
+      const nodes = data.nodes || [];
+      const w = 640;
+      const h = 220;
+      const cx = w / 2;
+      const cy = h / 2;
+      const r = Math.min(80, 30 + nodes.length * 8);
+      const circles = nodes
+        .map((n, i) => {
+          const a = (i / Math.max(nodes.length, 1)) * Math.PI * 2;
+          const x = cx + Math.cos(a) * r;
+          const y = cy + Math.sin(a) * r;
+          return `<circle cx="${x}" cy="${y}" r="14" class="topo-node ${n.ok ? "ok" : "bad"}"></circle>
+            <text x="${x}" y="${y + 28}" text-anchor="middle" class="topo-label">${escapeHtml(n.label || n.ip || "")}</text>`;
+        })
+        .join("");
+      graph.innerHTML = `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" role="img">${circles}</svg>`;
+    }
+  } catch (e) {
+    if (meta) meta.textContent = e.message || "Topology failed";
+  }
+}
+
+async function refreshSnifferPanel() {
+  const q = [];
+  const proto = $("#sniffProto")?.value?.trim();
+  const host = $("#sniffHost")?.value?.trim();
+  const port = $("#sniffPort")?.value;
+  if (proto) q.push(`proto=${encodeURIComponent(proto)}`);
+  if (host) q.push(`host=${encodeURIComponent(host)}`);
+  if (port) q.push(`port=${encodeURIComponent(port)}`);
+  const data = await api(`/api/lan/sniffer/events?${q.join("&")}`);
+  const meta = $("#sniffMeta");
+  if (meta) meta.textContent = data.running ? `Capturing · ${data.count || 0} buffered` : "Stopped";
+  const tbody = $("#sniffBody");
+  if (tbody) {
+    tbody.innerHTML =
+      (data.events || [])
+        .map((ev) => {
+          const t = ev.ts ? new Date(ev.ts * 1000).toLocaleTimeString() : "";
+          return `<tr>
+            <td>${escapeHtml(t)}</td>
+            <td>${escapeHtml(ev.event || "")}</td>
+            <td>${escapeHtml(ev.proto || "")}</td>
+            <td>${escapeHtml(`${ev.src}:${ev.sport}`)}</td>
+            <td>${escapeHtml(`${ev.dst}:${ev.dport}`)}</td>
+            <td>${escapeHtml(ev.process || "")}</td>
+          </tr>`;
+        })
+        .join("") || `<tr><td colspan="6" class="muted">No events</td></tr>`;
+  }
+}
+
+function startSniffPoll() {
+  stopSniffPoll();
+  sniffPollTimer = setInterval(() => {
+    refreshSnifferPanel().catch(() => {});
+  }, 2000);
+}
+
+async function runScan() {
+  const host = ($("#scanTarget")?.value || "").trim();
+  if (!host) {
+    alert("Enter a private target IP");
+    return;
+  }
+  if (!confirm(`Scan ${host}? Only private/local IPs are allowed.`)) return;
+  const meta = $("#scanMeta");
+  if (meta) meta.textContent = "Scanning…";
+  try {
+    const data = await api("/api/lan/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host }),
+    });
+    const tbody = $("#scanBody");
+    const open = (data.ports || []).filter((p) => p.open);
+    const cves = data.cves || [];
+    if (tbody) {
+      tbody.innerHTML =
+        open
+          .map((p) => {
+            const hits = cves
+              .filter((c) => c.port === p.port)
+              .map((c) => `<span class="pill">${escapeHtml(c.severity)} ${escapeHtml(c.cve)}</span>`)
+              .join(" ");
+            return `<tr>
+              <td>${p.port}</td>
+              <td>${escapeHtml(p.banner || "")}</td>
+              <td>${hits || "—"}</td>
+            </tr>`;
+          })
+          .join("") || `<tr><td colspan="3" class="muted">No open ports in top set</td></tr>`;
+    }
+    if (meta) {
+      meta.textContent = data.ok
+        ? `${open.length} open · ${(data.cves || []).length} advisories (stale/offline)`
+        : data.error || "Scan failed";
+    }
+  } catch (e) {
+    if (meta) meta.textContent = e.message || "Scan failed";
+  }
+}
+
+function setupConnectionsPanel() {
+  document.querySelectorAll(".conn-seg .seg-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const v = btn.getAttribute("data-conn-view") || "devices";
+      setConnView(v);
+    });
+  });
+  const refresh = $("#connRefresh");
+  if (refresh) refresh.addEventListener("click", () => refreshConnectionsPanel());
+  const established = $("#connEstablishedOnly");
+  if (established) {
+    established.addEventListener("change", () => refreshConnectionsPanel());
+  }
+  const auto = $("#connAutoRefresh");
+  if (auto) auto.addEventListener("change", () => syncConnAutoRefresh());
+  const usageRefresh = $("#usageRefresh");
+  if (usageRefresh) usageRefresh.addEventListener("click", () => refreshUsagePanel());
+  const usageEnable = $("#usageEnableBtn");
+  if (usageEnable) usageEnable.addEventListener("click", () => enableUsageMonitoring());
+  const usageClear = $("#usageClear");
+  if (usageClear) {
+    usageClear.addEventListener("click", async () => {
+      if (!confirm("Clear all stored usage history?")) return;
+      try {
+        await api("/api/usage/clear");
+        await refreshUsagePanel();
+      } catch (e) {
+        alert(e.message || "Clear failed");
+      }
+    });
+  }
+  const usageExport = $("#usageExport");
+  if (usageExport) {
+    usageExport.addEventListener("click", async () => {
+      usageExport.disabled = true;
+      try {
+        const res = await api("/api/usage/export");
+        if (res.path) alert(`Exported to ${res.path}`);
+      } catch (e) {
+        alert(e.message || "Export failed");
+      } finally {
+        usageExport.disabled = false;
+      }
+    });
+  }
+  const usageSearch = $("#usageSearch");
+  if (usageSearch) {
+    usageSearch.addEventListener("input", () => renderUsageLiveRows(lastUsageLiveApps));
+  }
+  const usageSort = $("#usageSort");
+  if (usageSort) {
+    usageSort.addEventListener("change", () => renderUsageLiveRows(lastUsageLiveApps));
+  }
+  wireUsageLiveActions();
+
+  const devicesRefresh = $("#devicesRefresh");
+  if (devicesRefresh) devicesRefresh.addEventListener("click", () => refreshDevicesPanel());
+  const exportCsv = $("#devicesExportCsv");
+  if (exportCsv) {
+    exportCsv.addEventListener("click", async () => {
+      const res = await api("/api/lan/devices/export?format=csv");
+      if (res.path) alert(`Exported to ${res.path}`);
+    });
+  }
+  const exportJson = $("#devicesExportJson");
+  if (exportJson) {
+    exportJson.addEventListener("click", async () => {
+      const res = await api("/api/lan/devices/export?format=json");
+      if (res.path) alert(`Exported to ${res.path}`);
+    });
+  }
+  const devicesBody = $("#devicesBody");
+  if (devicesBody) {
+    devicesBody.addEventListener("change", async (e) => {
+      const input = e.target.closest(".device-alias");
+      if (!input) return;
+      await api("/api/lan/devices/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mac: input.getAttribute("data-mac"), alias: input.value }),
+      });
+    });
+    devicesBody.addEventListener("click", async (e) => {
+      const wol = e.target.closest(".device-wol");
+      if (wol) {
+        const res = await api("/api/lan/wol", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mac: wol.getAttribute("data-mac") }),
+        });
+        alert(res.ok ? res.tip || "WOL sent" : res.error || "WOL failed");
+        return;
+      }
+      const router = e.target.closest(".device-router");
+      if (router) {
+        const res = await api("/api/lan/router-notify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mac: router.getAttribute("data-mac") }),
+        });
+        alert(res.ok ? "Router webhook sent" : res.error || "Failed");
+        return;
+      }
+      const scanBtn = e.target.closest(".device-scan");
+      if (scanBtn) {
+        const ip = scanBtn.getAttribute("data-ip");
+        if ($("#scanTarget")) $("#scanTarget").value = ip || "";
+        setConnView("scan");
+        return;
+      }
+      const filterBtn = e.target.closest(".device-filter");
+      if (filterBtn) {
+        setConnView("connections");
+      }
+    });
+  }
+  const topoRefresh = $("#topoRefresh");
+  if (topoRefresh) topoRefresh.addEventListener("click", () => refreshTopologyPanel());
+  const topoStop = $("#topoStop");
+  if (topoStop) topoStop.addEventListener("click", () => api("/api/lan/topology/stop"));
+  const sniffStart = $("#sniffStart");
+  if (sniffStart) {
+    sniffStart.addEventListener("click", async () => {
+      await api("/api/lan/sniffer/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      startSniffPoll();
+      refreshSnifferPanel();
+    });
+  }
+  const sniffStop = $("#sniffStop");
+  if (sniffStop) {
+    sniffStop.addEventListener("click", async () => {
+      stopSniffPoll();
+      await api("/api/lan/sniffer/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      });
+      refreshSnifferPanel();
+    });
+  }
+  const scanRun = $("#scanRun");
+  if (scanRun) scanRun.addEventListener("click", () => runScan());
+  const scanDiscover = $("#scanDiscover");
+  if (scanDiscover) {
+    scanDiscover.addEventListener("click", async () => {
+      if (!confirm("Run gated subnet discovery? Probes will be suppressed while it runs.")) return;
+      const meta = $("#scanMeta");
+      if (meta) meta.textContent = "Discovering…";
+      try {
+        const res = await api("/api/lan/discovery");
+        if (meta) {
+          meta.textContent = res.ok
+            ? `Found ${(res.found || []).length} hosts (active scan)`
+            : res.error || "Discovery failed";
+        }
+      } catch (e) {
+        if (meta) meta.textContent = e.message || "Discovery failed";
+      }
+    });
+  }
+}
+
+function renderConnAdapters(adapters) {
+  const strip = $("#connAdapterStrip");
+  if (!strip) return;
+  const rows = adapters || [];
+  if (!rows.length) {
+    strip.innerHTML = `<span class="muted">No adapter stats</span>`;
+    return;
+  }
+  strip.innerHTML = rows.map((a) => {
+    const rx = a.rx_mbps != null ? fmtMbps(a.rx_mbps) : "-";
+    const tx = a.tx_mbps != null ? fmtMbps(a.tx_mbps) : "-";
+    const label = a.name || "Adapter";
+    return `<span class="meta-chip has-tip" tabindex="0" data-tip="conn-adapter-mbps"><span class="meta-label">${escapeHtml(label)}</span> ↓${rx} ↑${tx} Mbps</span>`;
+  }).join("");
+  bindTooltips(strip);
+}
+
+const CONN_STATE_TIPS = {
+  established: "Established — active connection; both sides can send and receive.",
+  listen: "Listen — waiting for incoming connections on this local port.",
+  timewait: "TimeWait — recently closed; briefly holding the port so delayed packets don't confuse a new connection.",
+  closewait: "CloseWait — remote side closed; this process still needs to close its end.",
+  synsent: "SynSent — outgoing connect in progress; waiting for the peer handshake reply.",
+  synreceived: "SynReceived — incoming connect in progress; handshake not finished yet.",
+  finwait1: "FinWait1 — this side started closing; waiting for the peer to acknowledge.",
+  finwait2: "FinWait2 — peer acknowledged our close; waiting for the peer to finish closing.",
+  closing: "Closing — both sides closed at nearly the same time; finishing teardown.",
+  lastack: "LastAck — waiting for the peer to acknowledge our final close.",
+  closed: "Closed — no active connection (socket closed).",
+  bound: "Bound — socket bound to a local address/port but not yet listening or connected.",
+  deletetcb: "DeleteTCB — TCP control block being deleted (connection teardown).",
+};
+
+function tipCellAttr(text) {
+  return ` class="has-tip" tabindex="0" data-tip-text="${escapeHtml(text)}"`;
+}
+
+function connProtoTip(proto) {
+  const p = String(proto || "").toUpperCase();
+  if (p === "TCP") return "TCP — Transmission Control Protocol: connection-oriented, reliable ordered delivery.";
+  if (p === "UDP") return "UDP — User Datagram Protocol: connectionless datagrams; no delivery guarantee.";
+  return p ? `Protocol: ${p}` : "Protocol for this endpoint.";
+}
+
+function connStateTip(state, proto) {
+  const raw = String(state || "").trim();
+  const p = String(proto || "").toUpperCase();
+  if (p === "UDP") {
+    return raw
+      ? `UDP endpoint (shown as ${raw}) — waiting for datagrams on this local port; UDP has no TCP-style connection states.`
+      : "UDP endpoint — no TCP-style connection state.";
+  }
+  const key = raw.toLowerCase().replace(/[\s_-]/g, "");
+  if (CONN_STATE_TIPS[key]) return CONN_STATE_TIPS[key];
+  return raw
+    ? `${raw} — TCP connection state reported by Windows.`
+    : "TCP connection state.";
+}
+
+function renderConnRows(rows) {
+  const tbody = $("#connBody");
+  if (!tbody) return;
+  tbody.innerHTML = (rows || []).map((r) => {
+    const proto = r.proto || "";
+    const proc = r.process || "?";
+    const unresolved = proc === "?";
+    const pid = r.pid != null ? String(r.pid) : "-";
+    const local = r.local || "";
+    const remote = r.remote || "";
+    const state = r.state || "";
+    const procTip = unresolved
+      ? tipCellAttr(
+          "Process name unavailable for this PID (?). Your own processes should resolve without admin; other users or protected system processes may need Run as administrator."
+        )
+      : tipCellAttr(`Process: ${proc}`);
+    const pidTip = tipCellAttr(pid === "-" ? "Process ID unavailable." : `Process ID: ${pid}`);
+    const localTip = tipCellAttr(
+      local ? `Local address:port — ${local}` : "Local address:port on this machine."
+    );
+    const remoteTip = tipCellAttr(
+      !remote || remote === "-"
+        ? "Remote address:port — none (typical for UDP / listening sockets)."
+        : `Remote address:port — ${remote}`
+    );
+    return `<tr>
+      <td${tipCellAttr(connProtoTip(proto))}>${escapeHtml(proto)}</td>
+      <td><span${procTip}>${escapeHtml(proc)}</span></td>
+      <td${pidTip}>${escapeHtml(pid)}</td>
+      <td${localTip}>${escapeHtml(local)}</td>
+      <td${remoteTip}>${escapeHtml(remote)}</td>
+      <td${tipCellAttr(connStateTip(state, proto))}>${escapeHtml(state)}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="6" class="muted">No connections in this snapshot</td></tr>`;
+  bindTooltips(tbody);
+}
+
+async function refreshConnectionsPanel() {
+  const meta = $("#connMeta");
+  const refreshBtn = $("#connRefresh");
+  const tbody = $("#connBody");
+  const table = tbody?.closest("table");
+  const establishedOnly = !!$("#connEstablishedOnly")?.checked;
+  if (meta) meta.textContent = "Loading…";
+  if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="muted">Loading…</td></tr>`;
+  if (table) table.setAttribute("aria-busy", "true");
+  if (refreshBtn) refreshBtn.disabled = true;
+  try {
+    const q = establishedOnly ? "?establishedOnly=1" : "";
+    const data = await api(`/api/connections/snapshot${q}`);
+    renderConnAdapters(data.adapters);
+    renderConnRows(data.connections);
+    const bits = [];
+    if (data.total != null) bits.push(`${data.connections?.length || 0}${data.truncated ? ` of ${data.total}` : ""} rows`);
+    if (data.captured_at) bits.push(`captured ${fmtTs(data.captured_at / 1000)}`);
+    if (data.warning) bits.push(data.warning);
+    if (meta) meta.textContent = bits.join(" · ") || (data.ok ? "Ready" : "Unavailable");
+    if (!data.ok && tbody && !(data.connections || []).length) {
+      tbody.innerHTML =
+        `<tr><td colspan="6" class="muted state-error">${escapeHtml(data.warning || data.error || "Snapshot failed")}</td></tr>`;
+    }
+  } catch (e) {
+    console.error(e);
+    if (tbody) {
+      tbody.innerHTML =
+        `<tr><td colspan="6" class="muted state-error">Load failed: ${escapeHtml(e.message || e)}</td></tr>`;
+    }
+    if (meta) meta.textContent = "Load failed";
+    renderConnAdapters([]);
+  } finally {
+    if (table) table.removeAttribute("aria-busy");
+    if (refreshBtn) refreshBtn.disabled = false;
+  }
+}
+
+function usageAppsFiltered(apps) {
+  const q = ($("#usageSearch")?.value || "").trim().toLowerCase();
+  let rows = (apps || []).slice();
+  if (q) {
+    rows = rows.filter((a) => {
+      const name = String(a.name || a.display_name || "").toLowerCase();
+      const exe = String(a.exe || a.exe_path || "").toLowerCase();
+      const key = String(a.app_key || "").toLowerCase();
+      return name.includes(q) || exe.includes(q) || key.includes(q);
+    });
+  }
+  const sort = $("#usageSort")?.value || "rate";
+  rows.sort((a, b) => {
+    if (sort === "name") {
+      return String(a.name || a.display_name || "").localeCompare(String(b.name || b.display_name || ""));
+    }
+    if (sort === "down") return (b.rate_in_mbps || 0) - (a.rate_in_mbps || 0);
+    if (sort === "up") return (b.rate_out_mbps || 0) - (a.rate_out_mbps || 0);
+    const ar = (a.rate_in_mbps || 0) + (a.rate_out_mbps || 0);
+    const br = (b.rate_in_mbps || 0) + (b.rate_out_mbps || 0);
+    return br - ar;
+  });
+  return rows;
+}
+
+function renderUsageLiveRows(apps, { controlEnabled = false } = {}) {
+  const tbody = $("#usageLiveBody");
+  if (!tbody) return;
+  const rows = usageAppsFiltered(apps);
+  tbody.innerHTML = rows.map((a) => {
+    const key = escapeHtml(a.app_key || a.exe || String(a.pid || ""));
+    const label = escapeHtml(a.name || a.display_name || a.exe || a.app_key || "?");
+    const ignored = !!a.ignored;
+    const blocked = !!a.blocked;
+    const exe = a.exe || a.exe_path || "";
+    let action = "";
+    if (!controlEnabled) {
+      action = `<span class="muted">Enable network control in Settings</span>`;
+    } else if (blocked) {
+      action = `<button type="button" class="btn btn-secondary usage-unblock" data-exe="${escapeHtml(exe)}" data-app-key="${key}">Unblock</button>`;
+    } else {
+      action = `<button type="button" class="btn btn-secondary usage-block" data-exe="${escapeHtml(exe)}" data-app-key="${key}" ${exe ? "" : "disabled"}>Block</button>`;
+    }
+    return `<tr data-app-key="${key}">
+      <td title="${escapeHtml(exe)}">${label}</td>
+      <td>${fmtMbps(a.rate_in_mbps)}</td>
+      <td>${fmtMbps(a.rate_out_mbps)}</td>
+      <td>${fmtBytes(a.bytes_in)}</td>
+      <td>${fmtBytes(a.bytes_out)}</td>
+      <td><label class="check check-inline"><input type="checkbox" class="usage-ignore" data-app-key="${key}" ${ignored ? "checked" : ""} aria-label="Ignore ${label}" /></label></td>
+      <td>${action}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="7" class="muted">No active apps with traffic</td></tr>`;
+}
+
+function resetUsageTrendChart() {
+  if (!usageTrendChart) return;
+  try {
+    usageTrendChart.destroy();
+  } catch {
+    /* ignore */
+  }
+  usageTrendChart = null;
+}
+
+function ensureUsageTrend(buckets) {
+  const ctx = $("#usageTrendChart");
+  const empty = $("#usageTrendEmpty");
+  const wrap = ctx?.closest(".chart-wrap");
+  const rows = buckets || [];
+  if (!ctx) return;
+  if (!rows.length) {
+    resetUsageTrendChart();
+    if (wrap) wrap.classList.add("is-empty");
+    if (empty) {
+      empty.hidden = false;
+      empty.setAttribute("aria-hidden", "false");
+    }
+    return;
+  }
+  if (wrap) wrap.classList.remove("is-empty");
+  if (empty) {
+    empty.hidden = true;
+    empty.setAttribute("aria-hidden", "true");
+  }
+  const byTs = new Map();
+  for (const r of rows) {
+    const ts = r.bucket_ts;
+    if (ts == null) continue;
+    const prev = byTs.get(ts) || { in: 0, out: 0 };
+    prev.in += Number(r.bytes_in || 0);
+    prev.out += Number(r.bytes_out || 0);
+    byTs.set(ts, prev);
+  }
+  const sorted = [...byTs.entries()].sort((a, b) => a[0] - b[0]);
+  const labels = sorted.map(([ts]) => fmtTs(ts));
+  const down = sorted.map(([, v]) => Math.round(v.in / 1024 / 1024));
+  const up = sorted.map(([, v]) => Math.round(v.out / 1024 / 1024));
+  const yMax = Math.max(1, ...down, ...up) * 1.15;
+  if (usageTrendChart) {
+    usageTrendChart.data.labels = labels;
+    usageTrendChart.data.datasets[0].data = down;
+    usageTrendChart.data.datasets[1].data = up;
+    usageTrendChart.options.scales.y.suggestedMax = yMax;
+    fitChartToBox(usageTrendChart);
+    return;
+  }
+  usageTrendChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        { label: "In (MB)", data: down, borderColor: chartTheme.domain.down, tension: 0.2, pointRadius: 0 },
+        { label: "Out (MB)", data: up, borderColor: chartTheme.domain.up, tension: 0.2, pointRadius: 0 },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      scales: chartScaleOpts(),
+      plugins: { legend: { display: true, position: "bottom" } },
+    },
+  });
+  usageTrendChart.options.scales.y.suggestedMax = yMax;
+  fitChartToBox(usageTrendChart);
+}
+
+function paintUsageHelperStatus(st) {
+  const el = $("#usageHelperStatus");
+  const enableBtn = $("#usageEnableBtn");
+  if (!el) return;
+  if (!st) {
+    el.textContent = "";
+    el.className = "muted";
+    if (enableBtn) enableBtn.hidden = false;
+    return;
+  }
+  if (st.starting) {
+    el.textContent = "Starting elevated helper… approve UAC if prompted.";
+    el.className = "muted";
+    if (enableBtn) enableBtn.disabled = true;
+    return;
+  }
+  if (enableBtn) enableBtn.disabled = false;
+  if (st.elevated && st.connected) {
+    el.textContent = "Elevated helper connected — per-app usage active.";
+    el.className = "muted state-ok";
+    if (enableBtn) enableBtn.hidden = true;
+  } else if (st.last_error) {
+    el.textContent = st.last_error;
+    el.className = "muted state-error";
+    if (enableBtn) enableBtn.hidden = false;
+  } else if (st.usage_monitoring && !st.connected) {
+    el.textContent =
+      "Usage was enabled before, but the helper is not running. Click Enable and approve UAC to resume (no per-app bytes until then).";
+    el.className = "muted";
+    if (enableBtn) enableBtn.hidden = false;
+  } else if (st.available === false) {
+    el.textContent = "Helper binary not found. Build helper/IdtUsageHelper.";
+    el.className = "muted state-error";
+    if (enableBtn) enableBtn.hidden = true;
+  } else {
+    el.textContent = "Enable elevated monitoring to see per-app bytes (UAC required).";
+    el.className = "muted";
+    if (enableBtn) enableBtn.hidden = false;
+  }
+}
+
+async function refreshUsagePanel() {
+  const statusEl = $("#usageHelperStatus");
+  const tbody = $("#usageLiveBody");
+  const table = tbody?.closest("table");
+  const refreshBtn = $("#usageRefresh");
+  const enableBtn = $("#usageEnableBtn");
+  if (statusEl && !statusEl.textContent) statusEl.textContent = "Loading…";
+  if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="muted">Loading…</td></tr>`;
+  if (table) table.setAttribute("aria-busy", "true");
+  if (refreshBtn) refreshBtn.disabled = true;
+  if (enableBtn) enableBtn.disabled = true;
+  try {
+    const from = Math.floor(Date.now() / 1000) - 86400;
+    const [st, live, hist] = await Promise.all([
+      api("/api/usage/status"),
+      api("/api/usage/live"),
+      api(`/api/usage/history?granularity=hourly&from=${from}`),
+    ]);
+    paintUsageHelperStatus(st);
+    const metaByKey = new Map(
+      (hist.apps || []).map((a) => [String(a.app_key), a])
+    );
+    lastUsageLiveApps = (live.apps || []).map((a) => {
+      const meta = metaByKey.get(String(a.app_key));
+      return {
+        ...a,
+        ignored: meta ? !!meta.ignored : !!a.ignored,
+        exe_path: a.exe || a.exe_path || (meta && meta.exe_path) || "",
+        display_name: a.name || a.display_name || (meta && meta.display_name),
+      };
+    });
+    renderUsageLiveRows(lastUsageLiveApps, {
+      controlEnabled: !!st.network_control_enabled,
+    });
+    ensureUsageTrend(hist.series || hist.buckets || hist.rows || []);
+    scheduleChartsResize();
+    if (!st.elevated && tbody && !(live.apps || []).length) {
+      const err = st.last_error || live.error;
+      tbody.innerHTML = err
+        ? `<tr><td colspan="7" class="muted state-error">${escapeHtml(err)}</td></tr>`
+        : `<tr><td colspan="7" class="muted">Enable elevated monitoring to list per-app traffic.</td></tr>`;
+    }
+    if (live.error && tbody && !(live.apps || []).length && st.elevated) {
+      tbody.innerHTML =
+        `<tr><td colspan="7" class="muted state-error">${escapeHtml(live.error)}</td></tr>`;
+    }
+  } catch (e) {
+    console.error(e);
+    if (statusEl) {
+      statusEl.textContent = e.message || "Failed to load usage";
+      statusEl.className = "muted state-error";
+    }
+    if (tbody) {
+      tbody.innerHTML =
+        `<tr><td colspan="7" class="muted state-error">Load failed: ${escapeHtml(e.message || e)}</td></tr>`;
+    }
+    resetUsageTrendChart();
+    const empty = $("#usageTrendEmpty");
+    if (empty) {
+      empty.textContent = "Could not load usage trend.";
+      empty.hidden = false;
+    }
+  } finally {
+    if (table) table.removeAttribute("aria-busy");
+    if (refreshBtn) refreshBtn.disabled = false;
+    if (enableBtn) enableBtn.disabled = false;
+  }
+}
+
+async function enableUsageMonitoring() {
+  const btn = $("#usageEnableBtn");
+  if (btn) btn.disabled = true;
+  paintUsageHelperStatus({ starting: true });
+  try {
+    const result = await api("/api/usage/enable");
+    if (result && !result.connected) {
+      paintUsageHelperStatus({
+        available: result.available !== false,
+        elevated: false,
+        connected: false,
+        last_error:
+          result.last_error ||
+          "Failed to start elevated helper (path missing, spawn error, or pipe timeout).",
+      });
+      const tbody = $("#usageLiveBody");
+      if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="7" class="muted state-error">${escapeHtml(
+          result.last_error || "Enable failed — helper did not connect."
+        )}</td></tr>`;
+      }
+      return;
+    }
+    await refreshUsagePanel();
+  } catch (e) {
+    paintUsageHelperStatus({
+      available: true,
+      elevated: false,
+      last_error: e.message || "Enable failed",
+    });
+    const tbody = $("#usageLiveBody");
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="7" class="muted state-error">${escapeHtml(
+        e.message || "Enable failed"
+      )}</td></tr>`;
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function wireUsageLiveActions() {
+  const tbody = $("#usageLiveBody");
+  if (!tbody || tbody.dataset.wired) return;
+  tbody.dataset.wired = "1";
+  tbody.addEventListener("change", async (e) => {
+    const cb = e.target.closest(".usage-ignore");
+    if (!cb) return;
+    const appKey = cb.getAttribute("data-app-key");
+    try {
+      await api("/api/usage/ignore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app_key: appKey, ignored: cb.checked }),
+      });
+    } catch (err) {
+      cb.checked = !cb.checked;
+      console.error(err);
+    }
+  });
+  tbody.addEventListener("click", async (e) => {
+    const blockBtn = e.target.closest(".usage-block");
+    const unblockBtn = e.target.closest(".usage-unblock");
+    if (!blockBtn && !unblockBtn) return;
+    const exe = (blockBtn || unblockBtn).getAttribute("data-exe");
+    const appKey = (blockBtn || unblockBtn).getAttribute("data-app-key");
+    const name = appKey || exe || "this app";
+    if (blockBtn) {
+      if (!confirm(`Block network access for ${name}? This adds a firewall rule.`)) return;
+      try {
+        await api("/api/usage/block", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ exe_path: exe, app_key: appKey }),
+        });
+        await refreshUsagePanel();
+      } catch (err) {
+        alert(err.message || "Block failed");
+      }
+    } else {
+      try {
+        await api("/api/usage/unblock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ exe_path: exe, app_key: appKey }),
+        });
+        await refreshUsagePanel();
+      } catch (err) {
+        alert(err.message || "Unblock failed");
+      }
+    }
+  });
+}
+
 function paintSpeedLast(test) {
   if (!test) {
     $("#speedDown").textContent = "-";
@@ -1959,6 +2974,53 @@ async function loadSettings() {
   if (form.minimize_to_tray) {
     form.minimize_to_tray.checked = s.minimize_to_tray !== false;
   }
+  if (form.connections_enabled) {
+    form.connections_enabled.checked = s.connections_enabled !== false;
+  }
+  if (form.usage_monitoring) {
+    form.usage_monitoring.checked = !!s.usage_monitoring;
+  }
+  if (form.network_control_enabled) {
+    form.network_control_enabled.checked = !!s.network_control_enabled;
+  }
+  const boolKeys = [
+    "lan_devices_enabled",
+    "lan_new_device_toast",
+    "snmp_enabled",
+    "sniffer_enabled",
+    "sniffer_always_on",
+    "lan_active_discovery",
+    "router_webhook_auto_new",
+    "influx_enabled",
+    "es_enabled",
+    "prom_metrics_enabled",
+    "http_api_enabled",
+  ];
+  for (const k of boolKeys) {
+    if (form[k]) form[k].checked = k === "lan_devices_enabled" ? s[k] !== false : !!s[k];
+  }
+  const strKeys = [
+    "snmp_community",
+    "snmp_targets",
+    "notify_webhooks_json",
+    "notify_quiet_hours_json",
+    "router_webhook_url",
+    "router_webhook_template",
+    "influx_url",
+    "influx_token",
+    "influx_org",
+    "influx_bucket",
+    "es_url",
+    "es_api_key",
+    "http_api_token",
+  ];
+  for (const k of strKeys) {
+    if (form[k]) form[k].value = s[k] != null ? s[k] : "";
+  }
+  if (form.lan_discovery_interval_min) {
+    form.lan_discovery_interval_min.value = s.lan_discovery_interval_min ?? 15;
+  }
+  applyUsageCapsAlertsToForm(form, s);
   form.wan_targets.value = s.wan_targets || "";
   form.dns_resolver.value = s.dns_resolver || "";
   form.http_url.value = s.http_url || "";
@@ -1968,6 +3030,111 @@ async function loadSettings() {
   } catch {
     /* ignore */
   }
+}
+
+const MIB = 1024 * 1024;
+
+function parseUsageJson(raw) {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw;
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+function bytesToMibInput(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return String(Math.round(n / MIB));
+}
+
+function mibInputToBytes(el) {
+  if (!el || el.value === "" || el.value == null) return null;
+  const n = Number(el.value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n * MIB);
+}
+
+function applyUsageCapsAlertsToForm(form, s) {
+  const caps = parseUsageJson(s.usage_caps_json);
+  const alerts = parseUsageJson(s.usage_alerts_json);
+  if (form.usage_cap_global_daily_mib) {
+    form.usage_cap_global_daily_mib.value = bytesToMibInput(caps.global_daily_bytes);
+  }
+  if (form.usage_cap_global_monthly_mib) {
+    form.usage_cap_global_monthly_mib.value = bytesToMibInput(caps.global_monthly_bytes);
+  }
+  if (form.usage_cap_auto_block) {
+    form.usage_cap_auto_block.checked = !!caps.auto_block;
+  }
+  const apps = caps.apps && typeof caps.apps === "object" ? caps.apps : {};
+  const appKeys = Object.keys(apps);
+  const appKey = appKeys[0] || "";
+  const appSpec = appKey ? apps[appKey] || {} : {};
+  if (form.usage_cap_app_key) form.usage_cap_app_key.value = appKey;
+  if (form.usage_cap_app_daily_mib) {
+    form.usage_cap_app_daily_mib.value = bytesToMibInput(appSpec.daily_bytes);
+  }
+  if (form.usage_cap_app_exe) form.usage_cap_app_exe.value = appSpec.exe_path || "";
+  const rules = Array.isArray(alerts.rules) ? alerts.rules : [];
+  const globalRule = rules.find((r) => r && !r.app_key) || null;
+  const appRule = rules.find((r) => r && r.app_key) || null;
+  if (form.usage_alert_global_daily_mib) {
+    form.usage_alert_global_daily_mib.value = bytesToMibInput(globalRule && globalRule.daily_bytes);
+  }
+  if (form.usage_alert_app_key) {
+    form.usage_alert_app_key.value = (appRule && appRule.app_key) || "";
+  }
+  if (form.usage_alert_app_daily_mib) {
+    form.usage_alert_app_daily_mib.value = bytesToMibInput(appRule && appRule.daily_bytes);
+  }
+}
+
+function buildUsageCapsAlertsFromForm(form) {
+  const caps = {};
+  const gDay = mibInputToBytes(form.usage_cap_global_daily_mib);
+  const gMon = mibInputToBytes(form.usage_cap_global_monthly_mib);
+  if (gDay != null) caps.global_daily_bytes = gDay;
+  if (gMon != null) caps.global_monthly_bytes = gMon;
+  if (form.usage_cap_auto_block && form.usage_cap_auto_block.checked) {
+    caps.auto_block = true;
+  }
+  const appKey = form.usage_cap_app_key ? String(form.usage_cap_app_key.value || "").trim() : "";
+  if (appKey) {
+    const spec = {};
+    const d = mibInputToBytes(form.usage_cap_app_daily_mib);
+    if (d != null) spec.daily_bytes = d;
+    const exe = form.usage_cap_app_exe ? String(form.usage_cap_app_exe.value || "").trim() : "";
+    if (exe) spec.exe_path = exe;
+    if (form.usage_cap_auto_block && form.usage_cap_auto_block.checked) {
+      spec.auto_block = true;
+    }
+    caps.apps = { [appKey]: spec };
+  }
+  const rules = [];
+  const alertGlobal = mibInputToBytes(form.usage_alert_global_daily_mib);
+  if (alertGlobal != null) {
+    rules.push({ id: "global_daily", daily_bytes: alertGlobal, enabled: true });
+  }
+  const alertAppKey = form.usage_alert_app_key
+    ? String(form.usage_alert_app_key.value || "").trim()
+    : "";
+  const alertAppBytes = mibInputToBytes(form.usage_alert_app_daily_mib);
+  if (alertAppKey && alertAppBytes != null) {
+    rules.push({
+      id: `app_${alertAppKey}`,
+      app_key: alertAppKey,
+      daily_bytes: alertAppBytes,
+      enabled: true,
+    });
+  }
+  return {
+    usage_caps_json: caps,
+    usage_alerts_json: rules.length ? { rules } : {},
+  };
 }
 
 function setupForms() {
@@ -2076,6 +3243,7 @@ function setupForms() {
   $("#settingsForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const form = e.target;
+    const usageJson = buildUsageCapsAlertsFromForm(form);
     const body = {
       poll_interval_s: Number(form.poll_interval_s.value),
       debounce_fail_count: Number(form.debounce_fail_count.value),
@@ -2085,6 +3253,52 @@ function setupForms() {
       minimize_to_tray: form.minimize_to_tray
         ? form.minimize_to_tray.checked
         : true,
+      connections_enabled: form.connections_enabled
+        ? form.connections_enabled.checked
+        : true,
+      usage_monitoring: form.usage_monitoring
+        ? form.usage_monitoring.checked
+        : false,
+      network_control_enabled: form.network_control_enabled
+        ? form.network_control_enabled.checked
+        : false,
+      lan_devices_enabled: form.lan_devices_enabled
+        ? form.lan_devices_enabled.checked
+        : true,
+      lan_new_device_toast: !!(form.lan_new_device_toast && form.lan_new_device_toast.checked),
+      snmp_enabled: !!(form.snmp_enabled && form.snmp_enabled.checked),
+      snmp_community: form.snmp_community ? form.snmp_community.value.trim() : "public",
+      snmp_targets: form.snmp_targets ? form.snmp_targets.value.trim() : "",
+      sniffer_enabled: !!(form.sniffer_enabled && form.sniffer_enabled.checked),
+      sniffer_always_on: !!(form.sniffer_always_on && form.sniffer_always_on.checked),
+      lan_active_discovery: !!(form.lan_active_discovery && form.lan_active_discovery.checked),
+      lan_discovery_interval_min: form.lan_discovery_interval_min
+        ? Number(form.lan_discovery_interval_min.value)
+        : 15,
+      notify_webhooks_json: form.notify_webhooks_json
+        ? form.notify_webhooks_json.value.trim() || "[]"
+        : "[]",
+      notify_quiet_hours_json: form.notify_quiet_hours_json
+        ? form.notify_quiet_hours_json.value.trim() || "{}"
+        : "{}",
+      router_webhook_url: form.router_webhook_url ? form.router_webhook_url.value.trim() : "",
+      router_webhook_template: form.router_webhook_template
+        ? form.router_webhook_template.value.trim()
+        : "",
+      router_webhook_auto_new: !!(form.router_webhook_auto_new && form.router_webhook_auto_new.checked),
+      influx_enabled: !!(form.influx_enabled && form.influx_enabled.checked),
+      influx_url: form.influx_url ? form.influx_url.value.trim() : "",
+      influx_token: form.influx_token ? form.influx_token.value.trim() : "",
+      influx_org: form.influx_org ? form.influx_org.value.trim() : "",
+      influx_bucket: form.influx_bucket ? form.influx_bucket.value.trim() : "",
+      es_enabled: !!(form.es_enabled && form.es_enabled.checked),
+      es_url: form.es_url ? form.es_url.value.trim() : "",
+      es_api_key: form.es_api_key ? form.es_api_key.value.trim() : "",
+      prom_metrics_enabled: !!(form.prom_metrics_enabled && form.prom_metrics_enabled.checked),
+      http_api_enabled: !!(form.http_api_enabled && form.http_api_enabled.checked),
+      http_api_token: form.http_api_token ? form.http_api_token.value.trim() : "",
+      usage_caps_json: usageJson.usage_caps_json,
+      usage_alerts_json: usageJson.usage_alerts_json,
       wan_targets: form.wan_targets.value.trim(),
       dns_resolver: form.dns_resolver.value.trim(),
       http_url: form.http_url.value.trim(),
@@ -2142,6 +3356,7 @@ function defaultSystemLogsRange() {
 document.addEventListener("DOMContentLoaded", async () => {
   setupTabs();
   setupForms();
+  setupConnectionsPanel();
   setupTipDismiss();
   setupTooltips();
   setupChartResize();

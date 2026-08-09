@@ -222,6 +222,18 @@ describe("monitor probe suppress / cool-down", async () => {
     assert.equal(db.getOpenOutages().length, 0);
   });
 
+  it("refcounts overlapping probe suppress holders", () => {
+    monitor.setProbeSuppress(true);
+    monitor.setProbeSuppress(true);
+    assert.equal(monitor.state.probe_suppressed, true);
+    monitor.setProbeSuppress(false, { cooldownMs: 0 });
+    assert.equal(monitor.state.probe_suppressed, true);
+    assert.equal(monitor._suppressDepth, 1);
+    monitor.setProbeSuppress(false, { cooldownMs: 0 });
+    assert.equal(monitor.state.probe_suppressed, false);
+    assert.equal(monitor._suppressDepth, 0);
+  });
+
   it("includes provider on summary from latest speed test", () => {
     assert.equal(db.summary().provider, null);
     db.insertSpeedTest({

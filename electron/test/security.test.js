@@ -251,3 +251,31 @@ describe("WAN streak + timer overlap (M4/M5)", () => {
     slow.stop();
   });
 });
+
+describe("Connections/Usage IPC surface (preload allowlist)", () => {
+  it("exposes only allowlisted idt methods for connections/usage", () => {
+    const preload = fs.readFileSync(
+      path.join(__dirname, "..", "preload.js"),
+      "utf8"
+    );
+    assert.match(preload, /connectionsSnapshot:/);
+    assert.match(preload, /usageStatus:/);
+    assert.match(preload, /usageLive:/);
+    assert.match(preload, /usageEnable:/);
+    assert.match(preload, /usageBlock:/);
+    assert.match(preload, /usageUnblock:/);
+    assert.doesNotMatch(preload, /ipcRenderer\.invoke\([^)]*\$\{/);
+    assert.doesNotMatch(preload, /exposeInMainWorld\("idt",\s*ipcRenderer/);
+  });
+
+  it("registers connections/usage channels via safeHandle in main", () => {
+    const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+    assert.match(main, /safeHandle\("api:connections:snapshot"/);
+    assert.match(main, /safeHandle\("api:usage:enable"/);
+    assert.match(main, /safeHandle\("api:usage:block"/);
+    assert.match(main, /assertControlAllowed/);
+    assert.match(main, /sanitizeExePath/);
+    assert.doesNotMatch(main, /monitor\._tick[\s\S]{0,80}usageBridge/);
+    assert.doesNotMatch(main, /monitor\._tick[\s\S]{0,80}connections\./);
+  });
+});

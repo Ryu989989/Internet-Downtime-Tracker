@@ -33,6 +33,7 @@
     <button type="button" class="tab" data-tab="history" role="tab" aria-selected="false" aria-controls="panel-history" id="tab-history" tabindex="-1">History</button>
     <button type="button" class="tab" data-tab="patterns" role="tab" aria-selected="false" aria-controls="panel-patterns" id="tab-patterns" tabindex="-1">Patterns</button>
     <button type="button" class="tab" data-tab="system-logs" role="tab" aria-selected="false" aria-controls="panel-system-logs" id="tab-system-logs" tabindex="-1">System logs</button>
+    <button type="button" class="tab" data-tab="connections" role="tab" aria-selected="false" aria-controls="panel-connections" id="tab-connections" tabindex="-1">Network</button>
     <button type="button" class="tab" data-tab="speed" role="tab" aria-selected="false" aria-controls="panel-speed" id="tab-speed" tabindex="-1">Speed</button>
     <button type="button" class="tab" data-tab="settings" role="tab" aria-selected="false" aria-controls="panel-settings" id="tab-settings" tabindex="-1">Settings</button>
   </nav>
@@ -57,6 +58,7 @@
             <div class="status-title" id="statusTitle">Checking…</div>
             <div class="status-sub muted" id="statusSub"></div>
             <div class="adapter-line muted" id="adapterLine" hidden></div>
+            <button type="button" class="text-link adapter-link" data-goto-tab="connections" id="viewConnectionsLink" hidden>View connections</button>
           </div>
           <div class="status-hero-meta">
             <div class="meta-chip"><span class="meta-label">Open</span> <span id="openCount">0</span></div>
@@ -359,6 +361,179 @@
       </div>
     </section>
 
+    <section id="panel-connections" class="panel" role="tabpanel" aria-labelledby="tab-connections" hidden>
+      <div class="conn-seg" role="group" aria-label="Network view">
+        <button type="button" class="seg-btn active" id="connViewDevices" data-conn-view="devices">Devices</button>
+        <button type="button" class="seg-btn" id="connViewConnections" data-conn-view="connections">Connections</button>
+        <button type="button" class="seg-btn" id="connViewUsage" data-conn-view="usage">Usage</button>
+        <button type="button" class="seg-btn" id="connViewTopology" data-conn-view="topology">Topology</button>
+        <button type="button" class="seg-btn" id="connViewSniffer" data-conn-view="sniffer">Sniffer</button>
+        <button type="button" class="seg-btn" id="connViewScan" data-conn-view="scan">Scan</button>
+      </div>
+      <p class="panel-lead muted" id="networkPanelLead">
+        Devices: passive neighbor cache (not a complete map). Connections: live TCP/UDP. Usage/Sniffer: elevation where noted. Topology: SNMP. Scan: private IPs only; CVE advisory/stale.
+      </p>
+
+      <div id="devicesView">
+        <div class="filters conn-toolbar">
+          <button type="button" class="btn btn-secondary" id="devicesRefresh">Refresh</button>
+          <button type="button" class="btn btn-secondary" id="devicesExportCsv">Export CSV</button>
+          <button type="button" class="btn btn-secondary" id="devicesExportJson">Export JSON</button>
+          <span class="muted" id="devicesMeta" aria-live="polite"></span>
+        </div>
+        <div id="devicesGatewayStrip" class="conn-adapter-strip" aria-label="Gateway"></div>
+        <div class="table-wrap">
+          <table id="devicesTable">
+            <caption class="sr-only">LAN devices</caption>
+            <thead>
+              <tr>
+                <th scope="col">Status</th>
+                <th scope="col">IP</th>
+                <th scope="col">MAC</th>
+                <th scope="col">Vendor</th>
+                <th scope="col">Alias</th>
+                <th scope="col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="devicesBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="connectionsView" hidden>
+        <div class="filters conn-toolbar">
+          <button type="button" class="btn btn-secondary" id="connRefresh">Refresh</button>
+          <label class="check">
+            <input type="checkbox" id="connEstablishedOnly" />
+            <span class="check-text">Established only</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="connAutoRefresh" />
+            <span class="check-text">Auto-refresh (45s)</span>
+          </label>
+          <span class="muted" id="connMeta" aria-live="polite"></span>
+        </div>
+        <div id="connAdapterStrip" class="conn-adapter-strip" aria-label="Adapter throughput"></div>
+        <div class="table-wrap">
+          <table id="connTable">
+            <caption class="sr-only">Active network connections</caption>
+            <thead>
+              <tr>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="conn-proto">Proto</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="conn-process">Process</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="conn-pid">PID</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="conn-local">Local</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="conn-remote">Remote</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="conn-state">State</th>
+              </tr>
+            </thead>
+            <tbody id="connBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="usageView" hidden>
+        <p class="muted" id="usageHelperStatus" aria-live="polite"></p>
+        <div class="filters usage-toolbar">
+          <button type="button" class="btn btn-primary" id="usageEnableBtn">Enable elevated monitoring</button>
+          <button type="button" class="btn btn-secondary" id="usageRefresh">Refresh</button>
+          <button type="button" class="btn btn-secondary" id="usageClear">Clear history</button>
+          <button type="button" class="btn btn-secondary" id="usageExport">Export CSV</button>
+        </div>
+        <div class="filters">
+          <label>Search
+            <input type="search" id="usageSearch" placeholder="App name…" autocomplete="off" />
+          </label>
+          <label>Sort
+            <select id="usageSort">
+              <option value="rate">Total rate</option>
+              <option value="down">Download rate</option>
+              <option value="up">Upload rate</option>
+              <option value="name">Name</option>
+            </select>
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="sr-only">Live per-app usage</caption>
+            <thead>
+              <tr>
+                <th scope="col">App</th>
+                <th scope="col">↓ Mbps</th>
+                <th scope="col">↑ Mbps</th>
+                <th scope="col">Session in</th>
+                <th scope="col">Session out</th>
+                <th scope="col">Ignore</th>
+                <th scope="col">Block</th>
+              </tr>
+            </thead>
+            <tbody id="usageLiveBody"></tbody>
+          </table>
+        </div>
+        <div class="chart-wrap">
+          <h2>Usage trend (24h)</h2>
+          <div class="chart-box chart-box-sm">
+            <canvas id="usageTrendChart" aria-label="Per-app usage trend for the last 24 hours"></canvas>
+            <p class="chart-empty muted" id="usageTrendEmpty" hidden>No usage history yet.</p>
+          </div>
+        </div>
+        <p class="muted">History buckets accumulate while elevated monitoring runs. Clear removes stored hourly/daily totals.</p>
+      </div>
+
+      <div id="topologyView" hidden>
+        <p class="muted">Topology: Devices star map when SNMP is off; SNMP walk when enabled in Settings.</p>
+        <div class="filters conn-toolbar">
+          <button type="button" class="btn btn-secondary" id="topoRefresh">Refresh topology</button>
+          <button type="button" class="btn btn-secondary" id="topoStop">Cancel</button>
+          <span class="muted" id="topoMeta" aria-live="polite"></span>
+        </div>
+        <div id="topoGraph" class="topo-graph" aria-label="Topology graph"></div>
+        <div class="table-wrap">
+          <table>
+            <caption class="sr-only">SNMP nodes</caption>
+            <thead><tr><th>IP</th><th>Name</th><th>Status</th><th>Descr</th></tr></thead>
+            <tbody id="topoBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="snifferView" hidden>
+        <p class="muted">Connection-flow metadata (open/close deltas from Connections — not Npcap/raw capture). Enable Sniffer in Settings. Auto-stops on tab leave unless Always-on.</p>
+        <div class="filters conn-toolbar">
+          <button type="button" class="btn btn-primary" id="sniffStart">Start</button>
+          <button type="button" class="btn btn-secondary" id="sniffStop">Stop</button>
+          <label>Proto <input type="text" id="sniffProto" placeholder="TCP" maxlength="8" /></label>
+          <label>Host <input type="text" id="sniffHost" maxlength="64" /></label>
+          <label>Port <input type="number" id="sniffPort" min="0" max="65535" /></label>
+          <span class="muted" id="sniffMeta" aria-live="polite"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="sr-only">Sniffer events</caption>
+            <thead><tr><th>Time</th><th>Event</th><th>Proto</th><th>Src</th><th>Dst</th><th>Process</th></tr></thead>
+            <tbody id="sniffBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="scanView" hidden>
+        <p class="muted">Port/CVE scan of one private IP. CVE data is advisory/stale. Subnet discovery is Settings-gated.</p>
+        <div class="filters conn-toolbar">
+          <label>Target IP <input type="text" id="scanTarget" placeholder="192.168.1.10" maxlength="64" autocomplete="off" /></label>
+          <button type="button" class="btn btn-primary" id="scanRun">Scan host</button>
+          <button type="button" class="btn btn-secondary" id="scanDiscover">Subnet discovery</button>
+          <span class="muted" id="scanMeta" aria-live="polite"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="sr-only">Open ports</caption>
+            <thead><tr><th>Port</th><th>Banner</th><th>CVE</th></tr></thead>
+            <tbody id="scanBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <section id="panel-speed" class="panel" role="tabpanel" aria-labelledby="tab-speed" hidden>
       <p class="disclaimer">
         Uses the official Ookla Speedtest CLI (not a website scrape). Personal non-commercial use.
@@ -461,6 +636,160 @@
             On (default): the X button and minimize hide the dashboard to the tray. Monitoring keeps running. Use tray &gt; Quit to exit.
             Off: minimize stays on the taskbar; closing the window quits the app.
           </p>
+        </fieldset>
+        <fieldset>
+          <legend>Connections &amp; Usage</legend>
+          <label class="check">
+            <input type="checkbox" name="connections_enabled" />
+            <span class="check-text">Enable Connections snapshot tab</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="usage_monitoring" aria-describedby="usageMonitorHint" />
+            <span class="check-text">Usage monitoring (elevated helper)</span>
+          </label>
+          <p class="field-hint" id="usageMonitorHint">
+            Starts a separate elevated .NET helper via UAC. Required for per-app byte rates and history. Off by default.
+          </p>
+          <label class="check">
+            <input type="checkbox" name="network_control_enabled" aria-describedby="networkControlHint" />
+            <span class="check-text">Network control (firewall block/unblock)</span>
+          </label>
+          <p class="field-hint" id="networkControlHint">
+            Master toggle for blocking apps by exe path. Off by default — block actions stay disabled until enabled.
+          </p>
+        </fieldset>
+        <fieldset>
+          <legend>LAN Devices &amp; Topology</legend>
+          <label class="check">
+            <input type="checkbox" name="lan_devices_enabled" />
+            <span class="check-text">Enable Devices inventory</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="lan_new_device_toast" />
+            <span class="check-text">Toast on new device</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="snmp_enabled" />
+            <span class="check-text">Enable SNMP topology</span>
+          </label>
+          <label>SNMP community
+            <input type="password" name="snmp_community" maxlength="64" autocomplete="off" />
+          </label>
+          <label class="wide">SNMP seed IPs (comma-separated)
+            <input type="text" name="snmp_targets" maxlength="500" placeholder="192.168.1.1" autocomplete="off" />
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Sniffer &amp; Discovery</legend>
+          <label class="check">
+            <input type="checkbox" name="sniffer_enabled" />
+            <span class="check-text">Enable metadata sniffer</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="sniffer_always_on" />
+            <span class="check-text">Always-on sniffer (tray; metadata only)</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="lan_active_discovery" />
+            <span class="check-text">Active subnet discovery (gated)</span>
+          </label>
+          <label>Discovery interval (minutes, ≥5)
+            <input type="number" name="lan_discovery_interval_min" min="5" max="1440" step="1" />
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Notify / Router webhooks</legend>
+          <label class="wide">Notify webhook URLs (JSON array of https URLs)
+            <textarea name="notify_webhooks_json" rows="2" maxlength="8000" placeholder='["https://…"]'></textarea>
+          </label>
+          <label class="wide">Quiet hours JSON
+            <input type="text" name="notify_quiet_hours_json" maxlength="500" placeholder='{"enabled":true,"start_hour":22,"end_hour":7}' />
+          </label>
+          <label class="wide">Router action webhook URL
+            <input type="url" name="router_webhook_url" maxlength="2000" placeholder="https://firewall/hook" />
+          </label>
+          <label class="wide">Router payload template (optional JSON with {{mac}} {{ip}} {{alias}})
+            <textarea name="router_webhook_template" rows="2" maxlength="4000"></textarea>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="router_webhook_auto_new" />
+            <span class="check-text">Auto router notify on new unknown device</span>
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Metrics &amp; localhost API</legend>
+          <label class="check">
+            <input type="checkbox" name="influx_enabled" />
+            <span class="check-text">InfluxDB2 push</span>
+          </label>
+          <label class="wide">Influx URL
+            <input type="url" name="influx_url" maxlength="500" />
+          </label>
+          <label>Influx token
+            <input type="password" name="influx_token" maxlength="500" autocomplete="off" />
+          </label>
+          <label>Org
+            <input type="text" name="influx_org" maxlength="120" />
+          </label>
+          <label>Bucket
+            <input type="text" name="influx_bucket" maxlength="120" />
+          </label>
+          <label class="check">
+            <input type="checkbox" name="es_enabled" />
+            <span class="check-text">Elasticsearch push</span>
+          </label>
+          <label class="wide">ES URL
+            <input type="url" name="es_url" maxlength="500" />
+          </label>
+          <label>ES API key
+            <input type="password" name="es_api_key" maxlength="500" autocomplete="off" />
+          </label>
+          <label class="check">
+            <input type="checkbox" name="prom_metrics_enabled" />
+            <span class="check-text">Prometheus /metrics on 127.0.0.1:9108</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="http_api_enabled" />
+            <span class="check-text">HTTP API on 127.0.0.1:9109 (token required)</span>
+          </label>
+          <label>API token
+            <input type="password" name="http_api_token" maxlength="128" autocomplete="off" />
+          </label>
+          <p class="field-hint">Metrics/API never bind 0.0.0.0. Grafana/ES stay external — not embedded.</p>
+        </fieldset>
+        <fieldset>
+          <legend>Usage caps &amp; alerts</legend>
+          <p class="field-hint" id="usageCapsHint">
+            Stored as <code>usage_caps_json</code> / <code>usage_alerts_json</code>. Leave blank to disable. Values are MiB (1024² bytes). Auto-block also needs Network control on.
+          </p>
+          <label>Global daily cap (MiB)
+            <input type="number" name="usage_cap_global_daily_mib" id="usageCapGlobalDailyMib" min="0" max="1048576" step="1" placeholder="optional" />
+          </label>
+          <label>Global monthly cap (MiB)
+            <input type="number" name="usage_cap_global_monthly_mib" id="usageCapGlobalMonthlyMib" min="0" max="1048576" step="1" placeholder="optional" />
+          </label>
+          <label class="check">
+            <input type="checkbox" name="usage_cap_auto_block" id="usageCapAutoBlock" />
+            <span class="check-text">Auto-block when a cap is hit (requires Network control)</span>
+          </label>
+          <label>Per-app key (optional)
+            <input type="text" name="usage_cap_app_key" id="usageCapAppKey" placeholder="e.g. chrome" autocomplete="off" maxlength="120" />
+          </label>
+          <label>Per-app daily cap (MiB)
+            <input type="number" name="usage_cap_app_daily_mib" id="usageCapAppDailyMib" min="0" max="1048576" step="1" placeholder="optional" />
+          </label>
+          <label class="wide">Per-app exe path (for auto-block)
+            <input type="text" name="usage_cap_app_exe" id="usageCapAppExe" placeholder="C:\Program Files\…\app.exe" autocomplete="off" maxlength="512" />
+          </label>
+          <label>Global daily alert (MiB)
+            <input type="number" name="usage_alert_global_daily_mib" id="usageAlertGlobalDailyMib" min="0" max="1048576" step="1" placeholder="optional" />
+          </label>
+          <label>App alert key (optional)
+            <input type="text" name="usage_alert_app_key" id="usageAlertAppKey" placeholder="e.g. chrome" autocomplete="off" maxlength="120" />
+          </label>
+          <label>App daily alert (MiB)
+            <input type="number" name="usage_alert_app_daily_mib" id="usageAlertAppDailyMib" min="0" max="1048576" step="1" placeholder="optional" />
+          </label>
         </fieldset>
         <fieldset>
           <legend>Probe targets</legend>

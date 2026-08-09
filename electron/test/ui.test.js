@@ -61,4 +61,27 @@ describe("dashboard redesign contracts", () => {
     assert.match(app, /lastGoodSummary = sum;/);
     assert.match(app, /if \(lastGoodSummary\)[\s\S]*?Summary refresh delayed/);
   });
+
+  it("ships Network tab with Devices/Connections/Usage segments and no monitor tick coupling", () => {
+    assert.match(html, /data-tab="connections"/);
+    assert.match(html, /id="panel-connections"/);
+    assert.match(html, />Network</);
+    assert.match(html, /id="connViewDevices"/);
+    assert.match(html, /id="connViewUsage"/);
+    assert.match(html, /id="connViewTopology"/);
+    assert.match(app, /refreshConnectionsPanel/);
+    assert.match(app, /refreshDevicesPanel/);
+    assert.match(app, /\/api\/connections\/snapshot/);
+    assert.match(app, /\/api\/lan\/devices/);
+    assert.doesNotMatch(app, /status:update[\s\S]{0,200}connectionsSnapshot/);
+  });
+
+  it("exposes Usage caps/alerts Settings form wired to usage_*_json keys", () => {
+    assert.match(html, /Usage caps &amp; alerts/);
+    assert.match(html, /id="usageCapGlobalDailyMib"/);
+    assert.match(html, /id="usageAlertGlobalDailyMib"/);
+    assert.match(app, /buildUsageCapsAlertsFromForm/);
+    assert.match(app, /usage_caps_json:\s*usageJson\.usage_caps_json/);
+    assert.match(app, /usage_alerts_json:\s*usageJson\.usage_alerts_json/);
+  });
 });
