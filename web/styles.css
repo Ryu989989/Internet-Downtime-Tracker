@@ -910,7 +910,8 @@ form.settings-form.settings-panel {
   grid-column: 1 / -1;
 }
 
-.settings-panel label.wide input {
+.settings-panel label.wide input,
+.settings-panel label.wide textarea {
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
@@ -1221,9 +1222,45 @@ form.settings-form.settings-panel {
 
 .settings-form input[type="number"],
 .settings-form input[type="text"],
-.settings-form input[type="url"] {
+.settings-form input[type="url"],
+.settings-form input[type="password"],
+.settings-form input[type="email"],
+.settings-form textarea {
   min-height: 2.15rem;
   font-size: 0.95rem;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.4rem 0.55rem;
+  box-sizing: border-box;
+}
+
+.settings-form textarea {
+  min-height: 4rem;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 0.9rem;
+}
+
+.settings-form input[type="number"]::placeholder,
+.settings-form input[type="text"]::placeholder,
+.settings-form input[type="url"]::placeholder,
+.settings-form input[type="password"]::placeholder,
+.settings-form input[type="email"]::placeholder,
+.settings-form textarea::placeholder {
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+.settings-form input[type="number"]:focus,
+.settings-form input[type="text"]:focus,
+.settings-form input[type="url"]:focus,
+.settings-form input[type="password"]:focus,
+.settings-form input[type="email"]:focus,
+.settings-form textarea:focus {
+  outline: none;
+  border-color: var(--blue);
 }
 
 input, select, button.btn {
