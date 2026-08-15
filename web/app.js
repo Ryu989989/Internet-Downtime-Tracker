@@ -1333,7 +1333,9 @@ function parseSnapshot(raw) {
 
 function formatSnapshotBlock(label, snap) {
   if (!snap) return "";
-  const a = snap.adapter;
+  const data = label === "Closed" ? snap.at_close : snap.at_open;
+  if (!data) return "";
+  const a = data.adapter;
   const adapter =
     a && a.name
       ? `${a.type === "wifi" ? "Wi‑Fi" : a.type === "ethernet" ? "Ethernet" : "Adapter"} ${a.name}${
@@ -1341,13 +1343,13 @@ function formatSnapshotBlock(label, snap) {
         }`
       : "adapter -";
   const flags = [
-    `LAN ${snap.lan_ok === true ? "up" : snap.lan_ok === false ? "down" : "-"}`,
-    `WAN ${snap.wan_ok === true ? "up" : snap.wan_ok === false ? "down" : "-"}`,
-    `DNS ${snap.dns_ok === true ? "up" : snap.dns_ok === false ? "down" : "-"}`,
-    `HTTP ${snap.http_ok === true ? "up" : snap.http_ok === false ? "down" : "-"}`,
+    `LAN ${data.lan_ok === true ? "up" : data.lan_ok === false ? "down" : "-"}`,
+    `WAN ${data.wan_ok === true ? "up" : data.wan_ok === false ? "down" : "-"}`,
+    `DNS ${data.dns_ok === true ? "up" : data.dns_ok === false ? "down" : "-"}`,
+    `HTTP ${data.http_ok === true ? "up" : data.http_ok === false ? "down" : "-"}`,
   ].join(" · ");
-  const lat = snap.latency_ms != null ? `${Math.round(snap.latency_ms)} ms` : "-";
-  const gw = snap.gateway || "-";
+  const lat = data.latency_ms != null ? `${Math.round(data.latency_ms)} ms` : "-";
+  const gw = data.gateway || "-";
   let html = `<div><strong>${escapeHtml(label)}</strong> · ${escapeHtml(adapter)} · gw ${escapeHtml(gw)} · ${escapeHtml(lat)}<br>${escapeHtml(flags)}</div>`;
   const hops = snap.traceroute && Array.isArray(snap.traceroute.hops) ? snap.traceroute.hops : null;
   if (hops && hops.length) {
@@ -1402,8 +1404,8 @@ function renderOutageRows(tbody, rows, {
     const detail = expandable && hasSnap
       ? `<tr class="snapshot-row" id="snapshot-${Number(o.id)}" hidden data-for="${Number(o.id)}">
           <td colspan="${cols}" class="snapshot-detail">
-            ${formatSnapshotBlock("Opened", snap.at_open || (snap.adapter || snap.lan_ok != null ? snap : null))}
-            ${formatSnapshotBlock("Closed", snap.at_close)}
+            ${formatSnapshotBlock("Opened", snap)}
+            ${formatSnapshotBlock("Closed", snap)}
           </td>
         </tr>`
       : "";
@@ -1585,7 +1587,7 @@ function paintProvider(provider) {
   }
 }
 
-function paintQuality(q) {
+function paintQuality(q, degraded) {
   const strip = $("#qualityStrip");
   if (!strip) return;
   const has = q && (q.loss_pct != null || q.jitter_ms != null || q.latency_avg_ms != null);
@@ -1606,10 +1608,10 @@ function paintQuality(q) {
   }
   const degradedChip = $("#qualityDegradedChip");
   if (degradedChip) {
-    const degraded = !!(q && q.degraded);
-    degradedChip.hidden = !degraded;
+    const isDegraded = !!(degraded || (q && q.degraded));
+    degradedChip.hidden = !isDegraded;
     const degText = $("#qualityDegraded");
-    if (degText) degText.textContent = degraded ? "Yes" : "No";
+    if (degText) degText.textContent = isDegraded ? "Yes" : "No";
   }
 }
 
@@ -1657,7 +1659,7 @@ function paintStatus(s) {
   const stale = $("#staleBanner");
   if (stale) stale.hidden = !s.monitor_stale;
 
-  paintQuality(s.quality);
+  paintQuality(s.quality, s.degraded);
 
   const adapterEl = $("#adapterLine");
   if (adapterEl) {

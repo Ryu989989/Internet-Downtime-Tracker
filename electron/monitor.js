@@ -5,6 +5,7 @@ const {
   getActiveAdapter,
   pingBurst,
   isMonitorStale,
+  parseWanTargets,
 } = require("./netcheck");
 const { layerPillTips } = require("./uptime-bar");
 const { notify: notifyChannels } = require("./notify-webhooks");
@@ -428,7 +429,8 @@ class Monitor {
     if (!this.tracerouteFn) return;
     const settings = this.db.getSettings();
     if (!settings.auto_traceroute_on_outage) return;
-    const target = settings.wan_targets ? String(settings.wan_targets).split(",")[0].trim() : QUALITY_TARGET;
+    const parsedTargets = parseWanTargets(settings.wan_targets || "", []);
+    const target = parsedTargets && parsedTargets.length ? parsedTargets[0][0] : QUALITY_TARGET;
     if (this._tracerouteFired.has(outageId)) return;
     this._tracerouteFired.add(outageId);
     // Keep set small
