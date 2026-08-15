@@ -9,6 +9,7 @@ const { execFile } = require("child_process");
 const net = require("net");
 const { promisify } = require("util");
 const { isPrivateOrLocalIp } = require("./port-scan");
+const { isBlockedProbeHost } = require("./netcheck");
 
 const execFileAsync = promisify(execFile);
 
@@ -66,22 +67,27 @@ function tracerouteArgs(host, { maxHops = MAX_HOPS, hopTimeoutMs = HOP_TIMEOUT_M
   };
 }
 
-function tracerouteTargetAllowed(host) {
+function tracerouteTargetAllowed(host, { allowPublic = false } = {}) {
   const bare = String(host || "").trim().replace(/^\[|\]$/g, "");
-  if (!isPrivateOrLocalIp(bare)) return false;
   if (net.isIP(bare) === 6) return false;
+  if (allowPublic) {
+    return !isBlockedProbeHost(bare);
+  }
+  if (!isPrivateOrLocalIp(bare)) return false;
   return true;
 }
 
 async function tracerouteHost(host, opts = {}) {
   const target = String(host || "").trim();
   const maxHops = Math.min(30, Math.max(1, Number(opts.maxHops) || MAX_HOPS));
+  const allowPublic = !!opts.allowPublic;
   if (!target) return { ok: false, ip: "", error: "Missing host", hops: [], hop_limit: maxHops };
-  if (!tracerouteTargetAllowed(target)) {
+  if (!tracerouteTargetAllowed(target, { allowPublic })) {
+    const msg = allowPublic ? "Target must be a valid public IP" : "Target must be a private/local IP";
     return {
       ok: false,
       ip: target,
-      error: "Target must be a private/local IP",
+      error: msg,
       hops: [],
       hop_limit: maxHops,
     };
@@ -114,12 +120,25 @@ async function tracerouteHost(host, opts = {}) {
   }
 }
 
+async function traceroutePublic(host, opts = {}) {
+  const safe = String(host || "").trim();
+  if (!safe) return { ok: false, ip: "", error: "Missing host", hops: [] };
+  if (net.isIP(safe) === 6) return { ok: false, ip: safe, error: "IPv6 traceroute not supported", hops: [] };
+  if (isBlockedProbeHost(safe)) {
+    return { ok: false, ip: safe, error: "Blocked probe target", hops: [] };
+  }
+  const maxHops = Math.min(30, Math.max(1, Number(opts.maxHops) || MAX_HOPS));
+  const hopTimeoutMs = Math.min(10_000, Math.max(200, Number(opts.hopTimeoutMs) || HOP_TIMEOUT_MS));
+  return tracerouteHost(safe, { ...opts, allowPublic: true, maxHops, hopTimeoutMs });
+}
+
 module.exports = {
   MAX_HOPS,
   HOP_TIMEOUT_MS,
   parseTraceroute,
   tracerouteArgs,
   tracerouteHost,
+  traceroutePublic,
   setRunTracerouteForTest,
   resetRunTracerouteForTest,
 };

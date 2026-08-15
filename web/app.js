@@ -115,6 +115,12 @@ Object.assign(LAYER_TIPS, {
   "quality-jitter": { name: "Jitter", meaning: "Rolling ping-burst jitter (ms)." },
   "quality-avg": { name: "Avg", meaning: "Rolling ping-burst average RTT (ms)." },
   "quality-last": { name: "Last", meaning: "Last burst sample (ms). Same combined latency family — not a per-layer RTT." },
+  "quality-degraded": { name: "Degraded", meaning: "Quality burst exceeded a configured threshold (loss/latency/jitter) for consecutive samples. Not a full outage." },
+  "set-speedtest-interval": { name: "Auto speed test", meaning: "Minutes between scheduled Ookla speed tests. 0 disables automatic runs; manual Run test still works." },
+  "set-auto-traceroute": { name: "Auto traceroute", meaning: "Capture a public traceroute to the first WAN target when a WAN or DNS outage opens." },
+  "set-degradation-loss": { name: "Loss threshold", meaning: "Rolling burst loss % that triggers Degraded. 0 disables." },
+  "set-degradation-latency": { name: "Latency threshold", meaning: "Rolling burst average RTT (ms) that triggers Degraded. 0 disables." },
+  "set-degradation-jitter": { name: "Jitter threshold", meaning: "Rolling burst jitter (ms) that triggers Degraded. 0 disables." },
   "provider-ping": { name: "Provider ping", meaning: "Last Ookla server ping (ms)." },
   "provider-when": { name: "Measured", meaning: "When the last speed test recorded this ISP/server." },
   "stat-streak": { name: "Uptime streak", meaning: "Time since last recovery, or In outage." },
@@ -336,6 +342,7 @@ async function api(path, opts) {
       }
       return window.idt.getSystemLogs(params);
     }
+    if (path === "/api/monitors/status") return window.idt.monitorsStatus();
     if (path === "/api/speedtest/status") return window.idt.speedtestStatus();
     if (path.startsWith("/api/speedtest/history")) {
       const q = path.includes("?") ? new URLSearchParams(path.split("?")[1]) : new URLSearchParams();
@@ -501,6 +508,7 @@ function activateTab(tab, { focusPanel = false } = {}) {
     refreshSpeed().then(() => queueSpeedTrendMount(lastSpeedTrendTests));
   }
   if (tab === "settings") loadSettings().catch(() => {});
+  if (tab === "monitors") refreshMonitors();
   if (tab === "overview") {
     refreshStatus();
     refreshSummary().then(() => scheduleChartsResize());
@@ -1340,7 +1348,13 @@ function formatSnapshotBlock(label, snap) {
   ].join(" · ");
   const lat = snap.latency_ms != null ? `${Math.round(snap.latency_ms)} ms` : "-";
   const gw = snap.gateway || "-";
-  return `<div><strong>${escapeHtml(label)}</strong> · ${escapeHtml(adapter)} · gw ${escapeHtml(gw)} · ${escapeHtml(lat)}<br>${escapeHtml(flags)}</div>`;
+  let html = `<div><strong>${escapeHtml(label)}</strong> · ${escapeHtml(adapter)} · gw ${escapeHtml(gw)} · ${escapeHtml(lat)}<br>${escapeHtml(flags)}</div>`;
+  const hops = snap.traceroute && Array.isArray(snap.traceroute.hops) ? snap.traceroute.hops : null;
+  if (hops && hops.length) {
+    const rows = hops.map((h) => `<tr><td>${h.hop ?? "-"}</td><td>${h.ip || "*"}</td><td>${h.rtt_ms != null ? h.rtt_ms + " ms" : "*"}</td></tr>`).join("");
+    html += `<table class="traceroute-table"><thead><tr><th>#</th><th>Host</th><th>RTT</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  return html;
 }
 
 function emptyStateHtml(cols, title, body) {
@@ -1372,7 +1386,7 @@ function renderOutageRows(tbody, rows, {
     const dur = o.duration_ms != null ? o.duration_ms : Math.floor((now - o.started_at) * 1000);
     const typ = safeOutageType(o.type);
     const snap = parseSnapshot(o.snapshot_json);
-    const hasSnap = !!(snap && (snap.at_open || snap.at_close || snap.adapter || snap.lan_ok != null));
+    const hasSnap = !!(snap && (snap.at_open || snap.at_close || snap.adapter || snap.lan_ok != null || snap.traceroute));
     const notesCell = editableNotes
       ? `<td class="notes-cell">
           <input type="text" class="notes-input" data-outage-id="${Number(o.id)}"
@@ -1589,6 +1603,13 @@ function paintQuality(q) {
   if ($("#qualityLast")) {
     $("#qualityLast").textContent =
       q && q.latency_ms != null ? `${q.latency_ms} ms` : "-";
+  }
+  const degradedChip = $("#qualityDegradedChip");
+  if (degradedChip) {
+    const degraded = !!(q && q.degraded);
+    degradedChip.hidden = !degraded;
+    const degText = $("#qualityDegraded");
+    if (degText) degText.textContent = degraded ? "Yes" : "No";
   }
 }
 
@@ -1862,6 +1883,40 @@ async function refreshStatus() {
 }
 
 let lastGoodSummary = null;
+
+async function refreshMonitors() {
+  try {
+    const data = await api("/api/monitors/status");
+    paintMonitors(data);
+  } catch (e) {
+    console.error("monitors refresh failed", e);
+  }
+}
+
+function paintMonitors(data) {
+  const tbody = $("#monitorsBody");
+  if (!tbody) return;
+  const monitors = Array.isArray(data?.monitors) ? data.monitors : [];
+  const status = Array.isArray(data?.status) ? data.status : [];
+  tbody.innerHTML = "";
+  if (!monitors.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="5" class="muted">No custom monitors configured. Add them in Settings.</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const m of monitors) {
+    const st = status.find((x) => x.id === m.id) || {};
+    const target = m.type === "http" ? (m.url || m.host) : `${m.host || "-"}${m.type === "tcp" ? ":" + (m.port || "") : ""}`;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${escapeHtml(m.name || m.id)}</td>
+      <td>${escapeHtml(m.type || "?")}</td>
+      <td>${escapeHtml(target)}</td>
+      <td>${escapeHtml(String(m.interval_s || 60))}s</td>
+      <td>${st.lastOk === true ? '<span class="pill pill-ok">up</span>' : st.lastOk === false ? '<span class="pill pill-down">down</span>' : '<span class="muted">-</span>'}</td>`;
+    tbody.appendChild(tr);
+  }
+}
 
 async function refreshSummary() {
   try {
@@ -3877,6 +3932,7 @@ async function loadSettings() {
     "es_enabled",
     "prom_metrics_enabled",
     "http_api_enabled",
+    "auto_traceroute_on_outage",
   ];
   for (const k of boolKeys) {
     if (form[k]) form[k].checked = k === "lan_devices_enabled" ? s[k] !== false : !!s[k];
@@ -3895,9 +3951,31 @@ async function loadSettings() {
     "es_url",
     "es_api_key",
     "http_api_token",
+    "monitors_json",
+    "telegram_bot_token",
+    "telegram_chat_id",
+    "ntfy_host",
+    "ntfy_topic",
+    "email_smtp_host",
+    "email_smtp_user",
+    "email_from",
+    "email_to",
+    "email_smtp_pass",
   ];
   for (const k of strKeys) {
     if (form[k]) form[k].value = s[k] != null ? s[k] : "";
+  }
+  const numKeys = [
+    "speedtest_interval_min",
+    "degradation_loss_pct",
+    "degradation_latency_ms",
+    "degradation_jitter_ms",
+  ];
+  for (const k of numKeys) {
+    if (form[k]) form[k].value = s[k] != null ? s[k] : "";
+  }
+  if (form.email_smtp_port) {
+    form.email_smtp_port.value = s.email_smtp_port || "587";
   }
   if (form.lan_discovery_interval_min) {
     form.lan_discovery_interval_min.value = s.lan_discovery_interval_min ?? 15;
@@ -4185,6 +4263,22 @@ function setupForms() {
       wan_targets: form.wan_targets.value.trim(),
       dns_resolver: form.dns_resolver.value.trim(),
       http_url: form.http_url.value.trim(),
+      speedtest_interval_min: form.speedtest_interval_min ? Number(form.speedtest_interval_min.value) : 0,
+      auto_traceroute_on_outage: !!(form.auto_traceroute_on_outage && form.auto_traceroute_on_outage.checked),
+      degradation_loss_pct: form.degradation_loss_pct ? Number(form.degradation_loss_pct.value) : 0,
+      degradation_latency_ms: form.degradation_latency_ms ? Number(form.degradation_latency_ms.value) : 0,
+      degradation_jitter_ms: form.degradation_jitter_ms ? Number(form.degradation_jitter_ms.value) : 0,
+      monitors_json: form.monitors_json ? form.monitors_json.value.trim() || "[]" : "[]",
+      telegram_bot_token: form.telegram_bot_token ? form.telegram_bot_token.value.trim() : "",
+      telegram_chat_id: form.telegram_chat_id ? form.telegram_chat_id.value.trim() : "",
+      ntfy_host: form.ntfy_host ? form.ntfy_host.value.trim() : "",
+      ntfy_topic: form.ntfy_topic ? form.ntfy_topic.value.trim() : "",
+      email_smtp_host: form.email_smtp_host ? form.email_smtp_host.value.trim() : "",
+      email_smtp_port: form.email_smtp_port ? String(form.email_smtp_port.value).trim() : "587",
+      email_smtp_user: form.email_smtp_user ? form.email_smtp_user.value.trim() : "",
+      email_smtp_pass: form.email_smtp_pass ? form.email_smtp_pass.value.trim() : "",
+      email_from: form.email_from ? form.email_from.value.trim() : "",
+      email_to: form.email_to ? form.email_to.value.trim() : "",
     };
     try {
       const saved = await api("/api/settings", {

@@ -54,6 +54,22 @@ const DEFAULT_SETTINGS = {
   router_webhook_url: "",
   router_webhook_template: "",
   router_webhook_auto_new: false,
+  speedtest_interval_min: 0,
+  auto_traceroute_on_outage: false,
+  degradation_loss_pct: 0,
+  degradation_latency_ms: 0,
+  degradation_jitter_ms: 0,
+  monitors_json: "[]",
+  telegram_bot_token: "",
+  telegram_chat_id: "",
+  ntfy_host: "",
+  ntfy_topic: "",
+  email_smtp_host: "",
+  email_smtp_port: "587",
+  email_smtp_user: "",
+  email_smtp_pass: "",
+  email_from: "",
+  email_to: "",
 };
 
 const SETTINGS_BOUNDS = {
@@ -62,6 +78,11 @@ const SETTINGS_BOUNDS = {
   probe_retention_days: { min: 1, max: 365 },
   port: { min: 1, max: 65535 },
   lan_discovery_interval_min: { min: 5, max: 1440 },
+  speedtest_interval_min: { min: 0, max: 10080 },
+  degradation_loss_pct: { min: 0, max: 100 },
+  degradation_latency_ms: { min: 0, max: 30000 },
+  degradation_jitter_ms: { min: 0, max: 30000 },
+  email_smtp_port: { min: 1, max: 65535 },
 };
 
 const BOOL_SETTINGS = new Set([
@@ -83,6 +104,7 @@ const BOOL_SETTINGS = new Set([
   "http_api_enabled",
   "lan_active_discovery",
   "router_webhook_auto_new",
+  "auto_traceroute_on_outage",
 ]);
 
 const JSON_SETTINGS = new Set([
@@ -90,6 +112,7 @@ const JSON_SETTINGS = new Set([
   "usage_alerts_json",
   "notify_webhooks_json",
   "notify_quiet_hours_json",
+  "monitors_json",
 ]);
 
 const STRING_SETTINGS_MAX = {
@@ -106,10 +129,28 @@ const STRING_SETTINGS_MAX = {
   http_api_token: 128,
   router_webhook_url: 2000,
   router_webhook_template: 4000,
+  telegram_bot_token: 256,
+  telegram_chat_id: 120,
+  ntfy_host: 120,
+  ntfy_topic: 120,
+  email_smtp_host: 120,
+  email_smtp_port: 16,
+  email_smtp_user: 256,
+  email_smtp_pass: 256,
+  email_from: 256,
+  email_to: 256,
 };
 
 const OUTAGE_TYPES = new Set(["lan", "wan", "dns", "http"]);
 const LIST_OUTAGES_LIMIT_MAX = 5000;
+
+const SECRET_SETTINGS = new Set([
+  "telegram_bot_token",
+  "email_smtp_pass",
+  "influx_token",
+  "es_api_key",
+  "http_api_token",
+]);
 
 /**
  * Coerce/clamp a settings value. Returns null to reject (keep prior / skip write).
@@ -237,6 +278,50 @@ function normalizeSettingValue(key, value) {
     const s = String(value).trim();
     if (s.length > STRING_SETTINGS_MAX[key]) return null;
     return s;
+  }
+  if (key === "speedtest_interval_min") {
+    const n = Math.trunc(Number(value));
+    if (!Number.isFinite(n)) return null;
+    const bounds = SETTINGS_BOUNDS[key];
+    return Math.min(bounds.max, Math.max(bounds.min, n));
+  }
+  if (key === "degradation_loss_pct" || key === "degradation_latency_ms" || key === "degradation_jitter_ms" || key === "email_smtp_port") {
+    const n = value === "" || value == null ? 0 : Math.trunc(Number(value));
+    if (!Number.isFinite(n)) return null;
+    const bounds = SETTINGS_BOUNDS[key];
+    return Math.min(bounds.max, Math.max(bounds.min, n));
+  }
+  if (key === "monitors_json") {
+    const raw = normalizeJsonArrayOrObjectSetting(value, true);
+    if (raw == null) return null;
+    let arr;
+    try { arr = JSON.parse(raw); } catch { return null; }
+    const out = [];
+    for (const m of arr) {
+      if (!m || typeof m !== "object" || typeof m.id !== "string" || !m.id) continue;
+      const type = String(m.type || "").toLowerCase();
+      if (!["tcp", "http", "ping"].includes(type)) continue;
+      const rawUrl = String(m.url || "").trim();
+      const rawHost = String(m.host || "").trim();
+      if (type === "http") {
+        if (!rawUrl && !rawHost) continue;
+        let url = rawUrl || rawHost;
+        if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+        if (isBlockedHttpUrl(url)) continue;
+      } else {
+        if (!rawHost) continue;
+        if (isBlockedProbeHost(rawHost)) continue;
+      }
+      const interval_s = Math.trunc(Number(m.interval_s));
+      const interval = Number.isFinite(interval_s) && interval_s >= 5 ? interval_s : 60;
+      const port = m.port != null ? Math.trunc(Number(m.port)) : null;
+      const host = type === "http" ? (rawUrl || rawHost) : rawHost;
+      const clean = { id: m.id, name: String(m.name || m.id).slice(0, 64), type, host, interval_s: interval };
+      if (type === "tcp" && port != null && port > 0 && port <= 65535) clean.port = port;
+      if (type === "http") clean.url = rawUrl ? rawUrl.slice(0, 500) : (rawHost ? (rawHost.startsWith("http") ? rawHost.slice(0, 500) : `http://${rawHost}`.slice(0, 500)) : "");
+      out.push(clean);
+    }
+    return JSON.stringify(out);
   }
   if (key === "wan_targets" || key === "dns_resolver" || key === "http_url") {
     if (value == null) return null;
@@ -646,6 +731,28 @@ class TrackerDb {
         status TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_lan_scan_at ON lan_scan_results(started_at);
+
+      CREATE TABLE IF NOT EXISTS monitor_checks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        monitor_id TEXT NOT NULL,
+        checked_at REAL NOT NULL,
+        ok INTEGER NOT NULL DEFAULT 0,
+        latency_ms REAL,
+        error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_monitor_checks_monitor ON monitor_checks(monitor_id, checked_at);
+
+      CREATE TABLE IF NOT EXISTS degradation_windows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at REAL NOT NULL,
+        ended_at REAL,
+        duration_ms INTEGER,
+        loss_pct REAL,
+        jitter_ms REAL,
+        latency_avg_ms REAL,
+        notes TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_degradation_started ON degradation_windows(started_at);
     `);
     this._migrateSchema();
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
@@ -829,6 +936,125 @@ class TrackerDb {
       [ts, durationMs, merged, snapText, outageId]
     );
     this._persistImmediate();
+  }
+
+  insertMonitorCheck({ monitor_id, checked_at, ok, latency_ms, error }) {
+    const ts = checked_at != null ? Number(checked_at) : Date.now() / 1000;
+    this._run(
+      `INSERT INTO monitor_checks (monitor_id, checked_at, ok, latency_ms, error)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        String(monitor_id || "").slice(0, 64),
+        ts,
+        ok ? 1 : 0,
+        latency_ms != null ? Number(latency_ms) : null,
+        error != null ? String(error).slice(0, 200) : null,
+      ]
+    );
+    this._persist();
+  }
+
+  listMonitorChecks({ monitor_id = null, fromTs = null, toTs = null, limit = 1000 } = {}) {
+    const clauses = [];
+    const params = [];
+    if (monitor_id != null && String(monitor_id).trim()) {
+      clauses.push("monitor_id = ?");
+      params.push(String(monitor_id).slice(0, 64));
+    }
+    if (fromTs != null) {
+      clauses.push("checked_at >= ?");
+      params.push(Number(fromTs));
+    }
+    if (toTs != null) {
+      clauses.push("checked_at <= ?");
+      params.push(Number(toTs));
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const lim = Math.max(1, Math.min(10000, Math.trunc(Number(limit)) || 1000));
+    params.push(lim);
+    return this._all(
+      `SELECT * FROM monitor_checks ${where} ORDER BY checked_at DESC LIMIT ?`,
+      params
+    );
+  }
+
+  getLatestMonitorCheck(monitor_id) {
+    return this._get(
+      `SELECT * FROM monitor_checks WHERE monitor_id = ? ORDER BY checked_at DESC LIMIT 1`,
+      [String(monitor_id || "").slice(0, 64)]
+    );
+  }
+
+  insertDegradationWindow({ started_at, ended_at, loss_pct, jitter_ms, latency_avg_ms, notes }) {
+    const start = Number(started_at) || Date.now() / 1000;
+    const end = ended_at != null ? Number(ended_at) : null;
+    const dur = end != null ? Math.max(0, Math.floor((end - start) * 1000)) : null;
+    this._run(
+      `INSERT INTO degradation_windows (started_at, ended_at, duration_ms, loss_pct, jitter_ms, latency_avg_ms, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        start,
+        end,
+        dur,
+        loss_pct != null ? Number(loss_pct) : null,
+        jitter_ms != null ? Number(jitter_ms) : null,
+        latency_avg_ms != null ? Number(latency_avg_ms) : null,
+        notes != null ? String(notes).slice(0, 2000) : null,
+      ]
+    );
+    this._persistImmediate();
+    return this._get("SELECT last_insert_rowid() AS id");
+  }
+
+  getOpenDegradationWindow() {
+    return this._get(
+      "SELECT * FROM degradation_windows WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1"
+    );
+  }
+
+  closeDegradationWindow(id, ended_at, notes = null) {
+    const row = this._get("SELECT started_at, notes FROM degradation_windows WHERE id=?", [id]);
+    if (!row) return null;
+    const end = Number(ended_at) || Date.now() / 1000;
+    const dur = Math.max(0, Math.floor((end - row.started_at) * 1000));
+    let merged = notes;
+    if (notes && row.notes) merged = `${row.notes}; ${notes}`;
+    else if (row.notes && !notes) merged = row.notes;
+    this._run(
+      "UPDATE degradation_windows SET ended_at=?, duration_ms=?, notes=? WHERE id=?",
+      [end, dur, merged, id]
+    );
+    this._persistImmediate();
+    return this._get("SELECT * FROM degradation_windows WHERE id=?", [id]);
+  }
+
+  listDegradationWindows({ fromTs = null, toTs = null, limit = 500 } = {}) {
+    const clauses = [];
+    const params = [];
+    if (fromTs != null) {
+      clauses.push("(ended_at IS NULL OR ended_at >= ?)");
+      params.push(Number(fromTs));
+    }
+    if (toTs != null) {
+      clauses.push("started_at <= ?");
+      params.push(Number(toTs));
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const lim = Math.max(1, Math.min(10000, Math.trunc(Number(limit)) || 500));
+    params.push(lim);
+    return this._all(
+      `SELECT * FROM degradation_windows ${where} ORDER BY started_at DESC LIMIT ?`,
+      params
+    );
+  }
+
+  getSettingsPublic() {
+    const s = this.getSettings();
+    const out = { ...s };
+    for (const key of SECRET_SETTINGS) {
+      if (out[key] != null) out[key] = "";
+    }
+    return out;
   }
 
   getOpenOutages() {
@@ -1479,6 +1705,9 @@ module.exports = {
   OUTAGE_TYPES,
   LIST_OUTAGES_LIMIT_MAX,
   BOOL_SETTINGS,
+  JSON_SETTINGS,
+  STRING_SETTINGS_MAX,
+  SECRET_SETTINGS,
   normalizeSettingValue,
   normalizeSettingsObject,
   encodeSnapshotJson,
