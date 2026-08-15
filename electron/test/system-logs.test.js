@@ -1,6 +1,6 @@
 "use strict";
 
-const { describe, it, after } = require("node:test");
+const { describe, it, after, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   mergeGaps,
@@ -118,5 +118,22 @@ describe("scanWindowsLogs soft-fail", () => {
     assert.deepEqual(result.gaps, []);
     assert.equal(result.count, 0);
     assert.ok(result.warnings.some((w) => /PS unavailable/i.test(w)));
+  });
+});
+
+describe("scanWindowsLogs non-Windows gate", () => {
+  let originalPlatform;
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform, writable: true, configurable: true });
+  });
+
+  it("returns a graceful Windows-only warning on non-Windows platforms", async () => {
+    originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux", writable: true, configurable: true });
+    const result = await scanWindowsLogs({ days: 1 });
+    assert.equal(result.count, 0);
+    assert.equal(result.event_count, 0);
+    assert.ok(result.warnings.some((w) => /Windows/i.test(w)));
   });
 });

@@ -37,7 +37,8 @@
       "assets/icons/**/*",
       "package.json",
       "node_modules/sql.js/**/*",
-      "node_modules/net-snmp/**/*"
+      "node_modules/net-snmp/**/*",
+      "node_modules/nodemailer/**/*"
     ],
     "extraResources": [
       {

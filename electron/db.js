@@ -314,10 +314,13 @@ function normalizeSettingValue(key, value) {
       }
       const interval_s = Math.trunc(Number(m.interval_s));
       const interval = Number.isFinite(interval_s) && interval_s >= 5 ? interval_s : 60;
-      const port = m.port != null ? Math.trunc(Number(m.port)) : null;
+      let port = m.port != null ? Math.trunc(Number(m.port)) : null;
       const host = type === "http" ? (rawUrl || rawHost) : rawHost;
       const clean = { id: m.id, name: String(m.name || m.id).slice(0, 64), type, host, interval_s: interval };
-      if (type === "tcp" && port != null && port > 0 && port <= 65535) clean.port = port;
+      if (type === "tcp") {
+        if (port == null || port <= 0 || port > 65535) port = 80;
+        clean.port = port;
+      }
       if (type === "http") clean.url = rawUrl ? rawUrl.slice(0, 500) : (rawHost ? (rawHost.startsWith("http") ? rawHost.slice(0, 500) : `http://${rawHost}`.slice(0, 500)) : "");
       out.push(clean);
     }
@@ -366,9 +369,16 @@ function normalizeSettingsObject(settings) {
 }
 
 function dataDir() {
-  const base =
-    process.env.LOCALAPPDATA ||
-    path.join(require("os").homedir(), "AppData", "Local");
+  const platform = process.platform;
+  const home = require("os").homedir();
+  let base;
+  if (platform === "win32") {
+    base = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
+  } else if (platform === "darwin") {
+    base = path.join(home, "Library", "Application Support");
+  } else {
+    base = process.env.XDG_CONFIG_HOME || path.join(home, ".config");
+  }
   const dir = path.join(base, APP_DIR_NAME);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
@@ -843,8 +853,19 @@ class TrackerDb {
 
   updateSettings(updates) {
     const allowed = new Set(Object.keys(DEFAULT_SETTINGS));
+    const existing = this.getSettings();
     for (const [key, value] of Object.entries(updates || {})) {
       if (!allowed.has(key)) continue;
+      // The UI redacts secrets to empty strings. Don't overwrite a saved secret
+      // with a blank value from the form.
+      if (
+        SECRET_SETTINGS.has(key) &&
+        String(value).trim() === "" &&
+        existing[key] != null &&
+        existing[key] !== ""
+      ) {
+        continue;
+      }
       const normalized = normalizeSettingValue(key, value);
       if (normalized == null) continue;
       this._run(

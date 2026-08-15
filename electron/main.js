@@ -21,6 +21,7 @@ const { honestUptimeBar, observationStart } = require("./uptime-bar");
 const { startCustomMonitors, stopCustomMonitors, customMonitorStatus, parseMonitors } = require("./custom-monitors");
 const { createSpeedtestScheduler } = require("./speedtest-scheduler");
 const { traceroutePublic } = require("./traceroute");
+const notifyChannels = require("./notify-webhooks");
 
 /** Exports always land under downloads/temp — ignore renderer-supplied paths. */
 function resolveExportDest(kind) {
@@ -910,6 +911,22 @@ function boot() {
     monitor.start();
     speedtestScheduler.startSpeedtestScheduler();
     startCustomMonitors({ db, monitor });
+
+    // Flush any queued quiet-hours digests once quiet hours end, even if the
+    // user does not change settings.
+    setInterval(() => {
+      try {
+        const s = db.getSettings();
+        if (
+          notifyChannels.pendingDigestCount() &&
+          !notifyChannels.inQuietHours(notifyChannels.parseQuietHours(s.notify_quiet_hours_json))
+        ) {
+          notifyChannels.flushDigest({ urls: s.notify_webhooks_json, settings: s }).catch(() => {});
+        }
+      } catch {
+        /* ignore */
+      }
+    }, 60_000).unref?.();
 
     try {
       lanBridge.applyIntegrationSettings({}, db.getSettings()).catch(() => {});

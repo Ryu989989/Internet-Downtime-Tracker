@@ -39,11 +39,26 @@ describe("new settings clamp and round-trip", async () => {
     assert.equal(normalizeSettingValue("degradation_latency_ms", 999999), 30000);
   });
 
+  it("defaults TCP monitor port to 80 when omitted", () => {
+    const normalized = normalizeSettingValue("monitors_json", JSON.stringify([{ id: "t", type: "tcp", host: "1.1.1.1", interval_s: 30 }]));
+    const parsed = JSON.parse(normalized);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].port, 80);
+  });
+
   it("rejects invalid monitors_json", () => {
     assert.equal(normalizeSettingValue("monitors_json", "not-json"), null);
     assert.equal(normalizeSettingValue("monitors_json", "{}"), null);
     assert.equal(normalizeSettingValue("monitors_json", "[{\"id\":\"x\"}]"), "[]");
     assert.equal(normalizeSettingValue("monitors_json", "[{\"id\":\"x\",\"type\":\"tcp\",\"host\":\"127.0.0.1\",\"port\":80,\"interval_s\":30}]"), "[]");
+  });
+
+  it("preserves secrets when the form sends redacted empty values", () => {
+    db.updateSettings({ email_smtp_pass: "secret-pass" });
+    db.updateSettings({ email_smtp_host: "smtp.example.com", email_smtp_pass: "" });
+    const s = db.getSettings();
+    assert.equal(s.email_smtp_pass, "secret-pass");
+    assert.equal(s.email_smtp_host, "smtp.example.com");
   });
 
   it("round-trips new settings and redacts secrets in public view", () => {

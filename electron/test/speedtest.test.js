@@ -1,8 +1,8 @@
 "use strict";
 
-const { describe, it, after } = require("node:test");
+const { describe, it, after, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
-const { parseSpeedtestJson, bandwidthToMbps, runCli, cancelRun, getStatus, verifyOfficialZip } = require("../speedtest");
+const { parseSpeedtestJson, bandwidthToMbps, runCli, cancelRun, getStatus, verifyOfficialZip, isTrustedCliPath } = require("../speedtest");
 const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
@@ -81,5 +81,31 @@ describe("verifyOfficialZip happy path", () => {
     const pin = crypto.createHash("sha256").update(payload).digest("hex");
     assert.equal(verifyOfficialZip(file, pin), pin);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("isTrustedCliPath cross-platform", () => {
+  let originalPlatform;
+  const homedir = require("os").homedir();
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform, writable: true, configurable: true });
+  });
+
+  it("accepts system PATH roots on macOS and Linux", () => {
+    originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", writable: true, configurable: true });
+    assert.equal(isTrustedCliPath("/usr/local/bin/speedtest", "/tmp/idt"), true);
+    Object.defineProperty(process, "platform", { value: "linux", writable: true, configurable: true });
+    assert.equal(isTrustedCliPath("/opt/local/bin/speedtest", "/tmp/idt"), true);
+    assert.equal(isTrustedCliPath("/home/bad/../bin/speedtest", "/tmp/idt"), false);
+    assert.equal(isTrustedCliPath("/usr/local/bin/notspeedtest", "/tmp/idt"), false);
+  });
+
+  it("rejects path traversal on Windows", () => {
+    originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", writable: true, configurable: true });
+    assert.equal(isTrustedCliPath("C:\\Program Files\\Speedtest CLI\\..\\..\\Windows\\speedtest.exe", "C:\\idt"), false);
+    assert.equal(isTrustedCliPath("C:\\Program Files\\Speedtest CLI\\speedtest.exe", "C:\\idt"), true);
   });
 });

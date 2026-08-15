@@ -70,8 +70,9 @@ async function probeMonitor(m) {
   const started = Date.now();
   if (type === "tcp") {
     const host = String(m.host || "").trim();
-    const port = Math.trunc(Number(m.port));
-    if (!host || isBlockedProbeHost(host) || !Number.isFinite(port) || port <= 0 || port > 65535) {
+    let port = Number.isFinite(Number(m.port)) ? Math.trunc(Number(m.port)) : 80;
+    if (port <= 0 || port > 65535) port = 80;
+    if (!host || isBlockedProbeHost(host)) {
       return { ok: false, latency_ms: null, error: "invalid tcp target" };
     }
     const impl = probeOverrides && probeOverrides.tcp ? probeOverrides.tcp : tcpConnect;
@@ -100,10 +101,11 @@ async function probeMonitor(m) {
 
 async function tick(m, { db, monitor }) {
   const entry = active.get(m.id);
-  if (!entry || stopped) return;
+  if (!entry || stopped || entry.isRunning) return;
   if (monitor && (monitor.state.paused || monitor.state.probe_suppressed)) {
     return;
   }
+  entry.isRunning = true;
   try {
     const result = await probeMonitor(m);
     const checkedAt = Date.now() / 1000;
@@ -133,6 +135,8 @@ async function tick(m, { db, monitor }) {
     entry.lastOk = result.ok;
   } catch (err) {
     console.error("custom monitor tick failed", err && err.stack ? err.stack : err);
+  } finally {
+    entry.isRunning = false;
   }
 }
 
@@ -150,7 +154,7 @@ function startCustomMonitors({ db, monitor } = {}) {
     const timer = setInterval(async () => {
       await tick(m, { db, monitor });
     }, intervalMs);
-    active.set(m.id, { timer, first, lastOk: null });
+    active.set(m.id, { timer, first, lastOk: null, isRunning: false });
   }
 }
 
@@ -167,6 +171,10 @@ function customMonitorStatus() {
   return Array.from(active.entries()).map(([id, entry]) => ({ id, lastOk: entry.lastOk, running: !stopped }));
 }
 
+function getActiveForTest() {
+  return active;
+}
+
 module.exports = {
   startCustomMonitors,
   stopCustomMonitors,
@@ -176,4 +184,5 @@ module.exports = {
   setNotifyFn,
   setProbeFunctionsForTest,
   resetForTest,
+  getActiveForTest,
 };

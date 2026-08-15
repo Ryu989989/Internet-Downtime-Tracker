@@ -961,7 +961,7 @@
         <fieldset>
           <legend>Custom monitors</legend>
           <label class="wide">Monitors JSON
-            <textarea name="monitors_json" rows="4" maxlength="2000" placeholder='[{"id":"gw","name":"Gateway","type":"ping","host":"192.168.1.1","interval_s":30}]'></textarea>
+            <textarea name="monitors_json" rows="4" maxlength="8000" placeholder='[{"id":"gw","name":"Gateway","type":"ping","host":"192.168.1.1","interval_s":30}]'></textarea>
           </label>
           <p class="field-hint">JSON array of { id, name, type: tcp|http|ping, host, port (tcp only), url (http only), interval_s }. Targets are validated against SSRF guards.</p>
         </fieldset>

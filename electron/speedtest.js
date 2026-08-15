@@ -67,23 +67,38 @@ function isTrustedCliPath(cliPath, userDataDir) {
   const base = path.basename(resolved).toLowerCase();
   if (base !== "speedtest.exe" && base !== "speedtest") return false;
 
+  const isWin = process.platform === "win32";
   const allowedRoots = [];
   if (userDataDir) {
     allowedRoots.push(path.resolve(userDataDir, "speedtest"));
   }
-  allowedRoots.push(
-    path.join(process.env.ProgramFiles || "C:\\Program Files", "Speedtest CLI"),
-    path.join(
-      process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)",
-      "Speedtest CLI"
-    )
-  );
+  if (isWin) {
+    allowedRoots.push(
+      path.join(process.env.ProgramFiles || "C:\\Program Files", "Speedtest CLI"),
+      path.join(
+        process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)",
+        "Speedtest CLI"
+      )
+    );
+  } else {
+    allowedRoots.push(
+      "/usr/local/bin",
+      "/usr/bin",
+      "/opt/homebrew/bin",
+      "/opt/local/bin",
+      path.join(require("os").homedir(), ".local", "bin")
+    );
+  }
 
-  const norm = (p) => path.resolve(p).replace(/\//g, "\\").toLowerCase();
-  const target = norm(resolved);
+  const sep = path.sep;
+  const target = path.resolve(resolved).toLowerCase();
   return allowedRoots.some((root) => {
-    const r = norm(root);
-    return target === r || target.startsWith(`${r}\\`);
+    const r = path.resolve(root).toLowerCase();
+    if (target === r) return true;
+    if (!target.startsWith(`${r}${sep}`)) return false;
+    // Disallow directory traversal past the allowed root.
+    const relative = path.relative(r, target);
+    return relative && !relative.startsWith("..") && !path.isAbsolute(relative);
   });
 }
 
@@ -188,10 +203,20 @@ async function resolveCli(userDataDir) {
   // SPEEDTEST_CLI is honored only when it still passes basename + allowlisted-dir checks.
   if (process.env.SPEEDTEST_CLI) candidates.push(process.env.SPEEDTEST_CLI);
   if (userDataDir) candidates.push(bundledCliPath(userDataDir));
-  candidates.push(
-    path.join(process.env.ProgramFiles || "C:\\Program Files", "Speedtest CLI", "speedtest.exe"),
-    path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Speedtest CLI", "speedtest.exe")
-  );
+  if (process.platform === "win32") {
+    candidates.push(
+      path.join(process.env.ProgramFiles || "C:\\Program Files", "Speedtest CLI", "speedtest.exe"),
+      path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Speedtest CLI", "speedtest.exe")
+    );
+  } else {
+    candidates.push(
+      "/usr/local/bin/speedtest",
+      "/opt/homebrew/bin/speedtest",
+      "/usr/bin/speedtest",
+      "/opt/local/bin/speedtest",
+      path.join(require("os").homedir(), ".local", "bin", "speedtest")
+    );
+  }
   for (const c of candidates) {
     try {
       if (c && fs.existsSync(c) && isTrustedCliPath(c, userDataDir)) {
@@ -219,7 +244,9 @@ function getStatus(userDataDir) {
     source: cli ? cli.source : null,
     running: !!running,
     install_hint:
-      "Install Ookla Speedtest CLI (winget install --id Ookla.Speedtest.CLI) or download from https://www.speedtest.net/apps/cli — personal non-commercial use. Or use Speed → Install CLI to fetch the official Windows zip into app data.",
+      process.platform === "win32"
+        ? "Install Ookla Speedtest CLI (winget install --id Ookla.Speedtest.CLI) or download from https://www.speedtest.net/apps/cli — personal non-commercial use. Or use Speed → Install CLI to fetch the official Windows zip into app data."
+        : "Install Ookla Speedtest CLI for your platform (macOS/Linux tarball from https://www.speedtest.net/apps/cli) and place it in /usr/local/bin or another PATH directory — personal non-commercial use.",
   }));
 }
 
@@ -276,6 +303,9 @@ function downloadFile(url, dest, redirectsLeft = MAX_DOWNLOAD_REDIRECTS) {
  * Uses PowerShell Expand-Archive (reliable on Win10/11).
  */
 async function installOfficialCli(userDataDir) {
+  if (process.platform !== "win32") {
+    throw new Error("Automatic CLI install is only supported on Windows. Install the official tarball for macOS/Linux from https://www.speedtest.net/apps/cli and place it on PATH.");
+  }
   if (!userDataDir) throw new Error("userDataDir required");
   const dir = path.join(userDataDir, "speedtest");
   fs.mkdirSync(dir, { recursive: true });

@@ -296,8 +296,107 @@ function parseSnapshot(stdout) {
   return { ok: true, gateway, devices, disclaimer: "Passive neighbor cache — not a complete network map." };
 }
 
+async function runGateway() {
+  if (process.platform === "win32") {
+    const out = await runPowerShell(buildGatewayScript(), SNAPSHOT_TIMEOUT_MS);
+    return String(out.stdout || "").trim();
+  }
+  return runUnixGateway();
+}
+
+function buildGatewayScript() {
+  return `
+$route = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1
+if ($route -and $route.NextHop) { $route.NextHop } else { '' }
+`.trim();
+}
+
+async function runUnixGateway() {
+  let out = "";
+  try {
+    const { stdout } = await execFileAsync("ip", ["route", "show", "default"], { timeout: SNAPSHOT_TIMEOUT_MS });
+    out = String(stdout || "");
+    const m = out.match(/default\s+via\s+(\S+)/);
+    if (m) return m[1];
+  } catch {
+    /* ignore */
+  }
+  try {
+    const { stdout } = await execFileAsync("route", ["-n", "get", "default"], { timeout: SNAPSHOT_TIMEOUT_MS });
+    out = String(stdout || "");
+    const m = out.match(/gateway:\s*(\S+)/i);
+    if (m) return m[1];
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+async function runNeighbor() {
+  if (runPowerShellOverride) {
+    const out = await runPowerShellOverride(buildNeighborScript(), SNAPSHOT_TIMEOUT_MS);
+    return String((out && out.stdout) || "");
+  }
+  if (process.platform === "win32") {
+    const { stdout } = await runPowerShell(buildNeighborScript(), SNAPSHOT_TIMEOUT_MS);
+    return String(stdout || "");
+  }
+  return runUnixNeighbor();
+}
+
+async function runUnixNeighbor() {
+  const timeout = SNAPSHOT_TIMEOUT_MS;
+  let out = "";
+  try {
+    const { stdout } = await execFileAsync("ip", ["-4", "neigh", "show"], { timeout, maxBuffer: MAX_STDOUT });
+    out = String(stdout || "");
+  } catch {
+    try {
+      const { stdout } = await execFileAsync("arp", ["-an"], { timeout, maxBuffer: MAX_STDOUT });
+      out = String(stdout || "");
+    } catch {
+      try {
+        const { stdout } = await execFileAsync("arp", ["-a"], { timeout, maxBuffer: MAX_STDOUT });
+        out = String(stdout || "");
+      } catch {
+        out = "";
+      }
+    }
+  }
+  const gateway = await runUnixGateway();
+  const neighbors = parseUnixNeighbors(out);
+  return JSON.stringify({ gateway: gateway || null, neighbors });
+}
+
+function parseUnixNeighbors(text) {
+  const rows = [];
+  if (!text) return rows;
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // ip -4 neigh show: 192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE
+    let m = trimmed.match(/^([\d.]+)\s+dev\s+(\S+)\s+lladdr\s+([\da-fA-F:-]+)\s+(\S+)/);
+    if (m) {
+      rows.push({ ip: m[1], iface: m[2], mac: m[3], state: m[4] });
+      continue;
+    }
+    // arp -an: ? (192.168.1.1) at aa:bb:cc:dd:ee:ff on en0 [ethernet]
+    m = trimmed.match(/^\?\s*\(([\d.]+)\)\s+at\s+([\da-fA-F:-]+)\s+on\s+(\S+)/);
+    if (m) {
+      rows.push({ ip: m[1], iface: m[3], mac: m[2], state: "Reachable" });
+      continue;
+    }
+    // arp -a: host (192.168.1.1) at aa:bb:cc:dd:ee:ff on en0 [ethernet]
+    m = trimmed.match(/^\S+\s*\(([\d.]+)\)\s+at\s+([\da-fA-F:-]+)\s+on\s+(\S+)/);
+    if (m) {
+      rows.push({ ip: m[1], iface: m[3], mac: m[2], state: "Reachable" });
+    }
+  }
+  return rows;
+}
+
 async function snapshot() {
-  const { stdout } = await runPowerShell(buildNeighborScript(), SNAPSHOT_TIMEOUT_MS);
+  const stdout = await runNeighbor();
   return parseSnapshot(stdout);
 }
 
@@ -793,4 +892,6 @@ module.exports = {
   resetHostnameCacheForTest,
   setPingHostForTest,
   resetPingHostForTest,
+  parseUnixNeighbors,
+  runUnixGateway,
 };

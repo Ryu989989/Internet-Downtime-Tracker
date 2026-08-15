@@ -9,11 +9,34 @@ const {
   setPostJsonForTest,
   setEmailTransporterForTest,
   clearDigestForTest,
+  buildEmailTransporterKey,
+  pendingDigestCount,
+  flushDigest,
 } = require("../notify-webhooks");
 
 describe("notify-webhooks channel payloads", () => {
   let posted = [];
   let emails = [];
+
+  it("flushes queued quiet-hours digests", async () => {
+    setPostJsonForTest((url, body) => {
+      posted.push({ url, body });
+      return { ok: true, status: 200 };
+    });
+    await notify({
+      urls: '["https://example.com/hook"]',
+      event: "down",
+      title: "Down",
+      body: { layer: "wan" },
+      quietHours: { start_hour: 0, end_hour: 23, enabled: true },
+    });
+    assert.equal(pendingDigestCount(), 1);
+    const flushed = await flushDigest({ urls: '["https://example.com/hook"]', settings: {} });
+    assert.equal(flushed.flushed, 1);
+    assert.equal(pendingDigestCount(), 0);
+    assert.equal(posted.length, 1);
+    assert.equal(posted[posted.length - 1].body.event, "digest");
+  });
 
   beforeEach(() => {
     posted = [];
@@ -148,5 +171,22 @@ describe("notify-webhooks channel payloads", () => {
     assert.equal(posted.length, 1);
     assert.equal(posted[0].body.event, "down");
     assert.equal(posted[0].body.title, "Down");
+  });
+
+  it("omits Telegram parse_mode when unset", () => {
+    const p = buildChannelPayload("telegram", { event: "up", title: "T", body: {}, settings: { telegram_chat_id: "1" } });
+    assert.equal(p.chat_id, "1");
+    assert.equal("parse_mode" in p, false);
+  });
+
+  it("includes Telegram parse_mode when configured", () => {
+    const p = buildChannelPayload("telegram", { event: "up", title: "T", body: {}, settings: { telegram_chat_id: "1", telegram_parse_mode: "HTML" } });
+    assert.equal(p.parse_mode, "HTML");
+  });
+
+  it("email transporter cache key includes password", () => {
+    const a = buildEmailTransporterKey({ email_smtp_host: "smtp.example.com", email_smtp_port: 587, email_smtp_user: "a", email_smtp_pass: "p1" });
+    const b = buildEmailTransporterKey({ email_smtp_host: "smtp.example.com", email_smtp_port: 587, email_smtp_user: "a", email_smtp_pass: "p2" });
+    assert.notEqual(a, b);
   });
 });

@@ -178,11 +178,13 @@ function buildChannelPayload(channel, { event, title, body, url, settings }) {
     }
     case "telegram": {
       const chatId = settings && settings.telegram_chat_id ? String(settings.telegram_chat_id) : "";
-      return {
+      const payload = {
         chat_id: chatId,
         text: `${t}\n${details}`.slice(0, 4000),
-        parse_mode: "",
       };
+      const parseMode = settings && settings.telegram_parse_mode ? String(settings.telegram_parse_mode).trim() : "";
+      if (parseMode) payload.parse_mode = parseMode;
+      return payload;
     }
     default:
       return {
@@ -244,7 +246,8 @@ function buildEmailTransporterKey(settings) {
   const host = String(settings.email_smtp_host || "").toLowerCase();
   const port = Number(settings.email_smtp_port) || 587;
   const user = String(settings.email_smtp_user || "");
-  return `${host}:${port}:${user}`;
+  const pass = String(settings.email_smtp_pass || "");
+  return `${host}:${port}:${user}:${pass}`;
 }
 
 async function sendEmail(settings, title, body) {
@@ -426,4 +429,5 @@ module.exports = {
   ntfyTopicFromUrl,
   setPostJsonForTest,
   setEmailTransporterForTest,
+  buildEmailTransporterKey,
 };
