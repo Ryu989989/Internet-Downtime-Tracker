@@ -5,8 +5,10 @@ const {
   getActiveAdapter,
   pingBurst,
   isMonitorStale,
+  parseWanTargets,
 } = require("./netcheck");
 const { layerPillTips } = require("./uptime-bar");
+const { notify: notifyChannels } = require("./notify-webhooks");
 
 const ADAPTER_EVERY_N = 30;
 const QUALITY_EVERY_N = 6;
@@ -69,9 +71,10 @@ function buildAutoOutageNote(state, type) {
 }
 
 class Monitor {
-  constructor(db, { probeFn = null, onState = null, onOutage = null } = {}) {
+  constructor(db, { probeFn = null, onState = null, onOutage = null, tracerouteFn = null } = {}) {
     this.db = db;
     this.probeFn = probeFn || null;
+    this.tracerouteFn = tracerouteFn || null;
     this.onState = onState;
     this.onOutage = onOutage;
     this.state = {
@@ -97,6 +100,9 @@ class Monitor {
       started_at: Date.now() / 1000,
       probe_suppressed: false,
       quality: null,
+      degraded: false,
+      degraded_burst_count: 0,
+      degraded_ok_count: 0,
     };
     this._timer = null;
     this._stopped = true;
@@ -111,6 +117,10 @@ class Monitor {
     this._resumeGraceTicks = 0;
     /** Bumped on pause/suppress so in-flight probes are ignored after await. */
     this._probeGen = 0;
+    /** Debounce for degradation detection. */
+    this._degradeThreshold = 3;
+    /** Traceroute already fired for this outage id to avoid loops. */
+    this._tracerouteFired = new Set();
   }
 
   start() {
@@ -248,6 +258,7 @@ class Monitor {
       uptime_streak_s: Math.round(uptime_streak_s * 10) / 10,
       monitor_stale,
       quality: this.state.quality,
+      degraded: this.state.degraded,
       db_degraded: !dbOk,
     };
   }
@@ -324,12 +335,117 @@ class Monitor {
     try {
       const q = await pingBurst(QUALITY_TARGET, { count: 4, timeoutS: 1.2 });
       this.state.quality = q;
+      this._evaluateDegradation(q);
       this._emit();
     } catch (err) {
       console.error("quality burst failed", err);
     } finally {
       this._qualityRunning = false;
     }
+  }
+
+  _evaluateDegradation(q) {
+    if (!q || typeof q !== "object") return;
+    const settings = this.db.getSettings();
+    const lossTh = Number(settings.degradation_loss_pct || 0);
+    const latTh = Number(settings.degradation_latency_ms || 0);
+    const jitTh = Number(settings.degradation_jitter_ms || 0);
+    if (lossTh <= 0 && latTh <= 0 && jitTh <= 0) return;
+
+    const loss = q.loss_pct != null ? Number(q.loss_pct) : 0;
+    const lat = q.latency_avg_ms != null ? Number(q.latency_avg_ms) : 0;
+    const jit = q.jitter_ms != null ? Number(q.jitter_ms) : 0;
+    const breach =
+      (lossTh > 0 && loss >= lossTh) ||
+      (latTh > 0 && lat >= latTh) ||
+      (jitTh > 0 && jit >= jitTh);
+
+    if (breach) {
+      this.state.degraded_ok_count = 0;
+      this.state.degraded_burst_count += 1;
+    } else {
+      this.state.degraded_ok_count += 1;
+      if (this.state.degraded_ok_count >= Math.max(1, this._degradeThreshold)) {
+        this.state.degraded_burst_count = 0;
+      }
+    }
+
+    const wasDegraded = this.state.degraded;
+    const isDegraded = this.state.degraded_burst_count >= this._degradeThreshold;
+    this.state.degraded = isDegraded;
+
+    if (!wasDegraded && isDegraded) {
+      this._notifyDegradation("enter", q, settings);
+      try {
+        this.db.insertDegradationWindow({
+          started_at: Date.now() / 1000,
+          loss_pct: loss,
+          jitter_ms: jit,
+          latency_avg_ms: lat,
+          notes: "Degraded burst",
+        });
+      } catch (err) {
+        console.error("insert degradation window failed", err);
+      }
+    } else if (wasDegraded && !isDegraded) {
+      this._notifyDegradation("exit", q, settings);
+      try {
+        const open = this.db.getOpenDegradationWindow();
+        if (open) {
+          const now = Date.now() / 1000;
+          this.db.closeDegradationWindow(open.id, now, "Recovered");
+        }
+      } catch (err) {
+        console.error("close degradation window failed", err);
+      }
+    }
+  }
+
+  _notifyDegradation(action, q, settings) {
+    try {
+      const title =
+        action === "enter"
+          ? "Connection degraded"
+          : "Connection recovered from degradation";
+      const body =
+        action === "enter"
+          ? { loss_pct: q.loss_pct, latency_avg_ms: q.latency_avg_ms, jitter_ms: q.jitter_ms }
+          : { previous_loss_pct: q.loss_pct, previous_latency_avg_ms: q.latency_avg_ms, previous_jitter_ms: q.jitter_ms };
+      notifyChannels({
+        urls: settings.notify_webhooks_json,
+        quietHours: settings.notify_quiet_hours_json,
+        settings,
+        event: action === "enter" ? "degraded" : "degraded_recovery",
+        title,
+        body,
+      });
+    } catch (err) {
+      console.error("degradation notify failed", err);
+    }
+  }
+
+  _maybeAutoTraceroute(type, outageId) {
+    if (type !== "wan" && type !== "dns") return;
+    if (!this.tracerouteFn) return;
+    const settings = this.db.getSettings();
+    if (!settings.auto_traceroute_on_outage) return;
+    const parsedTargets = parseWanTargets(settings.wan_targets || "", []);
+    const target = parsedTargets && parsedTargets.length ? parsedTargets[0][0] : QUALITY_TARGET;
+    if (this._tracerouteFired.has(outageId)) return;
+    this._tracerouteFired.add(outageId);
+    // Keep set small
+    if (this._tracerouteFired.size > 20) {
+      const first = this._tracerouteFired.values().next().value;
+      this._tracerouteFired.delete(first);
+    }
+    void (async () => {
+      try {
+        const result = await this.tracerouteFn(target, { maxHops: 15, hopTimeoutMs: 2000 });
+        this.db.mergeOutageSnapshot(outageId, { traceroute: result });
+      } catch (err) {
+        console.error("auto traceroute failed", err);
+      }
+    })();
   }
 
   async _bootstrap() {
@@ -518,6 +634,7 @@ class Monitor {
       const note = buildAutoOutageNote(this.state, type);
       const id = this.db.openOutage(type, now, note, { at_open: snap });
       this.state[openKey] = id;
+      this._maybeAutoTraceroute(type, id);
       this._notifyOutage({ action: "open", type, id, started_at: now, snapshot: snap });
     }
   }

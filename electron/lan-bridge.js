@@ -122,6 +122,7 @@ async function refreshDevices() {
         .notify({
           urls: s.notify_webhooks_json,
           quietHours: s.notify_quiet_hours_json,
+          settings: s,
           event: "new_device",
           title: "New LAN device",
           body: { mac: d.mac, ip: d.ip, vendor: d.vendor },
@@ -297,6 +298,7 @@ async function scanDevice(body = {}) {
       .notify({
         urls: s.notify_webhooks_json,
         quietHours: s.notify_quiet_hours_json,
+        settings: s,
         event: "scan_complete",
         title: `Port scan ${host}`,
         body: { host, open_ports: result.open_ports, cve_count: (result.cves || []).length },
@@ -418,7 +420,7 @@ async function applyIntegrationSettings(prev, next) {
   try {
     const qh = notify.parseQuietHours(next.notify_quiet_hours_json);
     if (!notify.inQuietHours(qh) && notify.pendingDigestCount()) {
-      await notify.flushDigest({ urls: next.notify_webhooks_json });
+      await notify.flushDigest({ urls: next.notify_webhooks_json, settings: next });
     }
   } catch {
     /* ignore */
@@ -457,6 +459,7 @@ async function onOutageEvent(kind, outage) {
   await notify.notify({
     urls: s.notify_webhooks_json,
     quietHours: s.notify_quiet_hours_json,
+    settings: s,
     event: kind,
     title: `Outage ${kind}: ${outage && outage.type}`,
     body: { type: outage && outage.type, id: outage && outage.id },

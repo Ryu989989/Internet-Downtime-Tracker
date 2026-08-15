@@ -18,6 +18,9 @@ const usageBridge = require("./usage-bridge");
 const usageControl = require("./usage-control");
 const lanBridge = require("./lan-bridge");
 const { honestUptimeBar, observationStart } = require("./uptime-bar");
+const { startCustomMonitors, stopCustomMonitors, customMonitorStatus, parseMonitors } = require("./custom-monitors");
+const { createSpeedtestScheduler } = require("./speedtest-scheduler");
+const { traceroutePublic } = require("./traceroute");
 
 /** Exports always land under downloads/temp — ignore renderer-supplied paths. */
 function resolveExportDest(kind) {
@@ -43,6 +46,7 @@ let quitting = false;
 const lastUsageSampleBytes = new Map();
 let usageRollupTimer = null;
 let usagePruneTick = 0;
+let speedtestScheduler = null;
 
 function isBenignPipeError(err) {
   if (!err) return false;
@@ -538,6 +542,11 @@ function historyObservationClocks() {
 
 function registerIpc() {
   safeHandle("api:status", () => monitor.snapshot());
+  safeHandle("api:monitors:status", () => {
+    const monitors = db ? parseMonitors(db.getSettings()) : [];
+    const history = db ? db.listMonitorChecks({ limit: 1000 }) : [];
+    return { monitors, status: customMonitorStatus(), history };
+  });
   safeHandle("api:summary", () => {
     const settings = db.getSettings();
     const { firstProbeAt, firstOutageAt, observeSince } = historyObservationClocks();
@@ -554,10 +563,16 @@ function registerIpc() {
       }),
     };
   });
-  safeHandle("api:settings", () => db.getSettings());
+  safeHandle("api:settings", () => db.getSettingsPublic());
   safeHandle("api:settings:update", async (_e, body) => {
     const prev = db.getSettings();
     const updated = db.updateSettings(body || {});
+    if (Object.prototype.hasOwnProperty.call(body || {}, "speedtest_interval_min")) {
+      if (speedtestScheduler) speedtestScheduler.startSpeedtestScheduler();
+    }
+    if (Object.prototype.hasOwnProperty.call(body || {}, "monitors_json")) {
+      startCustomMonitors({ db, monitor });
+    }
     if (Object.prototype.hasOwnProperty.call(body || {}, "probe_retention_days")) {
       try {
         db.pruneProbes();
@@ -706,37 +721,7 @@ function registerIpc() {
       };
     }
   });
-  safeHandle("api:speedtest:run", async () => {
-    if (monitor) monitor.setProbeSuppress(true);
-    await usageBridge.setSuppress(true);
-    try {
-      const result = await speedtest.runSpeedTest(userData());
-      const saved = db.insertSpeedTest({
-        tested_at: result.tested_at,
-        download_mbps: result.download_mbps,
-        upload_mbps: result.upload_mbps,
-        ping_ms: result.ping_ms,
-        jitter_ms: result.jitter_ms,
-        packet_loss: result.packet_loss,
-        server_name: result.server_name,
-        server_id: result.server_id,
-        server_location: result.server_location,
-        isp: result.isp,
-        result_url: result.result_url,
-        raw_json: result.raw_json,
-      });
-      return { test: saved, ok: true };
-    } catch (err) {
-      if (err && err.code === "CANCELLED") {
-        return { ok: false, cancelled: true, error: err.message };
-      }
-      throw err;
-    } finally {
-      // Cool-down ignores failure streaks after saturated-link blips.
-      if (monitor) monitor.setProbeSuppress(false, { cooldownMs: 8000 });
-      await usageBridge.setSuppress(false);
-    }
-  });
+  safeHandle("api:speedtest:run", async () => speedtestScheduler.runSpeedTestAndStore());
   safeHandle("api:speedtest:cancel", () => {
     const ok = speedtest.cancelRun();
     if (monitor) monitor.setProbeSuppress(false, { cooldownMs: 8000 });
@@ -915,12 +900,16 @@ function boot() {
     monitor = new Monitor(db, {
       onState: onMonitorState,
       onOutage: maybeNotifyOutage,
+      tracerouteFn: traceroutePublic,
     });
     lanBridge.init({ db, monitor });
+    speedtestScheduler = createSpeedtestScheduler({ db, monitor, speedtest, usageBridge, userDataPath: () => app.getPath("userData") });
     registerIpc();
     createWindow();
     createTray();
     monitor.start();
+    speedtestScheduler.startSpeedtestScheduler();
+    startCustomMonitors({ db, monitor });
 
     try {
       lanBridge.applyIntegrationSettings({}, db.getSettings()).catch(() => {});
@@ -960,6 +949,8 @@ app.on("window-all-closed", (e) => {
 
 app.on("before-quit", () => {
   quitting = true;
+  if (speedtestScheduler) speedtestScheduler.stopSpeedtestScheduler();
+  stopCustomMonitors();
   stopUsageRollupInterval();
   usageBridge.stop().catch(() => {});
   try {

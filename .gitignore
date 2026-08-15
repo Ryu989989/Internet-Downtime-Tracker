@@ -40,6 +40,7 @@ build.spec
 .env.*
 !.env.example
 *.pem
+!electron/test/fixtures/localhost-cert.pem
 *.key
 credentials.json
 secrets.*

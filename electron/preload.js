@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("idt", {
   exportReport: (params) => ipcRenderer.invoke("api:export:report", params || {}),
   getSystemLogs: (params) => ipcRenderer.invoke("api:system-logs:get", params || {}),
   scanSystemLogs: (params) => ipcRenderer.invoke("api:system-logs:scan", params || {}),
+  monitorsStatus: () => ipcRenderer.invoke("api:monitors:status"),
   speedtestStatus: () => ipcRenderer.invoke("api:speedtest:status"),
   speedtestHistory: (params) => ipcRenderer.invoke("api:speedtest:history", params || {}),
   speedtestRun: () => ipcRenderer.invoke("api:speedtest:run"),

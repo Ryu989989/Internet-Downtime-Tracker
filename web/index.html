@@ -35,6 +35,7 @@
     <button type="button" class="tab" data-tab="system-logs" role="tab" aria-selected="false" aria-controls="panel-system-logs" id="tab-system-logs" tabindex="-1">System logs</button>
     <button type="button" class="tab" data-tab="connections" role="tab" aria-selected="false" aria-controls="panel-connections" id="tab-connections" tabindex="-1">Network</button>
     <button type="button" class="tab" data-tab="speed" role="tab" aria-selected="false" aria-controls="panel-speed" id="tab-speed" tabindex="-1">Speed</button>
+    <button type="button" class="tab" data-tab="monitors" role="tab" aria-selected="false" aria-controls="panel-monitors" id="tab-monitors" tabindex="-1">Monitors</button>
     <button type="button" class="tab" data-tab="settings" role="tab" aria-selected="false" aria-controls="panel-settings" id="tab-settings" tabindex="-1">Settings</button>
   </nav>
 
@@ -89,6 +90,10 @@
               <div class="meta-chip quality-chip has-tip pressable" tabindex="0" data-tip="quality-last">
                 <span class="meta-label">Last</span>
                 <span id="qualityLast">-</span>
+              </div>
+              <div class="meta-chip quality-chip has-tip pressable" id="qualityDegradedChip" hidden tabindex="0" data-tip="quality-degraded">
+                <span class="meta-label">Degraded</span>
+                <span id="qualityDegraded">No</span>
               </div>
             </div>
             <p class="quality-empty muted" id="qualityEmpty">Rolling ping burst updates about every 30 seconds. It never opens outages.</p>
@@ -658,6 +663,34 @@
       </div>
     </section>
 
+    <section id="panel-monitors" class="panel" role="tabpanel" aria-labelledby="tab-monitors" hidden>
+      <p class="panel-lead muted">
+        Custom TCP, HTTP, or ICMP targets monitored on their own intervals. Configure targets in Settings → Monitors.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <caption class="sr-only">Custom monitors</caption>
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Type</th>
+              <th scope="col">Target</th>
+              <th scope="col">Interval</th>
+              <th scope="col">Last status</th>
+            </tr>
+          </thead>
+          <tbody id="monitorsBody"></tbody>
+        </table>
+      </div>
+      <div class="chart-wrap">
+        <h2>Monitor history</h2>
+        <div class="chart-box">
+          <canvas id="monitorChart" aria-label="Custom monitor latency history"></canvas>
+          <p class="chart-empty muted" id="monitorChartEmpty" hidden>Select a monitor to view history.</p>
+        </div>
+      </div>
+    </section>
+
     <section id="panel-settings" class="panel" role="tabpanel" aria-labelledby="tab-settings" hidden>
       <form id="settingsForm" class="settings-form settings-panel">
         <fieldset>
@@ -869,6 +902,68 @@
           <label class="wide">HTTP check URL
             <input type="url" name="http_url" placeholder="http://connectivitycheck.gstatic.com/generate_204" />
           </label>
+        </fieldset>
+        <fieldset>
+          <legend>Speed &amp; auto traceroute</legend>
+          <label class="has-tip" data-tip="set-speedtest-interval">Auto speed test interval (min, 0 = off)
+            <input type="number" name="speedtest_interval_min" min="0" max="10080" step="1" value="0" />
+          </label>
+          <label class="check has-tip" data-tip="set-auto-traceroute">
+            <input type="checkbox" name="auto_traceroute_on_outage" />
+            <span class="check-text">Capture traceroute on WAN/DNS outage</span>
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Degradation detection</legend>
+          <label class="has-tip" data-tip="set-degradation-loss">Loss threshold % (0 = off)
+            <input type="number" name="degradation_loss_pct" min="0" max="100" step="1" value="0" />
+          </label>
+          <label class="has-tip" data-tip="set-degradation-latency">Latency threshold ms (0 = off)
+            <input type="number" name="degradation_latency_ms" min="0" max="30000" step="1" value="0" />
+          </label>
+          <label class="has-tip" data-tip="set-degradation-jitter">Jitter threshold ms (0 = off)
+            <input type="number" name="degradation_jitter_ms" min="0" max="30000" step="1" value="0" />
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Native notifications</legend>
+          <label class="wide">Telegram bot token
+            <input type="password" name="telegram_bot_token" maxlength="256" autocomplete="off" />
+          </label>
+          <label>Telegram chat ID
+            <input type="text" name="telegram_chat_id" maxlength="120" autocomplete="off" />
+          </label>
+          <label class="wide">ntfy host (optional; default ntfy.sh)
+            <input type="text" name="ntfy_host" maxlength="120" placeholder="ntfy.sh" autocomplete="off" />
+          </label>
+          <label>ntfy topic
+            <input type="text" name="ntfy_topic" maxlength="120" autocomplete="off" />
+          </label>
+          <label class="wide">Email SMTP host
+            <input type="text" name="email_smtp_host" maxlength="120" autocomplete="off" />
+          </label>
+          <label>SMTP port
+            <input type="number" name="email_smtp_port" min="1" max="65535" step="1" value="587" />
+          </label>
+          <label>SMTP user
+            <input type="text" name="email_smtp_user" maxlength="256" autocomplete="off" />
+          </label>
+          <label>SMTP password
+            <input type="password" name="email_smtp_pass" maxlength="256" autocomplete="off" />
+          </label>
+          <label>From address
+            <input type="email" name="email_from" maxlength="256" autocomplete="off" />
+          </label>
+          <label>To address
+            <input type="email" name="email_to" maxlength="256" autocomplete="off" />
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Custom monitors</legend>
+          <label class="wide">Monitors JSON
+            <textarea name="monitors_json" rows="4" maxlength="2000" placeholder='[{"id":"gw","name":"Gateway","type":"ping","host":"192.168.1.1","interval_s":30}]'></textarea>
+          </label>
+          <p class="field-hint">JSON array of { id, name, type: tcp|http|ping, host, port (tcp only), url (http only), interval_s }. Targets are validated against SSRF guards.</p>
         </fieldset>
         <div class="settings-actions">
           <button type="submit" class="btn btn-primary">Save</button>

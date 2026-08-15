@@ -10,6 +10,16 @@ const { URL } = require("url");
 
 const execFileAsync = promisify(execFile);
 
+let runCmdOverride = null;
+
+function setRunCmdForTest(fn) {
+  runCmdOverride = fn || null;
+}
+
+function resetRunCmdForTest() {
+  runCmdOverride = null;
+}
+
 const WAN_TARGETS = [
   ["1.1.1.1", 443],
   ["8.8.8.8", 53],
@@ -107,6 +117,7 @@ function classifyDomain(result) {
 }
 
 async function runCmd(cmd, args, timeoutMs = 5000) {
+  if (runCmdOverride) return runCmdOverride(cmd, args, timeoutMs);
   try {
     const { stdout } = await execFileAsync(cmd, args, {
       timeout: timeoutMs,
@@ -149,9 +160,22 @@ async function gatewayWindows() {
 }
 
 async function gatewayUnix() {
-  const out = await runCmd("ip", ["route", "show", "default"]);
+  let out = "";
+  try {
+    out = await runCmd("ip", ["route", "show", "default"]);
+  } catch {
+    /* ignore */
+  }
   const m = out.match(/default via (\d+\.\d+\.\d+\.\d+)/);
-  return m ? m[1] : null;
+  if (m) return m[1];
+  // macOS/BSD fallback
+  try {
+    out = await runCmd("route", ["-n", "get", "default"]);
+  } catch {
+    return null;
+  }
+  const mm = out.match(/gateway:\s*(\d+\.\d+\.\d+\.\d+)/i);
+  return mm ? mm[1] : null;
 }
 
 function tcpConnect(host, port, timeoutMs = TCP_TIMEOUT_MS) {
@@ -412,12 +436,58 @@ function checkHttp({
   });
 }
 
+async function getActiveAdapterUnix() {
+  let name = null;
+  let type = null;
+  let signal = null;
+  try {
+    const out = await runCmd("ip", ["route", "get", "1.1.1.1"]);
+    const m = out.match(/dev\s+(\S+)/);
+    if (m) name = m[1];
+  } catch {
+    /* ignore */
+  }
+  if (!name) {
+    try {
+      const out = await runCmd("route", ["-n", "get", "default"]);
+      const m = out.match(/interface:\s*(\S+)/i);
+      if (m) name = m[1];
+    } catch {
+      /* ignore */
+    }
+  }
+  if (name) {
+    try {
+      const iw = await runCmd("iwconfig");
+      const block = iw.split(/\n(?=\S)/).find((b) => b.includes(name));
+      if (block) {
+        const quality = block.match(/Link Quality[=:](\d+)\/(\d+)/i);
+        if (quality) {
+          signal = Math.round((Number(quality[1]) / Number(quality[2])) * 100);
+        }
+        type = "wifi";
+      }
+    } catch {
+      /* ignore */
+    }
+    if (!type) {
+      try {
+        const link = await runCmd("ip", ["link", "show", name]);
+        type = /wl/i.test(link) ? "wifi" : "ethernet";
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return { name, type, signal };
+}
+
 /**
  * Light adapter snapshot (cached by caller). Windows-focused.
  */
 async function getActiveAdapter() {
   if (process.platform !== "win32") {
-    return { name: null, type: null, signal: null };
+    return getActiveAdapterUnix();
   }
   try {
     const ps = [
@@ -532,6 +602,8 @@ module.exports = {
   checkWan,
   checkDns,
   checkHttp,
+  tcpConnect,
+  pingHost,
   peerCertDays,
   parseWanTargets,
   classifyDomain,
@@ -539,4 +611,6 @@ module.exports = {
   isBlockedHttpUrl,
   getActiveAdapter,
   probe,
+  setRunCmdForTest,
+  resetRunCmdForTest,
 };
