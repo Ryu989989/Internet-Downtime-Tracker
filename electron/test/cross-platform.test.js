@@ -2,6 +2,9 @@
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const {
   setRunCmdForTest,
   resetRunCmdForTest,
@@ -9,6 +12,9 @@ const {
   getActiveAdapter,
 } = require("../netcheck");
 const { tracerouteArgs, parseTraceroute } = require("../traceroute");
+const { dataDir } = require("../db");
+const { parseUnixConnectionOutput, parseUnixAdapters, normalizeEndpoint } = require("../connections");
+const { parseUnixNeighbors, runUnixGateway } = require("../lan-devices");
 
 describe("cross-platform parser and command builders", () => {
   let originalPlatform;
@@ -102,5 +108,89 @@ describe("cross-platform parser and command builders", () => {
     const adapter = await getActiveAdapter();
     assert.equal(adapter.name, "eth0");
     assert.equal(adapter.type, "ethernet");
+  });
+
+  it("dataDir uses platform-appropriate paths", () => {
+    const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "idt-datadir-"));
+    const originalHome = process.env.HOME;
+    const originalLocalAppData = process.env.LOCALAPPDATA;
+    const originalXdg = process.env.XDG_CONFIG_HOME;
+    try {
+      delete process.env.LOCALAPPDATA;
+      delete process.env.XDG_CONFIG_HOME;
+      process.env.HOME = tmpBase;
+
+      Object.defineProperty(process, "platform", { value: "darwin", writable: true, configurable: true });
+      assert.ok(dataDir().includes(path.join("Library", "Application Support")));
+
+      Object.defineProperty(process, "platform", { value: "linux", writable: true, configurable: true });
+      assert.ok(dataDir().includes(path.join(".config")));
+
+      process.env.XDG_CONFIG_HOME = path.join(tmpBase, "xdg");
+      const linuxXdg = dataDir();
+      assert.ok(linuxXdg.startsWith(process.env.XDG_CONFIG_HOME));
+
+      Object.defineProperty(process, "platform", { value: "win32", writable: true, configurable: true });
+      process.env.LOCALAPPDATA = path.join(tmpBase, "AppData", "Local");
+      assert.ok(dataDir().startsWith(process.env.LOCALAPPDATA));
+    } finally {
+      process.env.HOME = originalHome;
+      if (originalLocalAppData != null) process.env.LOCALAPPDATA = originalLocalAppData;
+      else delete process.env.LOCALAPPDATA;
+      if (originalXdg != null) process.env.XDG_CONFIG_HOME = originalXdg;
+      else delete process.env.XDG_CONFIG_HOME;
+      fs.rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+
+  it("parses ss -tunap output", () => {
+    const sample = `Netid  State   Recv-Q  Send-Q  Local Address:Port  Peer Address:Port Process\n` +
+      `tcp    ESTAB   0       0       192.168.1.2:54321   1.2.3.4:443    users:(["firefox",pid=1234])\n` +
+      `udp    UNCONN  0       0       0.0.0.0:68         0.0.0.0:0\n`;
+    const rows = parseUnixConnectionOutput(sample);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].proto, "TCP");
+    assert.equal(rows[0].state, "Established");
+    assert.equal(rows[0].process, "firefox");
+    assert.equal(rows[0].pid, 1234);
+  });
+
+  it("parses lsof -i output", () => {
+    const sample = `COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n` +
+      `sshd  123 root 4u IPv4 0x0 0t0 TCP 192.168.1.2:22->1.2.3.4:54321 (ESTABLISHED)\n`;
+    const rows = parseUnixConnectionOutput(sample);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].proto, "TCP");
+    assert.equal(rows[0].process, "sshd");
+    assert.equal(rows[0].state, "ESTABLISHED");
+  });
+
+  it("normalizes endpoint wildcards", () => {
+    assert.equal(normalizeEndpoint("*.*"), "0.0.0.0:*");
+    assert.equal(normalizeEndpoint("0.0.0.0:22"), "0.0.0.0:22");
+  });
+
+  it("parses ip -s link adapter output", () => {
+    const sample = `1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n` +
+      `    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n` +
+      `    RX: bytes packets errors dropped 1 2 3 4\n` +
+      `    1000 10 0 0 0 0 0 0\n` +
+      `    TX: bytes packets errors dropped 1 2 3 4\n` +
+      `    2000 20 0 0 0 0 0 0\n`;
+    const adapters = parseUnixAdapters(sample);
+    assert.equal(adapters.length, 1);
+    assert.equal(adapters[0].name, "lo");
+    assert.equal(adapters[0].rx_bytes, 1000);
+    assert.equal(adapters[0].tx_bytes, 2000);
+  });
+
+  it("parses ip neigh / arp -an neighbor output", () => {
+    const sample = `192.168.1.1 dev eth0 lladdr 00:11:22:33:44:55 REACHABLE\n` +
+      `? (192.168.1.2) at 66:77:88:99:aa:bb on en0 [ethernet]\n`;
+    const rows = parseUnixNeighbors(sample);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].ip, "192.168.1.1");
+    assert.equal(rows[0].mac, "00:11:22:33:44:55");
+    assert.equal(rows[1].mac, "66:77:88:99:aa:bb");
   });
 });

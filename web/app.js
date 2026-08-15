@@ -1353,7 +1353,7 @@ function formatSnapshotBlock(label, snap) {
   let html = `<div><strong>${escapeHtml(label)}</strong> · ${escapeHtml(adapter)} · gw ${escapeHtml(gw)} · ${escapeHtml(lat)}<br>${escapeHtml(flags)}</div>`;
   const hops = snap.traceroute && Array.isArray(snap.traceroute.hops) ? snap.traceroute.hops : null;
   if (hops && hops.length) {
-    const rows = hops.map((h) => `<tr><td>${h.hop ?? "-"}</td><td>${h.ip || "*"}</td><td>${h.rtt_ms != null ? h.rtt_ms + " ms" : "*"}</td></tr>`).join("");
+    const rows = hops.map((h) => `<tr><td>${escapeHtml(String(h.hop ?? "-"))}</td><td>${escapeHtml(String(h.ip || "*"))}</td><td>${escapeHtml(h.rtt_ms != null ? h.rtt_ms + " ms" : "*")}</td></tr>`).join("");
     html += `<table class="traceroute-table"><thead><tr><th>#</th><th>Host</th><th>RTT</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
   return html;

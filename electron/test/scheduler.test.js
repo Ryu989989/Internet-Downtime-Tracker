@@ -138,6 +138,21 @@ describe("speedtest scheduler gating", () => {
     assert.equal(intervals.length, 2);
   });
 
+  it("does not start a second test while one is still running", async () => {
+    const deps = makeDeps({ interval: 10 });
+    let release;
+    deps.speedtest.runSpeedTest = () => new Promise((r) => { release = r; });
+    const { startSpeedtestScheduler, runSpeedTestAndStore } = createSpeedtestScheduler(deps);
+    startSpeedtestScheduler();
+    const first = runSpeedTestAndStore();
+    const second = runSpeedTestAndStore();
+    const secondResult = await second;
+    assert.equal(secondResult.ok, false);
+    assert.equal(secondResult.cancelled, true);
+    release({ tested_at: Date.now() / 1000, download_mbps: 1, upload_mbps: 1, ping_ms: 1, jitter_ms: 0, packet_loss: 0, server_name: "x", server_id: "1", server_location: "here", isp: "test", result_url: "", raw_json: "{}" });
+    await first;
+  });
+
   it("cancels scheduled first run", async () => {
     const deps = makeDeps({ interval: 10 });
     const { startSpeedtestScheduler } = createSpeedtestScheduler(deps);

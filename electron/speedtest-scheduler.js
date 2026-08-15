@@ -7,8 +7,11 @@
 
 function createSpeedtestScheduler({ db, monitor, speedtest, usageBridge, userDataPath }) {
   let scheduler = null;
+  let running = false;
 
   async function runSpeedTestAndStore() {
+    if (running) return { ok: false, cancelled: true, error: "already running" };
+    running = true;
     if (monitor) monitor.setProbeSuppress(true);
     if (usageBridge) await usageBridge.setSuppress(true);
     try {
@@ -34,6 +37,7 @@ function createSpeedtestScheduler({ db, monitor, speedtest, usageBridge, userDat
       }
       throw err;
     } finally {
+      running = false;
       if (monitor) monitor.setProbeSuppress(false, { cooldownMs: 8000 });
       if (usageBridge) await usageBridge.setSuppress(false);
     }

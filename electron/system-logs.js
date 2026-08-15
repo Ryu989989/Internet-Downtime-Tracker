@@ -346,6 +346,19 @@ function filterGaps(gaps, { minMs = 0, limit = MAX_GAPS } = {}) {
 }
 
 async function scanWindowsLogs(params = {}) {
+  if (process.platform !== "win32" && !runPowerShellOverride) {
+    const { from, to } = clampRange(params);
+    return {
+      from,
+      to,
+      scanned_at: Date.now() / 1000,
+      gaps: [],
+      count: 0,
+      event_count: 0,
+      sources: [],
+      warnings: ["System event log integration is only available on Windows."],
+    };
+  }
   const { from, to } = clampRange(params);
   const fromIso = new Date(from * 1000).toISOString();
   const toIso = new Date(to * 1000).toISOString();

@@ -4,7 +4,10 @@ const fs = require("fs");
 const net = require("net");
 const path = require("path");
 const dns = require("dns").promises;
-const { spawn } = require("child_process");
+const { spawn, execFile } = require("child_process");
+const { promisify } = require("util");
+
+const execFileAsync = promisify(execFile);
 
 const SNAPSHOT_TIMEOUT_MS = 10_000;
 const SERVICE_TIMEOUT_MS = 8_000;
@@ -254,6 +257,7 @@ function ensureServiceMap() {
   if (serviceMapPromise) return serviceMapPromise;
   // ponytail: CIM once per process lifetime after success; retry next snapshot on failure
   serviceMapPromise = (async () => {
+    if (process.platform !== "win32") return new Map();
     const { stdout } = await runPowerShell(buildServiceScript(), SERVICE_TIMEOUT_MS);
     return parseServiceRows(String(stdout || "").trim());
   })().then(
@@ -264,6 +268,178 @@ function ensureServiceMap() {
     }
   );
   return serviceMapPromise;
+}
+
+async function runUnixConnectionSnapshot() {
+  const timeout = SNAPSHOT_TIMEOUT_MS;
+  let out = "";
+  try {
+    const { stdout } = await execFileAsync("ss", ["-tunap"], { timeout, maxBuffer: MAX_STDOUT });
+    out = String(stdout || "");
+  } catch {
+    try {
+      const { stdout } = await execFileAsync("ss", ["-tuna"], { timeout, maxBuffer: MAX_STDOUT });
+      out = String(stdout || "");
+    } catch {
+      // ss unavailable — try lsof fallback
+      try {
+        const { stdout } = await execFileAsync("lsof", ["-i", "-n", "-P"], { timeout, maxBuffer: MAX_STDOUT });
+        out = String(stdout || "");
+      } catch {
+        out = "";
+      }
+    }
+  }
+  const rows = parseUnixConnectionOutput(out);
+  const adapters = await runUnixAdapters();
+  return JSON.stringify({ connections: rows, adapters, captured_at: Date.now() });
+}
+
+function parseUnixConnectionOutput(text) {
+  const rows = [];
+  if (!text) return rows;
+  const lines = text.split(/\r?\n/);
+  const isLsof = lines[0] && lines[0].trim().startsWith("COMMAND");
+  for (const line of lines) {
+    const parsed = isLsof ? parseLsofLine(line) : parseSsLine(line);
+    if (parsed) rows.push(parsed);
+  }
+  return rows;
+}
+
+function parseSsLine(line) {
+  // Skip headers and empty lines.
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("Netid ") || trimmed.startsWith("State ")) return null;
+  const m = trimmed.match(/^\S+\s+\S+\s+\S+\s+(\S+)\s+(\S+)(?:\s+(.+))?$/);
+  if (!m) return null;
+  const [, local, remote, rest] = m;
+  const process = rest ? (rest.match(/users:\(\["([^"]+)"/) || [])[1] || "" : "";
+  const pid = rest ? (rest.match(/pid=(\d+)/) || [])[1] || "0" : "0";
+  const stateToken = trimmed.split(/\s+/)[0];
+  const proto = /udp/i.test(stateToken) ? "UDP" : "TCP";
+  const rawState = trimmed.split(/\s+/)[0].toUpperCase();
+  let state = "";
+  if (proto === "TCP") {
+    if (/ESTAB|ESTABLISHED/i.test(trimmed)) state = "Established";
+    else if (/LISTEN|UNCONN/i.test(trimmed)) state = "Listen";
+    else if (/TIME-WAIT/i.test(trimmed)) state = "TimeWait";
+    else if (/CLOSE-WAIT|CLOSING|LAST-ACK|FIN-WAIT/i.test(trimmed)) state = "CloseWait";
+    else state = rawState;
+  } else {
+    state = "Listen";
+  }
+  return {
+    proto,
+    process: process || "?",
+    pid: Number(pid) || 0,
+    local: normalizeEndpoint(local),
+    remote: normalizeEndpoint(remote) || "-",
+    state,
+  };
+}
+
+function parseLsofLine(line) {
+  const parts = line.trim().split(/\s+/);
+  if (parts.length < 9 || parts[4] !== "IPv4") return null;
+  const proto = String(parts[7] || "").toUpperCase();
+  if (proto !== "TCP" && proto !== "UDP") return null;
+  const process = String(parts[0] || "");
+  const pid = Number(parts[1]) || 0;
+  const name = String(parts[8] || "");
+  const [local, remote] = name.split("->");
+  const state = proto === "UDP" ? "Listen" : (String(parts[9] || "").replace(/\(/g, "").replace(/\)/g, "") || "Established");
+  return {
+    proto,
+    process,
+    pid,
+    local: normalizeEndpoint(local),
+    remote: remote ? normalizeEndpoint(remote) : "-",
+    state,
+  };
+}
+
+function normalizeEndpoint(ep) {
+  const s = String(ep || "").trim();
+  if (s === "*.*" || s === "*:*" || s === "0.0.0.0:*") return "0.0.0.0:*";
+  return s;
+}
+
+async function runUnixAdapters() {
+  const timeout = SNAPSHOT_TIMEOUT_MS;
+  let text = "";
+  // Linux: ip -s link show
+  try {
+    const { stdout } = await execFileAsync("ip", ["-s", "link", "show"], { timeout, maxBuffer: MAX_STDOUT });
+    text = String(stdout || "");
+  } catch {
+    // macOS: netstat -ib
+    try {
+      const { stdout } = await execFileAsync("netstat", ["-ib"], { timeout, maxBuffer: MAX_STDOUT });
+      text = String(stdout || "");
+    } catch {
+      text = "";
+    }
+  }
+  return parseUnixAdapters(text);
+}
+
+function parseUnixAdapters(text) {
+  const adapters = [];
+  if (!text) return adapters;
+  if (text.includes("link/")) {
+    // ip -s link output
+    const lines = text.split(/\r?\n/);
+    let current = null;
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/^\d+:\s+([^:@\s]+)[@:]/);
+      if (m) {
+        if (current) adapters.push(current);
+        current = { name: m[1], rx_bytes: 0, tx_bytes: 0 };
+      } else if (current && /^\s+RX:\s+bytes/.test(lines[i])) {
+        const next = lines[i + 1];
+        if (next) {
+          const parts = next.trim().split(/\s+/);
+          current.rx_bytes = Number(parts[0]) || 0;
+        }
+      } else if (current && /^\s+TX:\s+bytes/.test(lines[i])) {
+        const next = lines[i + 1];
+        if (next) {
+          const parts = next.trim().split(/\s+/);
+          current.tx_bytes = Number(parts[0]) || 0;
+        }
+      }
+    }
+    if (current) adapters.push(current);
+  } else {
+    // netstat -ib output: Name  Mtu   Network       Address            Ipkts Ibytes   Opkts Obytes  Coll
+    const lines = text.split(/\r?\n/).filter((l) => l && !l.startsWith("Name"));
+    for (const line of lines) {
+      const p = line.trim().split(/\s+/);
+      if (p.length < 8) continue;
+      const name = String(p[0] || "").trim();
+      const rx = Number(p[5]) || 0;
+      const tx = Number(p[7]) || 0;
+      adapters.push({ name, rx_bytes: rx, tx_bytes: tx });
+    }
+  }
+  return adapters;
+}
+
+async function captureSnapshot() {
+  if (runPowerShellOverride) {
+    const { stdout } = await runPowerShell(buildSnapshotScript(), SNAPSHOT_TIMEOUT_MS);
+    return { text: String(stdout || "").trim(), serviceMap: await ensureServiceMap() };
+  }
+  if (process.platform === "win32") {
+    const [{ stdout }, serviceMap] = await Promise.all([
+      runPowerShell(buildSnapshotScript(), SNAPSHOT_TIMEOUT_MS),
+      ensureServiceMap(),
+    ]);
+    return { text: String(stdout || "").trim(), serviceMap };
+  }
+  const text = await runUnixConnectionSnapshot();
+  return { text, serviceMap: new Map() };
 }
 
 function shapeConnectionRow(raw) {
@@ -475,11 +651,7 @@ async function snapshot(opts = {}) {
   const trackAdapters = !!opts.trackAdapters;
   const nowMs = Date.now();
   try {
-    const psP = runPowerShell(buildSnapshotScript(), SNAPSHOT_TIMEOUT_MS);
-    const svcP = ensureServiceMap();
-    const { stdout } = await psP;
-    const serviceMap = await svcP;
-    const text = String(stdout || "").trim();
+    const { text, serviceMap } = await captureSnapshot();
     if (!text) {
       return {
         ok: false,
@@ -545,6 +717,9 @@ module.exports = {
   computeAdapterRates,
   buildSnapshotScript,
   buildServiceScript,
+  parseUnixConnectionOutput,
+  parseUnixAdapters,
+  normalizeEndpoint,
   setRunPowerShellForTest,
   setReverseLookupForTest,
   resetRunPowerShellForTest,

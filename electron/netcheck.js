@@ -206,20 +206,14 @@ function tcpConnect(host, port, timeoutMs = TCP_TIMEOUT_MS) {
 
 async function pingHost(host, timeoutS = 2.0) {
   const isWin = process.platform === "win32";
+  const isMac = process.platform === "darwin";
+  const timeoutMs = Math.floor(timeoutS * 1000);
+  const timeoutArg = isMac ? String(timeoutMs) : String(Math.floor(timeoutS));
   const args = isWin
-    ? ["-n", "1", "-w", String(Math.floor(timeoutS * 1000)), host]
-    : ["-c", "1", "-W", String(Math.floor(timeoutS)), host];
-  let out = "";
-  try {
-    const r = await execFileAsync("ping", args, {
-      timeout: (timeoutS + 2) * 1000,
-      windowsHide: true,
-    });
-    out = String(r.stdout || "");
-  } catch (err) {
-    out = String((err && err.stdout) || "");
-    if (!out) return [false, null];
-  }
+    ? ["-n", "1", "-w", String(timeoutMs), host]
+    : ["-c", "1", "-W", timeoutArg, host];
+  const out = await runCmd("ping", args, (timeoutS + 2) * 1000);
+  if (!out) return [false, null];
   const m = out.match(/time[=<]([\d.]+)\s*ms/i);
   const latency = m ? Number(m[1]) : null;
   let ok;

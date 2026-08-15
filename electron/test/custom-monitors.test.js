@@ -13,6 +13,7 @@ const {
   probeMonitor,
   setProbeFunctionsForTest,
   setNotifyFn,
+  getActiveForTest,
 } = require("../custom-monitors");
 const { TrackerDb } = require("../db");
 
@@ -158,5 +159,28 @@ describe("custom monitors", () => {
     assert.ok(latest);
     assert.equal(latest.ok, 1);
     assert.equal(latest.latency_ms, 7);
+  });
+
+  it("defaults omitted TCP port to 80 in probeMonitor", async () => {
+    setProbeFunctionsForTest({ tcp: async (host, port) => [host === "1.1.1.1" && port === 80, 12] });
+    const result = await probeMonitor({ id: "t", type: "tcp", host: "1.1.1.1" });
+    assert.equal(result.ok, true);
+    assert.equal(result.latency_ms, 12);
+  });
+
+  it("prevents overlapping ticks", async () => {
+    let release;
+    setProbeFunctionsForTest({ ping: () => new Promise((r) => { release = r; }) });
+    db.updateSettings({ monitors_json: JSON.stringify([{ id: "p", name: "x", type: "ping", host: "1.1.1.1", interval_s: 10 }]) });
+    startCustomMonitors({ db, monitor: { state: { paused: false, probe_suppressed: false } } });
+    const entry = getActiveForTest().get("p");
+    assert.ok(entry);
+    const first = entry.timer.fn();
+    const second = entry.timer.fn();
+    await second;
+    assert.equal(entry.isRunning, true);
+    release([true, 10]);
+    await first;
+    assert.equal(entry.isRunning, false);
   });
 });

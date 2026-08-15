@@ -1,6 +1,6 @@
 "use strict";
 
-const { describe, it } = require("node:test");
+const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -14,6 +14,9 @@ const {
   checkHttp,
   peerCertDays,
   probe,
+  pingHost,
+  setRunCmdForTest,
+  resetRunCmdForTest,
 } = require("../netcheck");
 
 describe("netcheck", () => {
@@ -134,6 +137,46 @@ describe("checkHttp certDays", () => {
     } finally {
       server.close();
     }
+  });
+});
+
+describe("pingHost timeout args", () => {
+  let originalPlatform;
+
+  beforeEach(() => {
+    originalPlatform = process.platform;
+    resetRunCmdForTest();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform, writable: true, configurable: true });
+    resetRunCmdForTest();
+  });
+
+  it("uses milliseconds for -W on macOS", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin", writable: true, configurable: true });
+    let captured;
+    setRunCmdForTest((cmd, args) => {
+      captured = { cmd, args };
+      return "time=1.2 ms";
+    });
+    await pingHost("1.1.1.1", 2.0);
+    assert.equal(captured.cmd, "ping");
+    const i = captured.args.indexOf("-W");
+    assert.ok(i >= 0);
+    assert.equal(captured.args[i + 1], "2000");
+  });
+
+  it("uses seconds for -W on Linux", async () => {
+    Object.defineProperty(process, "platform", { value: "linux", writable: true, configurable: true });
+    let captured;
+    setRunCmdForTest((cmd, args) => {
+      captured = { cmd, args };
+      return "time=1.2 ms";
+    });
+    await pingHost("1.1.1.1", 2.0);
+    const i = captured.args.indexOf("-W");
+    assert.equal(captured.args[i + 1], "2");
   });
 });
 
