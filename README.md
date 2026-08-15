@@ -8,6 +8,8 @@ Windows **Electron** tray app that monitors **LAN** (router/gateway), **WAN** (p
 - Debounced outages: **2 consecutive failures** to open, **1 success** to close
 - Outage domains: `lan` | `wan` | `dns` | `http`
 - Live quality strip (Overview): rolling 4-ping burst (~every 30s) for loss/jitter — informational only; never opens outages; suppressed during speed tests
+- Honest 30d: downtime % uses outage overlap; if observation &lt; 30d the label is actual days, not “30d”. Probe spark is labeled with `probe_retention_days` (default 14d) — never as 30d
+- TLS cert days on the HTTP pill: remaining days from the existing HTTPS probe only. HTTP URL → `N/A (HTTP URL)`, never `0`
 - Incident snapshots on outage open/close (adapter, latency, layer flags) — expandable in History
 - Stale-monitor banner when probes stop unexpectedly (not while Pause / speed test)
 - Dashboard tabs: Overview, History, Patterns, System logs (OS-inferred gaps), **Network** (Devices / Connections / Usage / Topology / Sniffer / Scan), Speed (Ookla CLI), Settings
@@ -20,13 +22,13 @@ Windows **Electron** tray app that monitors **LAN** (router/gateway), **WAN** (p
 
 | Capability | Privilege | Notes |
 |------------|-----------|-------|
-| **Devices** — passive neighbor cache, OUI, alias/notes, WOL, CSV/JSON export | None (default on) | **Not** a complete network map. Opt-in new-device toast. |
-| **Connections** — live TCP/UDP by process + adapter RX/TX Mbps | None (default on) | Snapshot while the app runs. **Not** per-app bytes; not billing-grade. |
-| **Usage** — per-app download/upload rates, hourly/daily rollups, CSV export, ignore list | Elevated `.NET` ETW helper (UAC opt-in) | Electron stays unelevated. Named-pipe bridge. Local DB tables `usage_*`. |
+| **Devices** — neighbor cache, OUI, category, alias/notes, WOL, CSV/JSON; ping/traceroute on-demand | None (default on) | **Not** a complete network map. Opt-in new-device toast. Ping/traceroute are Devices row actions — not on the probe tick. |
+| **Connections** — live TCP/UDP by process + adapter RX/TX Mbps | None (works without admin) | Snapshot while the app runs. Reverse-DNS (`connections_resolve_dns`) default **off**. **Not** per-app bytes; not billing-grade. |
+| **Usage** — per-app download/upload rates, hourly/daily rollups, CSV export, ignore list | Elevated `.NET` ETW helper still required (UAC opt-in) | Electron stays unelevated. Named-pipe bridge. Local DB tables `usage_*`. |
 | **Control** — usage alerts, data caps, Firewall block/unblock by exe | Master toggle **off** + elevated helper | Windows Firewall only. No WinDivert/throttle. |
 | **Topology** — SNMP sysName/IF-MIB + LLDP when present | SNMP community; Settings off by default | Seeds = gateway + Devices/Settings IPs. Cancel on leave. |
 | **Sniffer** — metadata flow open/close ring buffer | Settings gate; always-on optional | Payloads off by default. Not full packet capture / Npcap. |
-| **Scan** — top ports + offline CVE advisories; gated subnet discovery | User-triggered; private/local IPs only | CVE labeled advisory/stale. Discovery ≥5 min; probe suppress while running. |
+| **Scan** — top ports + offline CVE advisories; gated subnet discovery | User-triggered; still private/known-device only | CVE labeled advisory/stale. Discovery ≥5 min; probe suppress while running. |
 | **Notify webhooks** — outage/new-device/scan + quiet hours | None | HTTPS POST JSON; no Apprise dependency; secrets not logged. |
 | **Router webhook** — manual/auto quarantine-ish POST | Opt-in URL | Generic payload; no Omada/OPNsense plugin marketplace. |
 | **Influx / ES push** | Opt-in tokens | Outbound only. |

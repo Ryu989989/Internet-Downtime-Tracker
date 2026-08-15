@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { TrackerDb, normalizeSettingValue } = require("../db");
+const { TrackerDb, normalizeSettingValue, DEFAULT_SETTINGS } = require("../db");
 
 describe("usage db rollup", () => {
   let dir;
@@ -78,6 +78,28 @@ describe("usage db rollup", () => {
     assert.equal(daily, null);
   });
 
+  it("locks probe_retention_days at 14 and pruneProbes cannot delete outages", () => {
+    assert.equal(DEFAULT_SETTINGS.probe_retention_days, 14);
+    assert.equal(db.getSettings().probe_retention_days, 14);
+    const oldTs = Date.now() / 1000 - 20 * 86400;
+    const outageId = db.openOutage("wan", oldTs);
+    db.insertProbe(false, false, 1, oldTs);
+    db.insertProbe(true, true, 1, Date.now() / 1000);
+    db.pruneProbes();
+    assert.equal(
+      db._get("SELECT COUNT(*) AS c FROM probes WHERE timestamp < ?", [
+        Date.now() / 1000 - 14 * 86400,
+      ]).c,
+      0
+    );
+    assert.ok(db._get("SELECT * FROM outages WHERE id=?", [outageId]));
+    assert.equal(db._get("SELECT COUNT(*) AS c FROM probes").c, 1);
+    const src = fs.readFileSync(path.join(__dirname, "..", "db.js"), "utf8");
+    const fn = src.match(/pruneProbes\([\s\S]*?\n  \}/)[0];
+    assert.match(fn, /DELETE FROM probes/);
+    assert.doesNotMatch(fn, /DELETE FROM outages/);
+  });
+
   it("clearUsageHistory removes rollup rows", () => {
     db.addUsageBytes({ app_key: "temp.exe", bytes_in: 5, bytes_out: 5 });
     db.clearUsageHistory();
@@ -103,6 +125,7 @@ describe("usage settings bools", () => {
   it("defaults usage toggles safely", () => {
     const s = db.getSettings();
     assert.equal(s.connections_enabled, true);
+    assert.equal(s.connections_resolve_dns, false);
     assert.equal(s.usage_monitoring, false);
     assert.equal(s.network_control_enabled, false);
   });

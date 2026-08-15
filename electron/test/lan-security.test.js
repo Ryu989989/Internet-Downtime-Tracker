@@ -13,6 +13,8 @@ describe("LAN IPC allowlist + isolation", () => {
   it("preload exposes lan methods only via idt", () => {
     const preload = fs.readFileSync(path.join(root, "preload.js"), "utf8");
     assert.match(preload, /lanDevices:/);
+    assert.match(preload, /lanDevicesPing:/);
+    assert.match(preload, /lanDevicesTraceroute:/);
     assert.match(preload, /lanScan:/);
     assert.match(preload, /lanSnifferStart:/);
     assert.match(preload, /lanTopology:/);
@@ -22,11 +24,36 @@ describe("LAN IPC allowlist + isolation", () => {
   it("main registers lan channels via safeHandle and no _tick coupling", () => {
     const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
     assert.match(main, /safeHandle\("api:lan:devices"/);
+    assert.match(main, /safeHandle\("api:lan:devices:ping"/);
+    assert.match(main, /safeHandle\("api:lan:devices:traceroute"/);
     assert.match(main, /safeHandle\("api:lan:scan"/);
     assert.match(main, /safeHandle\("api:lan:sniffer:start"/);
     assert.match(main, /safeHandle\("api:lan:topology"/);
-    assert.doesNotMatch(main, /monitor\._tick[\s\S]{0,120}lanBridge/);
-    assert.doesNotMatch(main, /monitor\._tick[\s\S]{0,120}lan-devices/);
+    assert.match(main, /tracerouteDevice/);
+    assert.doesNotMatch(main, /tracerouteHost/);
+    const monitor = fs.readFileSync(path.join(root, "monitor.js"), "utf8");
+    assert.doesNotMatch(monitor, /tracerouteHost/);
+    assert.doesNotMatch(monitor, /pingDevice/);
+    assert.doesNotMatch(monitor, /api:lan:devices:ping/);
+    assert.doesNotMatch(monitor, /api:lan:devices:traceroute/);
+    assert.doesNotMatch(monitor, /\bcheckHttp\b/);
+    assert.doesNotMatch(monitor, /https\.request/);
+    for (const mod of [
+      "lan-devices",
+      "lan-bridge",
+      "traceroute",
+      "usage-bridge",
+      "connections",
+      "snmp-topology",
+      "packet-sniffer",
+      "port-scan",
+    ]) {
+      assert.doesNotMatch(monitor, new RegExp(`require\\(["']\\./${mod}["']\\)`));
+    }
+    assert.doesNotMatch(monitor, /usage-bridge/);
+    assert.doesNotMatch(monitor, /snmp-topology/);
+    assert.doesNotMatch(monitor, /packet-sniffer/);
+    assert.doesNotMatch(monitor, /port-scan/);
   });
 
   it("Prometheus listens on 127.0.0.1 only", async () => {

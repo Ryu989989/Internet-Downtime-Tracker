@@ -11,7 +11,23 @@ const {
   resetRunPowerShellForTest,
   deviceDescriptor,
   enrichTopologyWithDevices,
+  vendorCategory,
+  parseNbtstat,
+  resolveEmptyHostnames,
+  openPortsFromScanRow,
+  enrichListedDevices,
+  devicesDisabledPayload,
+  devicesDisclaimer,
+  hadActiveHostnameLookups,
+  pingDevice,
+  tracerouteDevice,
+  setHostnameResolversForTest,
+  resetHostnameCacheForTest,
+  setPingHostForTest,
+  resetPingHostForTest,
+  setSettingsGetter,
 } = require("../lan-devices");
+const { setRunTracerouteForTest, resetRunTracerouteForTest } = require("../traceroute");
 const { lookupOui, formatMac, normalizeMac } = require("../oui");
 const { buildMagicPacket } = require("../wol");
 const { isPrivateOrLocalIp, matchCves, loadCveDb } = require("../port-scan");
@@ -27,9 +43,17 @@ const { buildPayload, renderTemplate } = require("../router-webhooks");
 const packetSniffer = require("../packet-sniffer");
 const { isPrivateIpv4 } = require("../snmp-topology");
 const { lanDevicesToCsv, lanDevicesToJson } = require("../export");
+const { TrackerDb } = require("../db");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 afterEach(() => {
   resetRunPowerShellForTest();
+  resetHostnameCacheForTest();
+  resetPingHostForTest();
+  setSettingsGetter(null);
+  resetRunTracerouteForTest();
   clearDigestForTest();
   packetSniffer.clear();
   packetSniffer.stop({ force: true });
@@ -318,5 +342,159 @@ describe("Sniffer ring + SNMP private check", () => {
     assert.equal(packetSniffer.events({ limit: 10 }).length, 1);
     assert.equal(isPrivateIpv4("192.168.0.1"), true);
     assert.equal(isPrivateIpv4("1.1.1.1"), false);
+  });
+});
+
+describe("Devices category / hostname / scan chips / ping", () => {
+  it("classifies OUI vendor into router/phone/pc/iot/unknown", () => {
+    assert.equal(vendorCategory("Cisco"), "router");
+    assert.equal(vendorCategory("Netgear"), "router");
+    assert.equal(vendorCategory("Apple"), "phone");
+    assert.equal(vendorCategory("Microsoft"), "pc");
+    assert.equal(vendorCategory("Raspberry Pi"), "iot");
+    assert.equal(vendorCategory("Amazon"), "iot");
+    assert.equal(vendorCategory(null), "unknown");
+    assert.equal(vendorCategory("Apple", { gateway: true }), "router");
+    const row = shapeNeighbor(
+      { ip: "192.168.1.1", mac: "001E13AABBCC", state: "Reachable" },
+      "192.168.1.1",
+      1
+    );
+    assert.equal(row.category, "router");
+    assert.equal(row.hostname, undefined);
+  });
+
+  it("resolves empty hostname via NBT then PTR with rate limit", async () => {
+    assert.equal(
+      parseNbtstat(`
+       Name               Type         Status
+    ---------------------------------------------
+    NASBOX         <00>  UNIQUE      Registered
+    WORKGROUP      <00>  GROUP       Registered
+    NASBOX         <20>  UNIQUE      Registered
+`),
+      "NASBOX"
+    );
+    setHostnameResolversForTest({
+      nbtstat: async (ip) => (ip === "192.168.1.2" ? "NASBOX" : null),
+      reverse: async (ip) => (ip === "192.168.1.3" ? "pi.local" : null),
+    });
+    const { devices, lookups } = await resolveEmptyHostnames(
+      [
+        { ip: "192.168.1.2", hostname: null },
+        { ip: "192.168.1.3" },
+        { ip: "192.168.1.4", hostname: "already" },
+        { ip: "192.168.1.5" },
+        { ip: "8.8.8.8" },
+      ],
+      { max: 2 }
+    );
+    assert.equal(lookups, 2);
+    assert.equal(devices[0].hostname, "NASBOX");
+    assert.equal(devices[0].hostname_source, "NBT");
+    assert.equal(devices[1].hostname, "pi.local");
+    assert.equal(devices[1].hostname_source, "PTR");
+    assert.equal(devices[2].hostname, "already");
+    assert.equal(devices[2].hostname_source, "last-known");
+    assert.equal(devices[3].hostname_source, "none");
+    assert.equal(devices[4].hostname_source, "none");
+    assert.equal(hadActiveHostnameLookups(devices), true);
+    assert.match(devicesDisclaimer({ hostnamesQueried: true }), /PTR\/NBT/);
+    assert.doesNotMatch(devicesDisclaimer({ hostnamesQueried: true }), /[Pp]assive cache/);
+    assert.match(parseSnapshot('{"gateway":null,"neighbors":[]}').disclaimer, /Passive neighbor cache/);
+
+    resetHostnameCacheForTest();
+    const listed = enrichListedDevices([{ ip: "192.168.1.2", hostname: "NASBOX" }]);
+    assert.equal(listed[0].hostname_source, "last-known");
+    assert.equal(hadActiveHostnameLookups(), true);
+    assert.match(devicesDisclaimer({ hostnamesQueried: hadActiveHostnameLookups() }), /PTR\/NBT/);
+    const empty = enrichListedDevices([{ ip: "192.168.1.9" }]);
+    assert.equal(empty[0].hostname_source, "none");
+    assert.equal(hadActiveHostnameLookups(), false);
+    assert.match(devicesDisclaimer({ hostnamesQueried: hadActiveHostnameLookups() }), /Passive neighbor cache/);
+  });
+
+  it("attaches last-scan open ports, category, and disabled meta", async () => {
+    assert.deepEqual(
+      openPortsFromScanRow({
+        ports_json: JSON.stringify([
+          { port: 80, open: true },
+          { port: 22, open: false },
+        ]),
+      }),
+      [80]
+    );
+    const disabled = devicesDisabledPayload();
+    assert.equal(disabled.ok, false);
+    assert.equal(disabled.lan_devices_enabled, false);
+    assert.equal(disabled.meta.lan_devices_enabled, false);
+    assert.match(disabled.meta.warning, /disabled/i);
+    assert.equal(disabled.devices.length, 0);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "idt-lan-scan-"));
+    const db = await TrackerDb.open(path.join(dir, "tracker.db"));
+    try {
+      db.insertLanScanResult({
+        target_ip: "192.168.1.10",
+        started_at: 100,
+        ports_json: JSON.stringify([{ port: 80, open: true }]),
+        status: "done",
+      });
+      db.insertLanScanResult({
+        target_ip: "192.168.1.10",
+        started_at: 200,
+        ports_json: JSON.stringify([{ port: 443, open: true }, { port: 22, open: false }]),
+        status: "done",
+      });
+      const latest = db.getLatestScanForIp("192.168.1.10");
+      const devices = enrichListedDevices(
+        [{ ip: "192.168.1.10", vendor: "Netgear", gateway: 0 }],
+        (ip) => db.getLatestScanForIp(ip)
+      );
+      assert.equal(latest.target_ip, "192.168.1.10");
+      assert.deepEqual(devices[0].open_ports, [443]);
+      assert.equal(devices[0].category, "router");
+      assert.equal(db.getLatestScanForIp(""), null);
+    } finally {
+      db.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("pingDevice wraps pingHost for private IPs only", async () => {
+    setPingHostForTest(async (host) => {
+      assert.equal(host, "192.168.1.9");
+      return [true, 4];
+    });
+    const r = await pingDevice({ ip: "192.168.1.9" });
+    assert.equal(r.ok, true);
+    assert.equal(r.ip, "192.168.1.9");
+    assert.equal(r.latency_ms, 4);
+    const pub = await pingDevice({ ip: "1.1.1.1" });
+    assert.equal(pub.ok, false);
+    assert.match(pub.error, /private\/local/i);
+    const tr = await tracerouteDevice({ ip: "8.8.8.8" });
+    assert.equal(tr.ok, false);
+    assert.match(tr.error, /private\/local/i);
+  });
+
+  it("pingDevice/tracerouteDevice skip spawn when lan_devices_enabled=false", async () => {
+    setSettingsGetter(() => ({ lan_devices_enabled: false }));
+    setPingHostForTest(async () => {
+      assert.fail("pingHost must not run when Devices is disabled");
+    });
+    setRunTracerouteForTest(async () => {
+      assert.fail("tracert must not run when Devices is disabled");
+    });
+    const ping = await pingDevice({ ip: "192.168.1.9" });
+    assert.equal(ping.ok, false);
+    assert.equal(ping.lan_devices_enabled, false);
+    assert.equal(ping.latency_ms, null);
+    assert.match(ping.error, /disabled/i);
+    const tr = await tracerouteDevice({ ip: "192.168.1.9" });
+    assert.equal(tr.ok, false);
+    assert.equal(tr.lan_devices_enabled, false);
+    assert.deepEqual(tr.hops, []);
+    assert.match(tr.error, /disabled/i);
   });
 });

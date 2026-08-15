@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS = {
   dns_resolver: "1.1.1.1",
   http_url: "http://connectivitycheck.gstatic.com/generate_204",
   connections_enabled: true,
+  connections_resolve_dns: false,
   usage_monitoring: false,
   network_control_enabled: false,
   usage_caps_json: "{}",
@@ -68,6 +69,7 @@ const BOOL_SETTINGS = new Set([
   "toast_alerts",
   "minimize_to_tray",
   "connections_enabled",
+  "connections_resolve_dns",
   "usage_monitoring",
   "network_control_enabled",
   "lan_devices_enabled",
@@ -1218,8 +1220,8 @@ class TrackerDb {
     );
     const firstProbe = this._get("SELECT MIN(timestamp) AS t FROM probes");
 
-    // Cap "current uptime streak" to this observation window so history from
-    // prior sessions cannot inflate the dashboard beyond how long we've been watching.
+    // Cap streak to the observation clock (MIN first probe / first outage).
+    // Session `started_at` is not history — callers must not pass process start.
     const observeStart =
       observeSince != null
         ? observeSince
@@ -1457,6 +1459,15 @@ class TrackerDb {
     const lim = Math.min(100, Math.max(1, Number(limit) || 20));
     return this._all(
       `SELECT * FROM lan_scan_results ORDER BY started_at DESC LIMIT ${lim}`
+    );
+  }
+
+  getLatestScanForIp(ip) {
+    const target = String(ip || "").trim().slice(0, 64);
+    if (!target) return null;
+    return this._get(
+      "SELECT * FROM lan_scan_results WHERE target_ip = ? ORDER BY started_at DESC LIMIT 1",
+      [target]
     );
   }
 }

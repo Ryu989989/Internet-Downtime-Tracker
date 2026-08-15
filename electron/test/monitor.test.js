@@ -327,6 +327,23 @@ describe("monitor pause mid-probe", async () => {
     assert.equal(db.getOpenOutages().length, 0);
   });
 
+  it("_applyProbe copies http_cert_days onto state and snapshot", () => {
+    const m = new Monitor(db);
+    assert.equal(m.snapshot().http_cert_days, null);
+    m._applyProbe({ ...makeResult(true, true), http_cert_days: 12 }, 2);
+    assert.equal(m.state.http_cert_days, 12);
+    assert.equal(m.snapshot().http_cert_days, 12);
+    m._applyProbe({ ...makeResult(false, false), http_cert_days: null }, 2);
+    assert.equal(m.state.http_cert_days, 12);
+    assert.equal(m.snapshot().http_cert_days, 12);
+    m.processResult({ ...makeResult(true, true), http_cert_days: null }, 2);
+    assert.equal(m.state.http_cert_days, null);
+    assert.equal(m.snapshot().http_cert_days, null);
+    m._applyProbe(makeResult(true, true), 2);
+    assert.equal(m.snapshot().http_cert_days, null);
+    m.stop();
+  });
+
   it("_tick reads debounce_fail_count from settings", async () => {
     db.updateSettings({ debounce_fail_count: 3 });
     let n = 0;

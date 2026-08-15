@@ -326,60 +326,88 @@ async function checkDns({
   }
 }
 
+const MS_PER_DAY = 86_400_000;
+
+/** Remaining whole days until cert.valid_to; null if missing/unparseable. HTTP callers never use this. */
+function peerCertDays(cert, nowMs = Date.now()) {
+  if (!cert || typeof cert !== "object") return null;
+  const raw = cert.valid_to;
+  if (raw == null || raw === "") return null;
+  const exp = Date.parse(raw);
+  if (!Number.isFinite(exp)) return null;
+  return Math.floor((exp - nowMs) / MS_PER_DAY);
+}
+
+function certDaysFromSocket(socket, nowMs = Date.now()) {
+  if (!socket || typeof socket.getPeerCertificate !== "function") return null;
+  try {
+    return peerCertDays(socket.getPeerCertificate(), nowMs);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Tiny HTTP(S) connectivity check (e.g. generate_204).
+ * Returns [ok, latency, certDays|null]. HTTP URL → certDays null (never 0).
+ * HTTPS: remaining days from peer cert on this response only (no second fetch).
+ * `ca` / `rejectUnauthorized` are optional TLS overrides (tests / private CA).
  */
 function checkHttp({
   url = DEFAULT_HTTP_URL,
   timeoutMs = HTTP_TIMEOUT_MS,
+  ca,
+  rejectUnauthorized,
 } = {}) {
   return new Promise((resolve) => {
     let parsed;
     try {
       parsed = new URL(url || DEFAULT_HTTP_URL);
     } catch {
-      resolve([false, null]);
+      resolve([false, null, null]);
       return;
     }
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      resolve([false, null]);
+      resolve([false, null, null]);
       return;
     }
-    const lib = parsed.protocol === "https:" ? https : http;
+    const isHttps = parsed.protocol === "https:";
+    const lib = isHttps ? https : http;
     const start = process.hrtime.bigint();
     let settled = false;
-    const finish = (ok) => {
+    const finish = (ok, certDays = null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (req) req.destroy();
       const latency = ok ? Number(process.hrtime.bigint() - start) / 1e6 : null;
-      resolve([ok, latency]);
+      resolve([ok, latency, isHttps ? certDays : null]);
     };
-    const timer = setTimeout(() => finish(false), timeoutMs);
+    const timer = setTimeout(() => finish(false, null), timeoutMs);
     let req;
     try {
-      req = lib.request(
-        {
-          hostname: parsed.hostname,
-          port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
-          path: `${parsed.pathname || "/"}${parsed.search || ""}`,
-          method: "GET",
-          timeout: timeoutMs,
-          headers: { Connection: "close", "User-Agent": "InternetDowntimeTracker/1.0" },
-        },
-        (res) => {
-          // 204 preferred; 2xx/3xx still means the web path works.
-          const code = res.statusCode || 0;
-          res.resume();
-          finish(code >= 200 && code < 400);
-        }
-      );
-      req.on("timeout", () => finish(false));
-      req.on("error", () => finish(false));
+      const opts = {
+        hostname: parsed.hostname,
+        port: parsed.port || (isHttps ? 443 : 80),
+        path: `${parsed.pathname || "/"}${parsed.search || ""}`,
+        method: "GET",
+        timeout: timeoutMs,
+        headers: { Connection: "close", "User-Agent": "InternetDowntimeTracker/1.0" },
+      };
+      if (isHttps && ca) opts.ca = ca;
+      if (isHttps && rejectUnauthorized === false) opts.rejectUnauthorized = false;
+      req = lib.request(opts, (res) => {
+        // 204 preferred; 2xx/3xx still means the web path works.
+        const code = res.statusCode || 0;
+        res.resume();
+        const certDays = isHttps ? certDaysFromSocket(res.socket || req.socket) : null;
+        finish(code >= 200 && code < 400, certDays);
+      });
+      req.on("timeout", () => finish(false, null));
+      req.on("error", () => finish(false, null));
       req.end();
     } catch {
-      finish(false);
+      finish(false, null);
     }
   });
 }
@@ -453,6 +481,7 @@ async function probe(gatewayResolverOrOptions = null, options = {}) {
   let dnsLat = null;
   let httpOk = false;
   let httpLat = null;
+  let httpCertDays = null;
 
   if (lanOk) {
     [wanOk, wanLat] = await checkWan(wanTargets);
@@ -461,7 +490,7 @@ async function probe(gatewayResolverOrOptions = null, options = {}) {
     [dnsOk, dnsLat] = await checkDns({ resolver: dnsResolver });
   }
   if (lanOk && wanOk && dnsOk) {
-    [httpOk, httpLat] = await checkHttp({ url: httpUrl });
+    [httpOk, httpLat, httpCertDays = null] = await checkHttp({ url: httpUrl });
   }
 
   const latency =
@@ -472,6 +501,7 @@ async function probe(gatewayResolverOrOptions = null, options = {}) {
     wan_ok: wanOk,
     dns_ok: dnsOk,
     http_ok: httpOk,
+    http_cert_days: httpCertDays == null ? null : httpCertDays,
     gateway: gw,
     latency_ms: latency,
     lan_method: method,
@@ -502,6 +532,7 @@ module.exports = {
   checkWan,
   checkDns,
   checkHttp,
+  peerCertDays,
   parseWanTargets,
   classifyDomain,
   isBlockedProbeHost,

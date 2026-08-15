@@ -1,0 +1,504 @@
+/* WAVE 2 UI snippets — paste into web/app.js. Not loaded at runtime.
+   Reuse bindTooltips / has-tip / data-tip-text / LAYER_TIPS / tipCellAttr / wireChartTip.
+   After every dynamic table render: bindTooltips(container).
+   SKIP sent/recv byte columns.
+
+INSERT
+  LAYER_TIPS: Object.assign(LAYER_TIPS, LAYER_TIPS_EXTRA)
+  tipController: add skipResetMs: 360, skipResetTimer: null (keep delayMs: 380)
+  showTip/hideTip/scheduleTip: replace with skip-delay patch below (data-instant + linger reset)
+  paintStatus: end → paintOverviewTips(s)
+  refreshSummary: after windows paint → paintUptimeBar30(sum); bindOutageRowTips($("#recentBody"))
+  renderOutageRows: end → bindOutageRowTips(tbody)
+  renderSystemLogRows: end → bindLogRowTips(tbody)
+  refreshDevicesPanel: use paintDevicesDisabled + devicesRowHtml; bindTooltips(tbody); colspan 8
+  renderConnRows: Service td + connDeltaClass; colspan 7; bindTooltips(tbody)
+  renderUsageLiveRows: usageAppTip cells; bindTooltips(tbody)
+  ensureUsageTrend: create AND data-update → wireUsageChartTip()
+  refreshSnifferPanel / runScan / renderSpeedHistory: bind* after innerHTML
+  loadSettings: form.connections_resolve_dns.checked = !!s.connections_resolve_dns  // default OFF, not !== false
+  saveSettings: connections_resolve_dns: !!(form.connections_resolve_dns && form.connections_resolve_dns.checked)
+  sync #connResolveDns ↔ settings key (toolbar default unchecked)
+*/
+
+const LAYER_TIPS_EXTRA = {
+  "http-cert": { name: "TLS cert", meaning: "Days until the HTTPS peer cert expires. N/A (HTTP URL) when the probe URL is http:// — never shown as 0." },
+  "hero-open": { name: "Open outages", meaning: "Outages still open right now." },
+  "hero-gw": { name: "Gateway", meaning: "Default gateway used for the LAN probe." },
+  "hero-latency": { name: "Latency", meaning: "Combined probe latency_ms (not per-layer RTT)." },
+  "quality-loss": { name: "Loss", meaning: "Rolling ping-burst loss %. Burst never opens outages." },
+  "quality-jitter": { name: "Jitter", meaning: "Rolling ping-burst jitter (ms)." },
+  "quality-avg": { name: "Avg", meaning: "Rolling ping-burst average RTT (ms)." },
+  "quality-last": { name: "Last", meaning: "Last burst sample (ms). Same combined latency family — not a per-layer RTT." },
+  "provider-ping": { name: "Provider ping", meaning: "Last Ookla server ping (ms)." },
+  "provider-when": { name: "Measured", meaning: "When the last speed test recorded this ISP/server." },
+  "stat-streak": { name: "Uptime streak", meaning: "Time since last recovery, or In outage." },
+  "stat-24h": { name: "24h downtime", meaning: "Outage overlap in the last 24 hours (not probe retention)." },
+  "stat-7d": { name: "7d downtime", meaning: "Outage overlap in the last 7 days." },
+  "stat-30d": { name: "Observed downtime", meaning: "windows['30d'] outage overlap %. Label is 30d only if observed ≥ 30d; otherwise actual days. Sparkline stays 24h / probe_retention_days — never relabeled 30d." },
+  "stat-events": { name: "Events (7d)", meaning: "Outage count in the last 7 days, split by domain." },
+  "hist-type": { name: "Type", meaning: "Failure domain: LAN, WAN, DNS, or HTTP." },
+  "hist-started": { name: "Started", meaning: "When this outage opened." },
+  "hist-ended": { name: "Ended", meaning: "When it closed, or ongoing." },
+  "hist-duration": { name: "Duration", meaning: "Open length (live if still open)." },
+  "hist-notes": { name: "Notes", meaning: "Your note. History/Patterns save on Enter or blur." },
+  "log-started": { name: "Started", meaning: "OS-inferred gap start (Event Log), not a live probe." },
+  "log-ended": { name: "Ended", meaning: "Gap end, or ongoing." },
+  "log-duration": { name: "Duration", meaning: "Logged gap length." },
+  "log-source": { name: "Source", meaning: "Windows Event Log channel/provider used to infer this gap." },
+  "log-reason": { name: "Reason", meaning: "OS-logged reason. Sleep/hibernate/NIC flaps may appear or be missing." },
+  "dev-status": { name: "Status", meaning: "Online from last ARP/neighbor sighting — not a full Fing presence timeline." },
+  "dev-ip": { name: "IP", meaning: "IPv4 from the neighbor cache." },
+  "dev-host": { name: "Hostname", meaning: "PTR, NetBIOS (NBT), alias, or none. Source labeled in the cell tip." },
+  "dev-mac": { name: "MAC", meaning: "Hardware address from ARP/neighbor." },
+  "dev-vendor": { name: "Vendor", meaning: "OUI vendor lookup." },
+  "dev-cat": { name: "Category", meaning: "Heuristic from OUI/vendor: router, phone, pc, iot, or unknown." },
+  "dev-alias": { name: "Alias", meaning: "Local label you set. Saved on this machine." },
+  "dev-actions": { name: "Actions", meaning: "WOL, router notify, scan, connections filter, ping, traceroute (on-demand IPC — not on the probe tick)." },
+  "conn-service": { name: "Service", meaning: "Windows service owning this process (cached Win32_Service). Empty if none." },
+  "conn-resolve": { name: "Resolve DNS", meaning: "Reverse-DNS remotes (cached, capped). Off by default. No GeoIP. No sent/recv counters." },
+  "usage-app": { name: "App", meaning: "Display name / exe. Needs the elevated Usage helper." },
+  "usage-down": { name: "↓ Mbps", meaning: "Live inbound rate from the helper." },
+  "usage-up": { name: "↑ Mbps", meaning: "Live outbound rate from the helper." },
+  "usage-sin": { name: "Session in", meaning: "Bytes in since helper session start (or last refresh if origin not stored)." },
+  "usage-sout": { name: "Session out", meaning: "Bytes out since helper session start (or last refresh if origin not stored)." },
+  "usage-ignore": { name: "Ignore", meaning: "Hide this app from live totals." },
+  "usage-block": { name: "Block", meaning: "Firewall block by exe. Requires Network control in Settings." },
+  "sniff-time": { name: "Time", meaning: "When this open/close delta was recorded." },
+  "sniff-event": { name: "Event", meaning: "Connection-flow metadata (not Npcap/raw packets)." },
+  "sniff-proto": { name: "Proto", meaning: "TCP or UDP for this flow." },
+  "sniff-src": { name: "Src", meaning: "Source address:port." },
+  "sniff-dst": { name: "Dst", meaning: "Destination address:port." },
+  "sniff-proc": { name: "Process", meaning: "Owning process if known. \"?\" may need elevation." },
+  "scan-port": { name: "Port", meaning: "Open port on the scanned private IP." },
+  "scan-banner": { name: "Banner", meaning: "Short banner/service string if any." },
+  "scan-cve": { name: "CVE", meaning: "Advisory/stale CVE hits for this port — not a live feed." },
+  "speed-when": { name: "When", meaning: "When this Ookla test finished." },
+  "speed-jitter-col": { name: "Jitter", meaning: "RTT variation (ms) on that test." },
+  "speed-server": { name: "Server", meaning: "Ookla server name and location." },
+  "speed-link": { name: "Link", meaning: "Public result URL from the CLI, if provided." },
+  "topo-gw": { name: "Gateway", meaning: "Default gateway / layout root." },
+  "topo-nb": { name: "Neighbor", meaning: "ARP/neighbor star — not a claimed switch fabric." },
+  "topo-snmp": { name: "SNMP", meaning: "SNMP/LLDP node when topology walk is enabled." },
+  "topo-sel": { name: "Selected", meaning: "Click node ↔ row. Selected node gets a short label; others stay hover-only." },
+  "topo-ip": { name: "IP", meaning: "Node address used for layout and LLDP mapping." },
+  "topo-name": { name: "Name", meaning: "sysName, hostname, or label. LLDP edges map sysName/IP to node ids." },
+  "topo-src": { name: "Source", meaning: "neighbor (ARP star) or snmp/LLDP. Neighbor mode does not invent a switch fabric." },
+  "topo-conns": { name: "Conns", meaning: "Live connection count for this node when Connections data is present." },
+  "set-connections": { name: "Connections", meaning: "Works unelevated. \"?\" names = other users / protected processes. No per-connection sent/recv." },
+  "set-resolve-dns": { name: "Resolve DNS", meaning: "Optional reverse-DNS (cached, N lookups/snapshot). Default off. Does not need admin." },
+  "set-usage": { name: "Usage helper", meaning: "Separate elevated .NET helper via UAC. No per-app bytes until approved." },
+  "set-net-control": { name: "Network control", meaning: "Firewall block/unblock by exe path. Off until enabled." },
+  "set-lan-devices": { name: "Devices", meaning: "ARP neighbor cache — not a complete LAN map. Hostnames via PTR/NBT after snapshot, labeled by source." },
+  "set-lan-toast": { name: "New device toast", meaning: "Tray toast when a new MAC appears in the neighbor cache." },
+  "set-snmp": { name: "SNMP", meaning: "SNMPv2c community to seed IPs. Unpolled LLDP targets stay stubs." },
+  "set-sniffer": { name: "Sniffer", meaning: "Connection-flow metadata from snapshots — not Npcap. Stops on tab leave unless Always-on." },
+  "set-sniffer-always": { name: "Always-on sniffer", meaning: "Keeps metadata capture after leaving the tab (tray). Metadata only." },
+  "set-lan-discover": { name: "Active discovery", meaning: "Gated subnet probes; private IPs only. Not on the monitor tick." },
+  "set-router-auto": { name: "Router auto-notify", meaning: "POST webhook on new unknown device. You own the URL." },
+  "set-prom": { name: "Prometheus", meaning: "127.0.0.1:9108 only — never 0.0.0.0." },
+  "set-http-api": { name: "HTTP API", meaning: "127.0.0.1:9109 + token. Never public bind." },
+  "set-auto-block": { name: "Auto-block", meaning: "Needs Network control + Usage helper. Blocks by exe when a cap is hit." },
+};
+
+/* --- skip-delay (Emil): first tip waits delayMs; later tips instant + no CSS anim; linger resets --- */
+function applyTipInstant(on) {
+  const tip = ensureTipEl();
+  if (on) tip.setAttribute("data-instant", "");
+  else tip.removeAttribute("data-instant");
+}
+
+function showTip(anchor) {
+  const payload = tipPayload(anchor);
+  if (!payload) return;
+  const tip = ensureTipEl();
+  applyTipInstant(!!tipController.skipDelay);
+  tip.hidden = false;
+  tip.innerHTML = payload.name
+    ? `<span class="tip-name">${escapeHtml(payload.name)}</span><span class="tip-body">${escapeHtml(payload.meaning)}</span>`
+    : `<span class="tip-body">${escapeHtml(payload.meaning)}</span>`;
+  tipController.anchor = anchor;
+  anchor.setAttribute("aria-describedby", tip.id);
+  positionTip(anchor);
+  tip.classList.add("is-open");
+  tipController.skipDelay = true;
+  if (tipController.skipResetTimer) {
+    clearTimeout(tipController.skipResetTimer);
+    tipController.skipResetTimer = null;
+  }
+}
+
+function hideTip() {
+  if (tipController.openTimer) {
+    clearTimeout(tipController.openTimer);
+    tipController.openTimer = null;
+  }
+  const tip = tipController.el;
+  if (tip) {
+    tip.classList.remove("is-open");
+    tip.hidden = true;
+  }
+  if (tipController.anchor) {
+    tipController.anchor.removeAttribute("aria-describedby");
+    tipController.anchor = null;
+  }
+  if (tipController.skipResetTimer) clearTimeout(tipController.skipResetTimer);
+  tipController.skipResetTimer = setTimeout(() => {
+    tipController.skipDelay = false;
+    applyTipInstant(false);
+    tipController.skipResetTimer = null;
+  }, tipController.skipResetMs || 360);
+}
+
+function scheduleTip(anchor) {
+  if (tipController.openTimer) clearTimeout(tipController.openTimer);
+  if (tipController.skipResetTimer) {
+    clearTimeout(tipController.skipResetTimer);
+    tipController.skipResetTimer = null;
+  }
+  const delay = tipController.skipDelay ? 0 : tipController.delayMs;
+  tipController.openTimer = setTimeout(() => showTip(anchor), delay);
+}
+
+/* --- Overview --- */
+function layerPillTip(s, layer) {
+  const okKey = `${layer}_ok`;
+  const ok = s[okKey];
+  const state = ok === true ? "UP" : ok === false ? "DOWN" : "unknown";
+  const bits = [LAYER_TIPS[layer]?.meaning || layer, `State: ${state}`];
+  if (s.latency_ms != null) bits.push(`Combined latency: ${Math.round(s.latency_ms)} ms (not per-layer)`);
+  if (s.failure_domain) bits.push(`Failure domain: ${s.failure_domain}`);
+  if (s.last_probe_at) bits.push(`Last probe: ${fmtTs(s.last_probe_at)}`);
+  if (layer === "http") {
+    if (s.http_cert_days == null) bits.push("TLS: N/A (HTTP URL or no peer cert)");
+    else bits.push(`TLS cert: ${s.http_cert_days} day(s) remaining`);
+  }
+  return bits.join(" · ");
+}
+
+function paintOverviewTips(s) {
+  if (!s) return;
+  for (const layer of ["lan", "wan", "dns", "http"]) {
+    const el = $(`#pill${layer[0].toUpperCase()}${layer.slice(1)}`);
+    if (el) el.setAttribute("data-tip-text", layerPillTip(s, layer));
+  }
+  const certChip = $("#httpCertChip");
+  const certVal = $("#httpCertDays");
+  if (certChip && certVal) {
+    const days = s.http_cert_days;
+    const httpUrl = String(s.http_url || "").toLowerCase().startsWith("http:");
+    if (days == null) {
+      certVal.textContent = httpUrl || s.http_ok != null ? "N/A (HTTP URL)" : "-";
+      certChip.hidden = false;
+    } else {
+      certVal.textContent = `${days}d`;
+      certChip.hidden = false;
+    }
+  }
+  bindTooltips($("#liveStatus"));
+  bindTooltips($("#qualityStrip"));
+  bindTooltips($("#statusHero"));
+  bindTooltips($("#panel-overview"));
+}
+
+function observedWindowLabel(sum) {
+  const since = sum?.observe_since ?? sum?.observeSince ?? sum?.first_probe_at ?? null;
+  if (since == null) return { honest30: false, label: "Observed", days: null };
+  const days = (Date.now() / 1000 - Number(since)) / 86400;
+  if (days >= 30) return { honest30: true, label: "30d", days: 30 };
+  return { honest30: false, label: `${Math.max(1, Math.floor(days))}d observed`, days: Math.max(1, Math.floor(days)) };
+}
+
+function paintUptimeBar30(sum) {
+  const bar = $("#uptimeBar30");
+  const title = $("#uptimeBar30Title");
+  const cap = $("#uptimeBar30Caption");
+  const meta = $("#uptimeBar30Meta");
+  const labelEl = $("#stat30dLabel");
+  if (!sum) return;
+  const w = sum.windows?.["30d"]?.all || sum.windows?.["30d"];
+  const win = observedWindowLabel(sum);
+  if (labelEl) labelEl.textContent = `${win.label} downtime`;
+  if (title) title.textContent = `Uptime (${win.label})`;
+  if ($("#down30") && w) {
+    $("#down30").textContent = fmtDuration(w.downtime_ms);
+    if ($("#down30pct")) {
+      const up = w.downtime_pct != null ? (100 - Number(w.downtime_pct)).toFixed(1) : "-";
+      $("#down30pct").textContent = `${w.downtime_pct}% down · ${up}% up · ${w.count || 0} events`;
+    }
+    if ($("#split30") && sum.windows?.["30d"]) renderSplit($("#split30"), sum.windows["30d"]);
+  }
+  const retention = sum.probe_retention_days ?? 14;
+  if ($("#sparkChartCaption")) {
+    $("#sparkChartCaption").textContent =
+      `24 hourly outage seconds — not a ${retention}d probe chart, not 30d.`;
+  }
+  const buckets = sum.daily_outage_30d || sum.uptime_bar_30d || sum.bar_30d;
+  if (bar && Array.isArray(buckets) && buckets.length && win.honest30) {
+    bar.innerHTML = buckets.map((b) => {
+      const sec = Number(b.downtime_s ?? b.down_s ?? b ?? 0);
+      const cls = sec <= 0 ? "up" : sec < 3600 ? "partial" : "down";
+      const tip = `${b.label || b.day || ""} · ${Math.round(sec)}s downtime`;
+      return `<span class="uptime-bar-seg ${cls} has-tip" tabindex="0" data-tip-text="${escapeHtml(tip)}"></span>`;
+    }).join("");
+    bar.style.gridTemplateColumns = `repeat(${buckets.length}, 1fr)`;
+    bar.style.display = "grid";
+    if (cap) cap.textContent = "Daily outage overlap (30d).";
+    bindTooltips(bar);
+  } else if (bar && w && w.downtime_pct != null) {
+    const down = Math.max(0, Math.min(100, Number(w.downtime_pct)));
+    bar.style.display = "flex";
+    bar.innerHTML =
+      `<span class="uptime-bar-seg down has-tip" tabindex="0" style="flex:${down}" data-tip-text="${escapeHtml(`${down}% downtime (${win.label})`)}"></span>` +
+      `<span class="uptime-bar-seg up has-tip" tabindex="0" style="flex:${(100 - down).toFixed(1)}" data-tip-text="${escapeHtml(`${(100 - down).toFixed(1)}% uptime (${win.label})`)}"></span>`;
+    if (cap) {
+      cap.textContent = win.honest30
+        ? "Outage overlap % for 30d (not probe history)."
+        : `Outage overlap % for ${win.label} — not labeled 30d until observed ≥ 30d.`;
+    }
+    bindTooltips(bar);
+  }
+  if (meta && w) meta.textContent = `${w.count || 0} events · ${win.label}`;
+}
+
+/* --- History / Patterns / recent --- */
+function outageTypeTip(typ) {
+  return LAYER_TIPS[String(typ || "").toLowerCase()]?.meaning || `Outage domain: ${typ}`;
+}
+
+function bindOutageRowTips(tbody) {
+  if (!tbody) return;
+  tbody.querySelectorAll(":scope > tr").forEach((tr) => {
+    if (tr.classList.contains("snapshot-row")) return;
+    const tds = [...tr.children].filter((el) => el.tagName === "TD");
+    const typeTd = tds.find((td) => /type-/.test(td.className)) || tds[tds[0]?.querySelector?.(".row-expand") ? 1 : 0];
+    if (typeTd && !typeTd.classList.contains("has-tip")) {
+      const typ = (typeTd.textContent || "").trim().toLowerCase();
+      typeTd.classList.add("has-tip");
+      typeTd.tabIndex = 0;
+      typeTd.setAttribute("data-tip-text", outageTypeTip(typ));
+    }
+  });
+  bindTooltips(tbody);
+}
+
+/* --- System logs --- */
+function bindLogRowTips(tbody) {
+  if (!tbody) return;
+  tbody.querySelectorAll("tr").forEach((tr) => {
+    const tds = tr.querySelectorAll("td");
+    if (tds.length < 5) return;
+    const src = (tds[3].textContent || "").trim();
+    const reason = (tds[4].textContent || "").trim();
+    tds[3].classList.add("has-tip");
+    tds[3].tabIndex = 0;
+    tds[3].setAttribute("data-tip-text", src ? `Event Log source: ${src}` : "OS source unavailable.");
+    tds[4].classList.add("has-tip");
+    tds[4].tabIndex = 0;
+    tds[4].setAttribute("data-tip-text", reason ? `OS reason: ${reason}` : "No reason string. Probe History is authoritative for ISP path.");
+  });
+  bindTooltips(tbody);
+}
+
+/* --- Devices (lan_devices_enabled=false → banner + error row, Connections pattern) --- */
+const DEVICES_COLS = 8;
+
+function paintDevicesDisabled(data, meta, tbody) {
+  const banner = $("#devicesDisabledBanner");
+  const warning = data?.warning || data?.error || "";
+  const off = data && data.ok === false;
+  if (banner) {
+    banner.hidden = !(off && warning);
+    if (warning) banner.textContent = warning;
+  }
+  if (meta && warning) meta.textContent = warning;
+  if (off && tbody && !(data.devices || []).length) {
+    tbody.innerHTML =
+      `<tr><td colspan="${DEVICES_COLS}" class="muted state-error">${escapeHtml(warning || "Devices unavailable")}</td></tr>`;
+    return true;
+  }
+  return false;
+}
+
+function hostnameSourceTip(d) {
+  const src = d.hostname_source || d.name_source || "none";
+  const host = d.hostname || d.name || "";
+  if (!host) return "Hostname empty (none). PTR/NBT run after ARP, rate-limited — not a passive cache.";
+  return `Hostname: ${host} · source ${src} (PTR / NBT / none).`;
+}
+
+function devicesRowHtml(d) {
+  const mac = escapeHtml(d.mac || "");
+  const ip = escapeHtml(d.ip || "");
+  const host = escapeHtml(d.hostname || d.name || "");
+  const cat = escapeHtml(d.category || "unknown");
+  const seen = [d.first_seen && `first ${fmtTs(d.first_seen)}`, d.last_seen && `last ${fmtTs(d.last_seen)}`]
+    .filter(Boolean)
+    .join(" · ");
+  const ports = (d.last_scan_ports || d.open_ports || [])
+    .map((p) => {
+      const n = typeof p === "object" ? p.port : p;
+      const tip = `Last scan open port ${n}${p.banner ? ` · ${p.banner}` : ""}`;
+      return `<span class="pill device-port-chip has-tip" tabindex="0" data-tip-text="${escapeHtml(tip)}">${escapeHtml(String(n))}</span>`;
+    })
+    .join("");
+  const pills = [];
+  pills.push(d.online ? `<span class="pill pill-ok">online</span>` : `<span class="pill pill-unknown">offline</span>`);
+  if (d.gateway) pills.push(`<span class="pill">gw</span>`);
+  if (d.source === "active_scan") pills.push(`<span class="pill">active scan</span>`);
+  return `<tr data-mac="${mac}" data-ip="${ip}">
+    <td${tipCellAttr([d.online ? "Online" : "Offline", seen].filter(Boolean).join(" · "))}>${pills.join(" ")}</td>
+    <td${tipCellAttr(d.ip ? `IP ${d.ip}` : "No IP")}>${ip}</td>
+    <td${tipCellAttr(hostnameSourceTip(d))}>${host || "—"}</td>
+    <td${tipCellAttr(d.mac ? `MAC ${d.mac}` : "No MAC")}>${mac}</td>
+    <td${tipCellAttr(d.vendor ? `Vendor ${d.vendor}` : "Unknown vendor")}>${escapeHtml(d.vendor || "")}</td>
+    <td${tipCellAttr(`Category ${cat} (OUI heuristic)`)}>${cat}${ports ? ` ${ports}` : ""}</td>
+    <td><input type="text" class="device-alias" data-mac="${mac}" value="${escapeHtml(d.alias || "")}" maxlength="120" aria-label="Alias" /></td>
+    <td>
+      <button type="button" class="btn btn-secondary device-wol" data-mac="${mac}">WOL</button>
+      <button type="button" class="btn btn-secondary device-router" data-mac="${mac}">Notify router</button>
+      <button type="button" class="btn btn-secondary device-scan" data-ip="${ip}">Scan</button>
+      <button type="button" class="btn btn-secondary device-filter" data-ip="${ip}">Connections</button>
+      <button type="button" class="btn btn-secondary device-ping" data-ip="${ip}">Ping</button>
+      <button type="button" class="btn btn-secondary device-traceroute" data-ip="${ip}">Traceroute</button>
+    </td>
+  </tr>`;
+}
+
+/* refreshDevicesPanel body (replace inner try):
+    const data = await api("/api/lan/devices/refresh");
+    if (paintDevicesDisabled(data, meta, tbody)) { bindTooltips(tbody); return; }
+    ... gateway strip ...
+    tbody.innerHTML = (data.devices || []).map(devicesRowHtml).join("") ||
+      `<tr><td colspan="${DEVICES_COLS}" class="muted">No devices yet — click Refresh</td></tr>`;
+    bindTooltips(tbody);
+*/
+
+/* --- Connections (no sent/recv) --- */
+function connDeltaClass(r) {
+  const d = String(r.delta || r._delta || "").toLowerCase();
+  if (d === "new" || r.is_new) return "conn-delta-new";
+  if (d === "changed" || r.state_changed) return "conn-delta-changed";
+  if (d === "dropped") return "conn-delta-dropped";
+  return "";
+}
+
+function connRemoteTip(r) {
+  const remote = r.remote || "";
+  const name = r.remote_name || r.rdns || r.resolved || "";
+  const portName = r.port_name || "";
+  if (!remote || remote === "-") return "Remote address:port — none (typical for UDP / listening sockets).";
+  const bits = [`Remote ${remote}`];
+  if (name) bits.push(`DNS ${name}`);
+  if (portName) bits.push(portName);
+  return bits.join(" · ");
+}
+
+/* In renderConnRows <tr>: class="${connDeltaClass(r)}"
+   After PID td:
+   <td${tipCellAttr(r.service ? `Service: ${r.service}` : "No Windows service for this process.")}>${escapeHtml(r.service || "")}</td>
+   Remote td uses connRemoteTip(r)
+   Empty colspan 7. bindTooltips(tbody). */
+
+/* --- Usage --- */
+function usageAppTip(a) {
+  const name = a.name || a.display_name || a.app_key || "?";
+  const exe = a.exe || a.exe_path || "";
+  const bits = [`App: ${name}`];
+  if (exe) bits.push(exe);
+  if (a.session_origin || a.origin) bits.push(`Session origin: ${a.session_origin || a.origin}`);
+  else bits.push("Session totals since helper start (or last refresh if origin not stored).");
+  return bits.join(" · ");
+}
+
+function bindUsageRowTips(tbody, apps) {
+  if (!tbody) return;
+  tbody.querySelectorAll("tr[data-app-key]").forEach((tr) => {
+    const key = tr.getAttribute("data-app-key");
+    const a = (apps || []).find((x) => String(x.app_key || x.exe || x.pid || "") === key);
+    const td0 = tr.querySelector("td");
+    if (td0 && a) {
+      td0.classList.add("has-tip");
+      td0.tabIndex = 0;
+      td0.setAttribute("data-tip-text", usageAppTip(a));
+    }
+  });
+  bindTooltips(tbody);
+}
+
+function wireUsageChartTip() {
+  if (!usageTrendChart) return;
+  wireChartTip(usageTrendChart, (index, chart) => {
+    const title = chart.data.labels?.[index] ?? "";
+    const lines = (chart.data.datasets || []).map((ds) => {
+      const v = ds.data?.[index];
+      if (v == null || Number.isNaN(Number(v))) return `${ds.label}: -`;
+      return `${ds.label}: ${v} MB`;
+    });
+    return { title, lines };
+  });
+}
+
+/* ensureUsageTrend: after new Chart(...) AND after the in-place data update branch, call wireUsageChartTip(). */
+
+/* --- Sniffer / Scan / Speed --- */
+function bindSnifferRowTips(tbody) {
+  if (!tbody) return;
+  tbody.querySelectorAll("tr").forEach((tr) => {
+    const tds = tr.querySelectorAll("td");
+    if (tds.length < 6) return;
+    const ev = (tds[1].textContent || "").trim();
+    tds[1].classList.add("has-tip");
+    tds[1].tabIndex = 0;
+    tds[1].setAttribute("data-tip-text", ev ? `Flow ${ev} — snapshot metadata, not a packet capture.` : "Event type.");
+  });
+  bindTooltips(tbody);
+}
+
+function bindScanRowTips(tbody) {
+  if (!tbody) return;
+  tbody.querySelectorAll("tr").forEach((tr) => {
+    const tds = tr.querySelectorAll("td");
+    if (tds.length < 3) return;
+    const port = (tds[0].textContent || "").trim();
+    const cve = (tds[2].textContent || "").trim();
+    tds[0].classList.add("has-tip");
+    tds[0].tabIndex = 0;
+    tds[0].setAttribute("data-tip-text", port ? `Open port ${port} on a private/known-device target.` : "Port.");
+    tds[2].classList.add("has-tip");
+    tds[2].tabIndex = 0;
+    tds[2].setAttribute(
+      "data-tip-text",
+      !cve || cve === "—" ? "No advisory for this port." : `CVE advisory (stale/offline): ${cve}`
+    );
+  });
+  bindTooltips(tbody);
+}
+
+function bindSpeedHistoryTips(tbody) {
+  if (!tbody) return;
+  tbody.querySelectorAll("tr").forEach((tr) => {
+    const tds = tr.querySelectorAll("td");
+    if (tds.length < 8) return;
+    const server = (tds[6].textContent || "").trim();
+    const jitter = (tds[4].textContent || "").trim();
+    const loss = (tds[5].textContent || "").trim();
+    const link = tds[7].querySelector("a");
+    tds[6].classList.add("has-tip");
+    tds[6].tabIndex = 0;
+    tds[6].setAttribute("data-tip-text", server ? `Ookla server: ${server}` : "No server recorded.");
+    tds[4].classList.add("has-tip");
+    tds[4].tabIndex = 0;
+    tds[4].setAttribute("data-tip-text", `Jitter ${jitter || "-"} ms on this test.`);
+    tds[5].classList.add("has-tip");
+    tds[5].tabIndex = 0;
+    tds[5].setAttribute("data-tip-text", `Packet loss ${loss || "-"}.`);
+    if (link) {
+      link.classList.add("has-tip");
+      link.setAttribute("data-tip-text", `Result URL: ${link.href}`);
+    }
+  });
+  bindTooltips(tbody);
+}
+
+/* Settings tips are static data-tip on labels — setupTooltips() / bindTooltips(document) already covers them. */

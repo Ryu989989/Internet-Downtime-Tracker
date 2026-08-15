@@ -29,8 +29,13 @@ let metricsTimer = null;
 function init(deps) {
   db = deps.db;
   monitor = deps.monitor || null;
+  lanDevices.setSettingsGetter(() => settings());
   packetSniffer.setFetchFlowsForTest(async () => {
-    const snap = await connections.snapshot({ establishedOnly: true });
+    const snap = await connections.snapshot({
+      establishedOnly: true,
+      trackDelta: false,
+      trackAdapters: false,
+    });
     const flows = (snap.connections || []).map((c) => ({
       proto: c.proto,
       local: c.local,
@@ -67,10 +72,30 @@ function settings() {
 async function refreshDevices() {
   const s = settings();
   if (s.lan_devices_enabled === false) {
-    return { ok: false, devices: [], warning: "LAN Devices disabled in Settings" };
+    return lanDevices.devicesDisabledPayload();
   }
   const snap = await lanDevices.snapshot();
   const merged = lanDevices.mergeIntoDb(db, snap);
+  const resolved = await lanDevices.resolveEmptyHostnames(merged.devices);
+  for (const d of resolved.devices) {
+    if (d.mac && d.hostname) {
+      db.upsertLanDevice({
+        mac: d.mac,
+        ip: d.ip,
+        vendor: d.vendor,
+        alias: d.alias,
+        notes: d.notes,
+        hostname: d.hostname,
+        state: d.state,
+        iface: d.iface,
+        first_seen: d.first_seen,
+        last_seen: d.last_seen,
+        online: d.online,
+        source: d.source,
+        gateway: d.gateway,
+      });
+    }
+  }
   if (s.lan_new_device_toast && merged.newDevices.length) {
     for (const d of merged.newDevices.slice(0, 3)) {
       try {
@@ -104,21 +129,45 @@ async function refreshDevices() {
         .catch(() => {});
     }
   }
+  const devices = lanDevices.enrichListedDevices(
+    db.listLanDevices(),
+    (ip) => db.getLatestScanForIp(ip)
+  );
   return {
     ok: true,
     gateway: merged.gateway,
-    devices: merged.devices,
+    devices,
     new_count: merged.newDevices.length,
-    disclaimer: snap.disclaimer,
+    disclaimer: lanDevices.devicesDisclaimer({
+      hostnamesQueried: lanDevices.hadActiveHostnameLookups(),
+    }),
+    lan_devices_enabled: true,
+    meta: {
+      lan_devices_enabled: true,
+      warning: null,
+      hostname_lookups: resolved.lookups,
+    },
   };
 }
 
 function listDevices() {
   const s = settings();
   if (s.lan_devices_enabled === false) {
-    return { ok: false, devices: [], warning: "LAN Devices disabled in Settings" };
+    return lanDevices.devicesDisabledPayload();
   }
-  return { ok: true, devices: db ? db.listLanDevices() : [], disclaimer: "Passive neighbor cache — not a complete network map." };
+  const raw = db ? db.listLanDevices() : [];
+  const devices = lanDevices.enrichListedDevices(raw, (ip) =>
+    db ? db.getLatestScanForIp(ip) : null
+  );
+  return {
+    ok: true,
+    devices,
+    lan_devices_enabled: true,
+    disclaimer: lanDevices.devicesDisclaimer({
+      hostnamesQueried: lanDevices.hadActiveHostnameLookups(),
+    }),
+    meta: { lan_devices_enabled: true, warning: null },
+  };
 }
 
 function updateDevice(body = {}) {
@@ -182,7 +231,11 @@ async function topology() {
   // Cheap live Connections cross-ref (best-effort; never blocks Topology).
   if (s.connections_enabled !== false) {
     try {
-      const snap = await connections.snapshot({ establishedOnly: true });
+      const snap = await connections.snapshot({
+        establishedOnly: true,
+        trackDelta: false,
+        trackAdapters: false,
+      });
       if (snap && snap.ok !== false && Array.isArray(snap.connections)) {
         result = lanDevices.attachConnectionCounts(result, snap.connections);
       }

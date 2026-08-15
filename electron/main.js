@@ -17,6 +17,7 @@ const connections = require("./connections");
 const usageBridge = require("./usage-bridge");
 const usageControl = require("./usage-control");
 const lanBridge = require("./lan-bridge");
+const { honestUptimeBar, observationStart } = require("./uptime-bar");
 
 /** Exports always land under downloads/temp — ignore renderer-supplied paths. */
 function resolveExportDest(kind) {
@@ -345,6 +346,7 @@ function utcMonthStartSec(nowSec) {
 
 function processLiveUsageApps(apps, suppress) {
   if (!db || !Array.isArray(apps)) return;
+  const toastNewExe = !!db.getSettings().toast_alerts;
   const ignoredKeys = new Set(
     db
       .listUsageApps({ includeIgnored: true })
@@ -370,6 +372,16 @@ function processLiveUsageApps(apps, suppress) {
         display_name: name,
         exe_path: exe,
       });
+      if (!existing && toastNewExe && Notification.isSupported()) {
+        try {
+          new Notification({
+            title: "New app seen",
+            body: name || appKey,
+          }).show();
+        } catch {
+          /* ignore */
+        }
+      }
     }
     if (suppress || ignoredKeys.has(appKey) || (existing && existing.ignored)) continue;
     const curIn = Math.max(0, Math.trunc(Number(row.bytes_in) || 0));
@@ -510,11 +522,38 @@ function buildUsageCsv(rows, granularity) {
   return lines.join("\n");
 }
 
+/** History clock for summary/streak — MIN(first probe, first outage), never session start. */
+function historyObservationClocks() {
+  const firstProbe = db._get("SELECT MIN(timestamp) AS t FROM probes");
+  const firstOutage = db.listOutages({ orderBy: "started_at", orderDir: "ASC", limit: 1 })[0];
+  const firstProbeAt = firstProbe && firstProbe.t != null ? Number(firstProbe.t) : null;
+  const firstOutageAt =
+    firstOutage && firstOutage.started_at != null ? Number(firstOutage.started_at) : null;
+  return {
+    firstProbeAt,
+    firstOutageAt,
+    observeSince: observationStart({ firstProbeAt, firstOutageAt }),
+  };
+}
+
 function registerIpc() {
   safeHandle("api:status", () => monitor.snapshot());
-  safeHandle("api:summary", () =>
-    db.summary(null, { observeSince: monitor.state.started_at })
-  );
+  safeHandle("api:summary", () => {
+    const settings = db.getSettings();
+    const { firstProbeAt, firstOutageAt, observeSince } = historyObservationClocks();
+    const sum = db.summary(null, { observeSince });
+    const retention = settings.probe_retention_days ?? 14;
+    return {
+      ...sum,
+      observe_since: observeSince,
+      probe_retention_days: retention,
+      uptime_bar: honestUptimeBar(sum, {
+        probeRetentionDays: retention,
+        firstProbeAt,
+        firstOutageAt,
+      }),
+    };
+  });
   safeHandle("api:settings", () => db.getSettings());
   safeHandle("api:settings:update", async (_e, body) => {
     const prev = db.getSettings();
@@ -625,9 +664,8 @@ function registerIpc() {
     const now = Date.now() / 1000;
     const fromTs = params.from != null ? Number(params.from) : now - 30 * 86400;
     const toTs = params.to != null ? Number(params.to) : now;
-    const summary = db.summary(now, {
-      observeSince: monitor ? monitor.state.started_at : null,
-    });
+    const { observeSince } = historyObservationClocks();
+    const summary = db.summary(now, { observeSince });
     const outages = db.listOutages({
       fromTs,
       toTs,
@@ -722,6 +760,9 @@ function registerIpc() {
     }
     return connections.snapshot({
       establishedOnly: !!(params && params.establishedOnly),
+      resolveDns: !!settings.connections_resolve_dns,
+      trackDelta: true,
+      trackAdapters: true,
     });
   });
 
@@ -833,6 +874,12 @@ function registerIpc() {
     const destDir = app.getPath("downloads") || os.tmpdir();
     return lanBridge.exportDevices(params.format === "json" ? "json" : "csv", destDir);
   });
+  safeHandle("api:lan:devices:ping", async (_e, body = {}) =>
+    lanBridge.lanDevices.pingDevice(body || {})
+  );
+  safeHandle("api:lan:devices:traceroute", async (_e, body = {}) =>
+    lanBridge.lanDevices.tracerouteDevice(body || {})
+  );
   safeHandle("api:lan:wol", async (_e, body = {}) => lanBridge.wakeDevice(body));
   safeHandle("api:lan:topology", async () => lanBridge.topology());
   safeHandle("api:lan:topology:stop", async () => lanBridge.stopTopology());

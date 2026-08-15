@@ -6,6 +6,7 @@ const {
   pingBurst,
   isMonitorStale,
 } = require("./netcheck");
+const { layerPillTips } = require("./uptime-bar");
 
 const ADAPTER_EVERY_N = 30;
 const QUALITY_EVERY_N = 6;
@@ -78,6 +79,7 @@ class Monitor {
       wan_ok: null,
       dns_ok: null,
       http_ok: null,
+      http_cert_days: null,
       gateway: null,
       latency_ms: null,
       lan_method: null,
@@ -203,6 +205,7 @@ class Monitor {
     }
     const in_outage = open.length > 0;
     const domains = [...new Set(open.map((o) => o.type))];
+    const failure_domain = domains.length > 1 ? "mixed" : domains[0] || null;
     const poll_interval_s = settings.poll_interval_s ?? 5;
     const monitor_stale = isMonitorStale({
       last_probe_at: this.state.last_probe_at,
@@ -216,6 +219,8 @@ class Monitor {
       wan_ok: this.state.wan_ok,
       dns_ok: this.state.dns_ok,
       http_ok: this.state.http_ok,
+      http_cert_days: this.state.http_cert_days ?? null,
+      http_url: settings.http_url || null,
       gateway: this.state.gateway,
       latency_ms: this.state.latency_ms,
       lan_method: this.state.lan_method,
@@ -225,7 +230,19 @@ class Monitor {
       last_probe_at: this.state.last_probe_at,
       poll_interval_s,
       open_outages: open,
-      failure_domain: domains.length > 1 ? "mixed" : domains[0] || null,
+      failure_domain,
+      layer_tips: layerPillTips({
+        lan_ok: this.state.lan_ok,
+        wan_ok: this.state.wan_ok,
+        dns_ok: this.state.dns_ok,
+        http_ok: this.state.http_ok,
+        latency_ms: this.state.latency_ms,
+        failure_domain,
+        last_probe_at: this.state.last_probe_at,
+        quality: this.state.quality,
+        http_cert_days: this.state.http_cert_days,
+        http_url: settings.http_url || null,
+      }),
       monitor_started_at: this.state.started_at,
       in_outage,
       uptime_streak_s: Math.round(uptime_streak_s * 10) / 10,
@@ -405,6 +422,12 @@ class Monitor {
     this.state.wan_ok = result.wan_ok;
     this.state.dns_ok = dnsOk;
     this.state.http_ok = httpOk;
+    // Lower-layer skip leaves http_cert_days null — keep last days until HTTP runs again
+    if (result.http_cert_days != null) {
+      this.state.http_cert_days = result.http_cert_days;
+    } else if (result.lan_ok && result.wan_ok && dnsOk) {
+      this.state.http_cert_days = null;
+    }
     this.state.gateway = result.gateway;
     this.state.latency_ms = result.latency_ms;
     this.state.lan_method = result.lan_method;

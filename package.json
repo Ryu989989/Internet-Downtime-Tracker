@@ -9,7 +9,7 @@
     "postinstall": "node scripts/vendor-chart.js",
     "start": "electron .",
     "build": "electron-builder --win",
-    "test": "node --test electron/test/monitor.test.js electron/test/netcheck.test.js electron/test/export.test.js electron/test/system-logs.test.js electron/test/speedtest.test.js electron/test/security.test.js electron/test/autostart.test.js electron/test/ui.test.js electron/test/connections.test.js electron/test/usage-control.test.js electron/test/usage-bridge.test.js electron/test/usage-db.test.js electron/test/lan-devices.test.js electron/test/lan-security.test.js"
+    "test": "node --test electron/test/monitor.test.js electron/test/netcheck.test.js electron/test/export.test.js electron/test/uptime-bar.test.js electron/test/system-logs.test.js electron/test/speedtest.test.js electron/test/security.test.js electron/test/autostart.test.js electron/test/ui.test.js electron/test/connections.test.js electron/test/usage-control.test.js electron/test/usage-bridge.test.js electron/test/usage-db.test.js electron/test/lan-devices.test.js electron/test/lan-security.test.js electron/test/traceroute.test.js electron/test/snmp-topology.test.js"
   },
   "dependencies": {
     "net-snmp": "^3.26.3",

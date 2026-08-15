@@ -48,12 +48,13 @@ describe("DNS/HTTP helpers", () => {
   });
 
   it("checkHttp times out against closed local port", async () => {
-    const [ok, lat] = await checkHttp({
+    const [ok, lat, certDays] = await checkHttp({
       url: "http://127.0.0.1:1/",
       timeoutMs: 400,
     });
     assert.equal(ok, false);
     assert.equal(lat, null);
+    assert.equal(certDays, null);
   });
 });
 

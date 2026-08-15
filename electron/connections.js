@@ -1,12 +1,65 @@
 "use strict";
 
 const fs = require("fs");
+const net = require("net");
 const path = require("path");
+const dns = require("dns").promises;
 const { spawn } = require("child_process");
 
 const SNAPSHOT_TIMEOUT_MS = 10_000;
+const SERVICE_TIMEOUT_MS = 8_000;
 const ROW_CAP = 200;
 const MAX_STDOUT = 4_000_000;
+const DNS_LOOKUP_CAP = 8;
+const DNS_TIMEOUT_MS = 500;
+const RESOLVE_DNS_SETTING = "connections_resolve_dns";
+
+/** Local map only — not DNS-SRV. */
+const WELL_KNOWN_PORTS = {
+  20: "ftp-data",
+  21: "ftp",
+  22: "ssh",
+  23: "telnet",
+  25: "smtp",
+  53: "dns",
+  67: "dhcp",
+  68: "dhcp",
+  80: "http",
+  110: "pop3",
+  123: "ntp",
+  135: "rpc",
+  137: "netbios-ns",
+  139: "netbios-ssn",
+  143: "imap",
+  161: "snmp",
+  389: "ldap",
+  443: "https",
+  445: "smb",
+  465: "smtps",
+  500: "isakmp",
+  587: "submission",
+  631: "ipp",
+  636: "ldaps",
+  853: "domain-s",
+  993: "imaps",
+  995: "pop3s",
+  1433: "mssql",
+  1521: "oracle",
+  1900: "ssdp",
+  3306: "mysql",
+  3389: "rdp",
+  5353: "mdns",
+  5357: "wsd",
+  5432: "postgresql",
+  5900: "vnc",
+  5985: "winrm",
+  6379: "redis",
+  7680: "dosvc",
+  8080: "http-alt",
+  8443: "https-alt",
+  9200: "elasticsearch",
+  27017: "mongodb",
+};
 
 function powershellExe() {
   const candidates = [
@@ -31,17 +84,33 @@ function powershellExe() {
 
 /** @type {null | typeof runPowerShell} */
 let runPowerShellOverride = null;
+/** @type {null | ((ip: string, timeoutMs: number) => Promise<string|null>)} */
+let reverseLookupOverride = null;
 
 /** @type {{ at: number, adapters: Map<string, {rx: number, tx: number}> } | null} */
 let lastAdapterSample = null;
+/** @type {Map<string, string|null>} */
+let dnsCache = new Map();
+/** @type {Promise<Map<number, string>> | null} */
+let serviceMapPromise = null;
+/** @type {Map<string, object> | null} */
+let lastConnRows = null;
 
 function setRunPowerShellForTest(fn) {
   runPowerShellOverride = fn;
 }
 
+function setReverseLookupForTest(fn) {
+  reverseLookupOverride = fn;
+}
+
 function resetRunPowerShellForTest() {
   runPowerShellOverride = null;
+  reverseLookupOverride = null;
   lastAdapterSample = null;
+  dnsCache = new Map();
+  serviceMapPromise = null;
+  lastConnRows = null;
 }
 
 function runPowerShell(script, timeoutMs) {
@@ -149,6 +218,54 @@ Get-NetAdapterStatistics -ErrorAction SilentlyContinue | ForEach-Object {
 `.trim();
 }
 
+/** One CIM query; joined in JS by PID. Not part of the per-snapshot TCP script. */
+function buildServiceScript() {
+  return `
+$ErrorActionPreference = 'SilentlyContinue'
+Get-CimInstance -ClassName Win32_Service -ErrorAction SilentlyContinue |
+  Where-Object { $_.ProcessId -gt 0 } |
+  Select-Object Name, ProcessId |
+  ConvertTo-Json -Compress -Depth 2
+`.trim();
+}
+
+function parseServiceRows(text) {
+  const map = new Map();
+  if (!text) return map;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return map;
+  }
+  const list = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" ? [parsed] : [];
+  for (const s of list) {
+    if (!s || typeof s !== "object") continue;
+    const pid = Number(s.ProcessId ?? s.processId ?? s.pid);
+    const name = String(s.Name ?? s.name ?? "").trim();
+    if (!Number.isFinite(pid) || pid <= 0 || !name) continue;
+    const prev = map.get(pid);
+    map.set(pid, prev ? `${prev}, ${name}` : name);
+  }
+  return map;
+}
+
+function ensureServiceMap() {
+  if (serviceMapPromise) return serviceMapPromise;
+  // ponytail: CIM once per process lifetime after success; retry next snapshot on failure
+  serviceMapPromise = (async () => {
+    const { stdout } = await runPowerShell(buildServiceScript(), SERVICE_TIMEOUT_MS);
+    return parseServiceRows(String(stdout || "").trim());
+  })().then(
+    (map) => map,
+    () => {
+      serviceMapPromise = null;
+      return new Map();
+    }
+  );
+  return serviceMapPromise;
+}
+
 function shapeConnectionRow(raw) {
   if (!raw || typeof raw !== "object") return null;
   const pid = Number(raw.pid ?? raw.Pid ?? raw.OwningProcess);
@@ -183,7 +300,7 @@ function shapeConnections(rawList, { establishedOnly = false, cap = ROW_CAP } = 
   return { rows: rows.slice(0, cap), truncated, total: rows.length };
 }
 
-function computeAdapterRates(adapters, nowMs) {
+function computeAdapterRates(adapters, nowMs, { track = true } = {}) {
   const list = Array.isArray(adapters) ? adapters : adapters ? [adapters] : [];
   const current = new Map();
   for (const a of list) {
@@ -218,7 +335,7 @@ function computeAdapterRates(adapters, nowMs) {
     });
   }
 
-  lastAdapterSample = { at: nowMs, adapters: current };
+  if (track) lastAdapterSample = { at: nowMs, adapters: current };
   out.sort((a, b) => {
     const ar = (a.rx_mbps || 0) + (a.tx_mbps || 0);
     const br = (b.rx_mbps || 0) + (b.tx_mbps || 0);
@@ -227,15 +344,141 @@ function computeAdapterRates(adapters, nowMs) {
   return out;
 }
 
+function parseEndpoint(ep) {
+  const s = String(ep || "").trim();
+  if (!s || s === "-") return { ip: "", port: null };
+  if (s.startsWith("[")) {
+    const m = /^\[([^\]]+)\]:(\d+)$/.exec(s);
+    if (m) return { ip: m[1].split("%")[0], port: Number(m[2]) };
+  }
+  const i = s.lastIndexOf(":");
+  if (i <= 0) return { ip: s.replace(/^\[|\]$/g, "").split("%")[0], port: null };
+  const port = Number(s.slice(i + 1));
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    return { ip: s.replace(/^\[|\]$/g, "").split("%")[0], port: null };
+  }
+  return { ip: s.slice(0, i).replace(/^\[|\]$/g, "").split("%")[0], port };
+}
+
+function portNameForRow(row) {
+  const rem = parseEndpoint(row.remote);
+  const loc = parseEndpoint(row.local);
+  if (row.remote && row.remote !== "-" && rem.port != null && WELL_KNOWN_PORTS[rem.port]) {
+    return WELL_KNOWN_PORTS[rem.port];
+  }
+  if (loc.port != null && WELL_KNOWN_PORTS[loc.port]) return WELL_KNOWN_PORTS[loc.port];
+  return null;
+}
+
+function connectionKey(row) {
+  return `${row.proto}|${row.pid}|${row.local}|${row.remote}`;
+}
+
+function isNonResolvableIp(ip) {
+  if (!ip) return true;
+  if (ip === "0.0.0.0" || ip === "::" || ip === "::0") return true;
+  if (ip === "127.0.0.1" || ip === "::1") return true;
+  if (ip.startsWith("127.")) return true;
+  return false;
+}
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(null), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      () => {
+        clearTimeout(t);
+        resolve(null);
+      }
+    );
+  });
+}
+
+async function reverseLookup(ip, timeoutMs) {
+  const work = reverseLookupOverride
+    ? reverseLookupOverride(ip, timeoutMs)
+    : dns.reverse(ip).then((names) => (names && names[0]) || null, () => null);
+  return withTimeout(Promise.resolve(work), timeoutMs);
+}
+
+function attachPortAndService(rows, serviceMap) {
+  for (const r of rows) {
+    r.portName = portNameForRow(r);
+    const svc = serviceMap && serviceMap.get(r.pid);
+    r.serviceName = svc || null;
+    r.resolved = r.resolved ?? null;
+    r.delta = r.delta ?? null;
+  }
+}
+
+async function attachResolved(rows, { timeoutMs = DNS_TIMEOUT_MS, cap = DNS_LOOKUP_CAP } = {}) {
+  const unique = [];
+  const seen = new Set();
+  for (const r of rows) {
+    const { ip } = parseEndpoint(r.remote);
+    if (!ip || !net.isIP(ip) || isNonResolvableIp(ip)) continue;
+    if (dnsCache.has(ip) || seen.has(ip)) continue;
+    seen.add(ip);
+    unique.push(ip);
+    if (unique.length >= cap) break;
+  }
+  await Promise.all(
+    unique.map(async (ip) => {
+      const name = await reverseLookup(ip, timeoutMs);
+      const cleaned =
+        typeof name === "string" && name.trim()
+          ? name.trim().replace(/\.$/, "").slice(0, 253)
+          : null;
+      dnsCache.set(ip, cleaned);
+    })
+  );
+  for (const r of rows) {
+    const { ip } = parseEndpoint(r.remote);
+    r.resolved = ip && dnsCache.has(ip) ? dnsCache.get(ip) : null;
+  }
+}
+
+function applySnapshotDelta(rows) {
+  const curr = new Map();
+  for (const r of rows) curr.set(connectionKey(r), r);
+  const prev = lastConnRows;
+  if (!prev) {
+    lastConnRows = curr;
+    for (const r of rows) r.delta = null;
+    return rows;
+  }
+  const out = [];
+  for (const r of rows) {
+    const old = prev.get(connectionKey(r));
+    r.delta = !old ? "new" : old.state !== r.state ? "state-changed" : null;
+    out.push(r);
+  }
+  for (const [k, old] of prev) {
+    if (!curr.has(k)) out.push({ ...old, delta: "dropped" });
+  }
+  lastConnRows = curr;
+  return out;
+}
+
 /**
- * @param {{ establishedOnly?: boolean }} [opts]
+ * @param {{ establishedOnly?: boolean, resolveDns?: boolean, trackDelta?: boolean, trackAdapters?: boolean }} [opts]
  * @returns {Promise<{ ok: boolean, connections: object[], adapters: object[], truncated: boolean, total: number, captured_at: number, warning?: string, error?: string }>}
  */
 async function snapshot(opts = {}) {
   const establishedOnly = !!opts.establishedOnly;
+  const resolveDns = !!opts.resolveDns;
+  const trackDelta = !!opts.trackDelta;
+  const trackAdapters = !!opts.trackAdapters;
   const nowMs = Date.now();
   try {
-    const { stdout } = await runPowerShell(buildSnapshotScript(), SNAPSHOT_TIMEOUT_MS);
+    const psP = runPowerShell(buildSnapshotScript(), SNAPSHOT_TIMEOUT_MS);
+    const svcP = ensureServiceMap();
+    const { stdout } = await psP;
+    const serviceMap = await svcP;
     const text = String(stdout || "").trim();
     if (!text) {
       return {
@@ -265,10 +508,16 @@ async function snapshot(opts = {}) {
       };
     }
     const shaped = shapeConnections(parsed.connections, { establishedOnly });
-    const adapters = computeAdapterRates(parsed.adapters, Number(parsed.captured_at) || nowMs);
+    attachPortAndService(shaped.rows, serviceMap);
+    if (resolveDns) await attachResolved(shaped.rows);
+    else for (const r of shaped.rows) r.resolved = null;
+    const rows = trackDelta ? applySnapshotDelta(shaped.rows) : shaped.rows;
+    const adapters = computeAdapterRates(parsed.adapters, Number(parsed.captured_at) || nowMs, {
+      track: trackAdapters,
+    });
     return {
       ok: true,
-      connections: shaped.rows,
+      connections: rows,
       adapters,
       truncated: shaped.truncated,
       total: shaped.total,
@@ -295,8 +544,13 @@ module.exports = {
   shapeConnectionRow,
   computeAdapterRates,
   buildSnapshotScript,
+  buildServiceScript,
   setRunPowerShellForTest,
+  setReverseLookupForTest,
   resetRunPowerShellForTest,
   ROW_CAP,
   SNAPSHOT_TIMEOUT_MS,
+  DNS_LOOKUP_CAP,
+  DNS_TIMEOUT_MS,
+  RESOLVE_DNS_SETTING,
 };

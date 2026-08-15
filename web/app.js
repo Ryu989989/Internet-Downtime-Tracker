@@ -102,15 +102,98 @@ const LAYER_TIPS = {
   "conn-adapter-mbps": {
     name: "Adapter throughput",
     meaning:
-      "Estimated receive (↓) and send (↑) rate in Mbps from consecutive snapshots. \"-\" until a second sample arrives (or after refresh resets the baseline).",
+      "NIC counter bytes (↓ received / ↑ sent) plus Mbps from consecutive snapshots. First sample (or after refresh) shows bytes with “since last refresh” — no rate yet.",
   },
 };
+
+Object.assign(LAYER_TIPS, {
+  "http-cert": { name: "TLS cert", meaning: "Days until the HTTPS peer cert expires. N/A (HTTP URL) when the probe URL is http:// — never shown as 0." },
+  "hero-open": { name: "Open outages", meaning: "Outages still open right now." },
+  "hero-gw": { name: "Gateway", meaning: "Default gateway used for the LAN probe." },
+  "hero-latency": { name: "Latency", meaning: "Combined probe latency_ms (not per-layer RTT)." },
+  "quality-loss": { name: "Loss", meaning: "Rolling ping-burst loss %. Burst never opens outages." },
+  "quality-jitter": { name: "Jitter", meaning: "Rolling ping-burst jitter (ms)." },
+  "quality-avg": { name: "Avg", meaning: "Rolling ping-burst average RTT (ms)." },
+  "quality-last": { name: "Last", meaning: "Last burst sample (ms). Same combined latency family — not a per-layer RTT." },
+  "provider-ping": { name: "Provider ping", meaning: "Last Ookla server ping (ms)." },
+  "provider-when": { name: "Measured", meaning: "When the last speed test recorded this ISP/server." },
+  "stat-streak": { name: "Uptime streak", meaning: "Time since last recovery, or In outage." },
+  "stat-24h": { name: "24h downtime", meaning: "Outage overlap in the last 24 hours (not probe retention)." },
+  "stat-7d": { name: "7d downtime", meaning: "Outage overlap in the last 7 days." },
+  "stat-30d": { name: "Observed downtime", meaning: "windows['30d'] outage overlap %. Label is 30d only if observed ≥ 30d; otherwise actual days. Sparkline stays 24h / probe_retention_days — never relabeled 30d." },
+  "stat-events": { name: "Events (7d)", meaning: "Outage count in the last 7 days, split by domain." },
+  "hist-type": { name: "Type", meaning: "Failure domain: LAN, WAN, DNS, or HTTP." },
+  "hist-started": { name: "Started", meaning: "When this outage opened." },
+  "hist-ended": { name: "Ended", meaning: "When it closed, or ongoing." },
+  "hist-duration": { name: "Duration", meaning: "Open length (live if still open)." },
+  "hist-notes": { name: "Notes", meaning: "Your note. History/Patterns save on Enter or blur." },
+  "log-started": { name: "Started", meaning: "OS-inferred gap start (Event Log), not a live probe." },
+  "log-ended": { name: "Ended", meaning: "Gap end, or ongoing." },
+  "log-duration": { name: "Duration", meaning: "Logged gap length." },
+  "log-source": { name: "Source", meaning: "Windows Event Log channel/provider used to infer this gap." },
+  "log-reason": { name: "Reason", meaning: "OS-logged reason. Sleep/hibernate/NIC flaps may appear or be missing." },
+  "dev-status": { name: "Status", meaning: "Online from last ARP/neighbor sighting — not a full Fing presence timeline." },
+  "dev-ip": { name: "IP", meaning: "IPv4 from the neighbor cache." },
+  "dev-host": { name: "Hostname", meaning: "PTR, NetBIOS (NBT), alias, or none. Source labeled in the cell tip." },
+  "dev-mac": { name: "MAC", meaning: "Hardware address from ARP/neighbor." },
+  "dev-vendor": { name: "Vendor", meaning: "OUI vendor lookup." },
+  "dev-cat": { name: "Category", meaning: "Heuristic from OUI/vendor: router, phone, pc, iot, or unknown." },
+  "dev-alias": { name: "Alias", meaning: "Local label you set. Saved on this machine." },
+  "dev-actions": { name: "Actions", meaning: "WOL, router notify, scan, connections filter, ping, traceroute (on-demand IPC — not on the probe tick)." },
+  "conn-service": { name: "Service", meaning: "Windows service owning this process (cached Win32_Service). Empty if none." },
+  "conn-resolve": { name: "Resolve DNS", meaning: "Reverse-DNS remotes (cached, capped). Off by default. No GeoIP. No sent/recv counters." },
+  "usage-app": { name: "App", meaning: "Display name / exe. Needs the elevated Usage helper." },
+  "usage-down": { name: "↓ Mbps", meaning: "Live inbound rate from the helper." },
+  "usage-up": { name: "↑ Mbps", meaning: "Live outbound rate from the helper." },
+  "usage-sin": { name: "Session in", meaning: "Bytes in since helper session start (or last refresh if origin not stored)." },
+  "usage-sout": { name: "Session out", meaning: "Bytes out since helper session start (or last refresh if origin not stored)." },
+  "usage-ignore": { name: "Ignore", meaning: "Hide this app from live totals." },
+  "usage-block": { name: "Block", meaning: "Firewall block by exe. Requires Network control in Settings." },
+  "sniff-time": { name: "Time", meaning: "When this open/close delta was recorded." },
+  "sniff-event": { name: "Event", meaning: "Connection-flow metadata (not Npcap/raw packets)." },
+  "sniff-proto": { name: "Proto", meaning: "TCP or UDP for this flow." },
+  "sniff-src": { name: "Src", meaning: "Source address:port." },
+  "sniff-dst": { name: "Dst", meaning: "Destination address:port." },
+  "sniff-proc": { name: "Process", meaning: "Owning process if known. \"?\" may need elevation." },
+  "scan-port": { name: "Port", meaning: "Open port on the scanned private IP." },
+  "scan-banner": { name: "Banner", meaning: "Short banner/service string if any." },
+  "scan-cve": { name: "CVE", meaning: "Advisory/stale CVE hits for this port — not a live feed." },
+  "speed-when": { name: "When", meaning: "When this Ookla test finished." },
+  "speed-jitter-col": { name: "Jitter", meaning: "RTT variation (ms) on that test." },
+  "speed-server": { name: "Server", meaning: "Ookla server name and location." },
+  "speed-link": { name: "Link", meaning: "Public result URL from the CLI, if provided." },
+  "topo-gw": { name: "Gateway", meaning: "Default gateway / layout root." },
+  "topo-nb": { name: "Neighbor", meaning: "ARP/neighbor star — not a claimed switch fabric." },
+  "topo-snmp": { name: "SNMP", meaning: "SNMP/LLDP node when topology walk is enabled." },
+  "topo-sel": { name: "Selected", meaning: "Click node ↔ row. Selected node gets a short label; others stay hover-only." },
+  "topo-ip": { name: "IP", meaning: "Node address used for layout and LLDP mapping." },
+  "topo-name": { name: "Name", meaning: "sysName, hostname, or label. LLDP edges map sysName/IP to node ids." },
+  "topo-src": { name: "Source", meaning: "neighbor (ARP star) or snmp/LLDP. Neighbor mode does not invent a switch fabric." },
+  "topo-conns": { name: "Conns", meaning: "Live connection count for this node when Connections data is present." },
+  "set-connections": { name: "Connections", meaning: "Works unelevated. \"?\" names = other users / protected processes. No per-connection sent/recv." },
+  "set-resolve-dns": { name: "Resolve DNS", meaning: "Optional reverse-DNS (cached, N lookups/snapshot). Default off. Does not need admin." },
+  "set-usage": { name: "Usage helper", meaning: "Separate elevated .NET helper via UAC. No per-app bytes until approved." },
+  "set-net-control": { name: "Network control", meaning: "Firewall block/unblock by exe path. Off until enabled." },
+  "set-lan-devices": { name: "Devices", meaning: "ARP neighbor cache — not a complete LAN map. Hostnames via PTR/NBT after snapshot, labeled by source." },
+  "set-lan-toast": { name: "New device toast", meaning: "Tray toast when a new MAC appears in the neighbor cache." },
+  "set-snmp": { name: "SNMP", meaning: "SNMPv2c community to seed IPs. Unpolled LLDP targets stay stubs." },
+  "set-sniffer": { name: "Sniffer", meaning: "Connection-flow metadata from snapshots — not Npcap. Stops on tab leave unless Always-on." },
+  "set-sniffer-always": { name: "Always-on sniffer", meaning: "Keeps metadata capture after leaving the tab (tray). Metadata only." },
+  "set-lan-discover": { name: "Active discovery", meaning: "Gated subnet probes; private IPs only. Not on the monitor tick." },
+  "set-router-auto": { name: "Router auto-notify", meaning: "POST webhook on new unknown device. You own the URL." },
+  "set-prom": { name: "Prometheus", meaning: "127.0.0.1:9108 only — never 0.0.0.0." },
+  "set-http-api": { name: "HTTP API", meaning: "127.0.0.1:9109 + token. Never public bind." },
+  "set-auto-block": { name: "Auto-block", meaning: "Needs Network control + Usage helper. Blocks by exe when a cap is hit." },
+});
 
 let sparkChart, hourChart, dowChart, latencyChart, speedTrendChart, usageTrendChart;
 let speedRunning = false;
 let connAutoRefreshTimer = null;
 let connView = "devices";
 let sniffPollTimer = null;
+let topoCam = { k: 1, x: 0, y: 0 };
+let topoSelectedKey = null;
+let topoPositions = [];
 let lastUsageLiveApps = [];
 let chartEnterDone = { spark: false, latency: false, hour: false, dow: false, speed: false };
 const HISTORY_ROW_LIMIT = 100;
@@ -142,6 +225,20 @@ function fmtTs(ts) {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+function formatHttpCertDays(certDays, url) {
+  let protocol = null;
+  if (url) {
+    try {
+      protocol = new URL(String(url)).protocol;
+    } catch {
+      protocol = null;
+    }
+  }
+  if (protocol === "http:") return "N/A (HTTP URL)";
+  if (certDays == null || !Number.isFinite(Number(certDays))) return "N/A";
+  return String(Math.trunc(Number(certDays)));
 }
 
 function toLocalInputValue(ts) {
@@ -292,6 +389,14 @@ async function api(path, opts) {
     }
     if (path === "/api/lan/devices") return window.idt.lanDevices();
     if (path === "/api/lan/devices/refresh") return window.idt.lanDevicesRefresh();
+    if (path === "/api/lan/devices/ping") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      return window.idt.lanDevicesPing(body);
+    }
+    if (path === "/api/lan/devices/traceroute") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      return window.idt.lanDevicesTraceroute(body);
+    }
     if (path === "/api/lan/devices/update") {
       const body = opts && opts.body ? JSON.parse(opts.body) : {};
       return window.idt.lanDevicesUpdate(body);
@@ -1357,6 +1462,27 @@ function renderOutageRows(tbody, rows, {
       });
     });
   }
+  bindOutageRowTips(tbody);
+}
+
+function outageTypeTip(typ) {
+  return LAYER_TIPS[String(typ || "").toLowerCase()]?.meaning || `Outage domain: ${typ}`;
+}
+
+function bindOutageRowTips(tbody) {
+  if (!tbody) return;
+  tbody.querySelectorAll(":scope > tr").forEach((tr) => {
+    if (tr.classList.contains("snapshot-row")) return;
+    const tds = [...tr.children].filter((el) => el.tagName === "TD");
+    const typeTd = tds.find((td) => /type-/.test(td.className)) || tds[tds[0]?.querySelector?.(".row-expand") ? 1 : 0];
+    if (typeTd && !typeTd.classList.contains("has-tip")) {
+      const typ = (typeTd.textContent || "").trim().toLowerCase();
+      typeTd.classList.add("has-tip");
+      typeTd.tabIndex = 0;
+      typeTd.setAttribute("data-tip-text", outageTypeTip(typ));
+    }
+  });
+  bindTooltips(tbody);
 }
 
 function timelineTooltip(o, { now = Date.now() / 1000 } = {}) {
@@ -1600,6 +1726,108 @@ function paintStatus(s) {
       logo.style.boxShadow = "0 0 0 3px rgba(62,207,142,0.25)";
     }
   }
+  paintOverviewTips(s);
+}
+
+function layerPillTip(s, layer) {
+  if (s.layer_tips && s.layer_tips[layer]) return s.layer_tips[layer];
+  const okKey = `${layer}_ok`;
+  const ok = s[okKey];
+  const state = ok === true ? "UP" : ok === false ? "DOWN" : "unknown";
+  const bits = [LAYER_TIPS[layer]?.meaning || layer, `State: ${state}`];
+  if (s.latency_ms != null) bits.push(`Combined latency: ${Math.round(s.latency_ms)} ms (not per-layer)`);
+  if (s.failure_domain) bits.push(`Failure domain: ${s.failure_domain}`);
+  if (s.last_probe_at) bits.push(`Last probe: ${fmtTs(s.last_probe_at)}`);
+  if (layer === "http") {
+    if (s.http_cert_days == null) bits.push("TLS: N/A (HTTP URL or no peer cert)");
+    else bits.push(`TLS cert: ${s.http_cert_days} day(s) remaining`);
+  }
+  return bits.join(" · ");
+}
+
+function paintOverviewTips(s) {
+  if (!s) return;
+  for (const layer of ["lan", "wan", "dns", "http"]) {
+    const el = $(`#pill${layer[0].toUpperCase()}${layer.slice(1)}`);
+    if (el) el.setAttribute("data-tip-text", layerPillTip(s, layer));
+  }
+  const certChip = $("#httpCertChip");
+  const certVal = $("#httpCertDays");
+  if (certChip && certVal) {
+    const formatted = formatHttpCertDays(s.http_cert_days, s.http_url);
+    certVal.textContent = /^\d+$/.test(formatted) ? `${formatted}d` : formatted;
+    certChip.hidden = false;
+  }
+  bindTooltips($("#liveStatus"));
+  bindTooltips($("#qualityStrip"));
+  bindTooltips($("#statusHero"));
+  bindTooltips($("#panel-overview"));
+}
+
+function observedWindowLabel(sum) {
+  const since = sum?.observe_since ?? sum?.observeSince ?? sum?.first_probe_at ?? null;
+  if (since == null) return { honest30: false, label: "Observed", days: null };
+  const days = (Date.now() / 1000 - Number(since)) / 86400;
+  if (days >= 30) return { honest30: true, label: "30d", days: 30 };
+  return { honest30: false, label: `${Math.max(1, Math.floor(days))}d observed`, days: Math.max(1, Math.floor(days)) };
+}
+
+function paintUptimeBar30(sum) {
+  const bar = $("#uptimeBar30");
+  const title = $("#uptimeBar30Title");
+  const cap = $("#uptimeBar30Caption");
+  const meta = $("#uptimeBar30Meta");
+  const labelEl = $("#stat30dLabel");
+  if (!sum) return;
+  const w = sum.windows?.["30d"]?.all || sum.windows?.["30d"];
+  const barInfo = sum.uptime_bar;
+  const win = barInfo
+    ? {
+        honest30: barInfo.pct_label === "30d",
+        label: barInfo.pct_label === "30d" ? "30d" : `${barInfo.pct_label} observed`,
+      }
+    : observedWindowLabel(sum);
+  if (labelEl) labelEl.textContent = `${win.label} downtime`;
+  if (title) title.textContent = `Uptime (${win.label})`;
+  if ($("#down30") && w) {
+    $("#down30").textContent = fmtDuration(w.downtime_ms);
+    if ($("#down30pct")) {
+      const up = w.downtime_pct != null ? (100 - Number(w.downtime_pct)).toFixed(1) : "-";
+      $("#down30pct").textContent = `${w.downtime_pct}% down · ${up}% up · ${w.count || 0} events`;
+    }
+    if ($("#split30") && sum.windows?.["30d"]) renderSplit($("#split30"), sum.windows["30d"]);
+  }
+  const retention = barInfo?.probe_retention_days ?? sum.probe_retention_days ?? 14;
+  if ($("#sparkChartCaption")) {
+    $("#sparkChartCaption").textContent =
+      `24 hourly outage seconds — not a ${retention}d probe chart, not 30d.`;
+  }
+  const buckets = sum.daily_outage_30d || sum.uptime_bar_30d || sum.bar_30d;
+  if (bar && Array.isArray(buckets) && buckets.length && win.honest30) {
+    bar.innerHTML = buckets.map((b) => {
+      const sec = Number(b.downtime_s ?? b.down_s ?? b ?? 0);
+      const cls = sec <= 0 ? "up" : sec < 3600 ? "partial" : "down";
+      const tip = `${b.label || b.day || ""} · ${Math.round(sec)}s downtime`;
+      return `<span class="uptime-bar-seg ${cls} has-tip" tabindex="0" data-tip-text="${escapeHtml(tip)}"></span>`;
+    }).join("");
+    bar.style.gridTemplateColumns = `repeat(${buckets.length}, 1fr)`;
+    bar.style.display = "grid";
+    if (cap) cap.textContent = "Daily outage overlap (30d).";
+    bindTooltips(bar);
+  } else if (bar && w && w.downtime_pct != null) {
+    const down = Math.max(0, Math.min(100, Number(w.downtime_pct)));
+    bar.style.display = "flex";
+    bar.innerHTML =
+      `<span class="uptime-bar-seg down has-tip" tabindex="0" style="flex:${down}" data-tip-text="${escapeHtml(`${down}% downtime (${win.label})`)}"></span>` +
+      `<span class="uptime-bar-seg up has-tip" tabindex="0" style="flex:${(100 - down).toFixed(1)}" data-tip-text="${escapeHtml(`${(100 - down).toFixed(1)}% uptime (${win.label})`)}"></span>`;
+    if (cap) {
+      cap.textContent = win.honest30
+        ? "Outage overlap % for 30d (not probe history)."
+        : `Outage overlap % for ${win.label} — not labeled 30d until observed ≥ 30d.`;
+    }
+    bindTooltips(bar);
+  }
+  if (meta && w) meta.textContent = `${w.count || 0} events · ${win.label}`;
 }
 
 let lastGoodStatus = null;
@@ -1675,11 +1903,13 @@ async function refreshSummary() {
     }
     if ($("#recentBody")) {
       renderOutageRows($("#recentBody"), sum.recent_outages || [], { showEnded: false });
+      bindOutageRowTips($("#recentBody"));
       if ($("#recentMeta")) {
         $("#recentMeta").textContent = `${(sum.recent_outages || []).length} latest`;
       }
     }
     paintProvider(sum.provider);
+    paintUptimeBar30(sum);
     lastPatternsSum = sum;
     return sum;
   } catch (e) {
@@ -1887,6 +2117,24 @@ function renderSystemLogRows(tbody, rows) {
       <td>${g.reason ? escapeHtml(g.reason) : ""}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="5" class="muted">No OS-logged gaps in this range</td></tr>`;
+  bindLogRowTips(tbody);
+}
+
+function bindLogRowTips(tbody) {
+  if (!tbody) return;
+  tbody.querySelectorAll("tr").forEach((tr) => {
+    const tds = tr.querySelectorAll("td");
+    if (tds.length < 5) return;
+    const src = (tds[3].textContent || "").trim();
+    const reason = (tds[4].textContent || "").trim();
+    tds[3].classList.add("has-tip");
+    tds[3].tabIndex = 0;
+    tds[3].setAttribute("data-tip-text", src ? `Event Log source: ${src}` : "OS source unavailable.");
+    tds[4].classList.add("has-tip");
+    tds[4].tabIndex = 0;
+    tds[4].setAttribute("data-tip-text", reason ? `OS reason: ${reason}` : "No reason string. Probe History is authoritative for ISP path.");
+  });
+  bindTooltips(tbody);
 }
 
 async function refreshSystemLogs({ refresh = false } = {}) {
@@ -2004,12 +2252,80 @@ function setConnView(view) {
   }
 }
 
+const DEVICES_COLS = 8;
+
+function paintDevicesDisabled(data, meta, tbody) {
+  const banner = $("#devicesDisabledBanner");
+  const warning = data?.warning || data?.error || data?.meta?.warning || "";
+  const off = data && (data.ok === false || data.lan_devices_enabled === false);
+  if (banner) {
+    banner.hidden = !(off && warning);
+    if (warning) banner.textContent = warning;
+  }
+  if (meta && warning) meta.textContent = warning;
+  if (off && tbody && !(data.devices || []).length) {
+    tbody.innerHTML =
+      `<tr><td colspan="${DEVICES_COLS}" class="muted state-error">${escapeHtml(warning || "Devices unavailable")}</td></tr>`;
+    return true;
+  }
+  return false;
+}
+
+function hostnameSourceTip(d) {
+  const src = d.hostname_source || d.name_source || "none";
+  const host = d.hostname || d.name || "";
+  if (!host) return "Hostname empty (none). PTR/NBT run after ARP, rate-limited — not a passive cache.";
+  return `Hostname: ${host} · source ${src} (PTR / NBT / none).`;
+}
+
+function devicesRowHtml(d) {
+  const mac = escapeHtml(d.mac || "");
+  const ip = escapeHtml(d.ip || "");
+  const host = escapeHtml(d.hostname || d.name || "");
+  const cat = escapeHtml(d.category || "unknown");
+  const seen = [d.first_seen && `first ${fmtTs(d.first_seen)}`, d.last_seen && `last ${fmtTs(d.last_seen)}`]
+    .filter(Boolean)
+    .join(" · ");
+  const ports = (d.last_scan_ports || d.open_ports || [])
+    .map((p) => {
+      const n = typeof p === "object" ? p.port : p;
+      const tip = `Last scan open port ${n}${p.banner ? ` · ${p.banner}` : ""}`;
+      return `<span class="pill device-port-chip has-tip" tabindex="0" data-tip-text="${escapeHtml(tip)}">${escapeHtml(String(n))}</span>`;
+    })
+    .join("");
+  const pills = [];
+  pills.push(d.online ? `<span class="pill pill-ok">online</span>` : `<span class="pill pill-unknown">offline</span>`);
+  if (d.gateway) pills.push(`<span class="pill">gw</span>`);
+  if (d.source === "active_scan") pills.push(`<span class="pill">active scan</span>`);
+  return `<tr data-mac="${mac}" data-ip="${ip}">
+    <td${tipCellAttr([d.online ? "Online" : "Offline", seen].filter(Boolean).join(" · "))}>${pills.join(" ")}</td>
+    <td${tipCellAttr(d.ip ? `IP ${d.ip}` : "No IP")}>${ip}</td>
+    <td${tipCellAttr(hostnameSourceTip(d))}>${host || "—"}</td>
+    <td${tipCellAttr(d.mac ? `MAC ${d.mac}` : "No MAC")}>${mac}</td>
+    <td${tipCellAttr(d.vendor ? `Vendor ${d.vendor}` : "Unknown vendor")}>${escapeHtml(d.vendor || "")}</td>
+    <td${tipCellAttr(`Category ${cat} (OUI heuristic)`)}>${cat}${ports ? ` ${ports}` : ""}</td>
+    <td><input type="text" class="device-alias" data-mac="${mac}" value="${escapeHtml(d.alias || "")}" maxlength="120" aria-label="Alias" /></td>
+    <td>
+      <button type="button" class="btn btn-secondary device-wol" data-mac="${mac}">WOL</button>
+      <button type="button" class="btn btn-secondary device-router" data-mac="${mac}">Notify router</button>
+      <button type="button" class="btn btn-secondary device-scan" data-ip="${ip}">Scan</button>
+      <button type="button" class="btn btn-secondary device-filter" data-ip="${ip}">Connections</button>
+      <button type="button" class="btn btn-secondary device-ping" data-ip="${ip}">Ping</button>
+      <button type="button" class="btn btn-secondary device-traceroute" data-ip="${ip}">Traceroute</button>
+    </td>
+  </tr>`;
+}
+
 async function refreshDevicesPanel() {
   const meta = $("#devicesMeta");
   const tbody = $("#devicesBody");
   const strip = $("#devicesGatewayStrip");
   try {
     const data = await api("/api/lan/devices/refresh");
+    if (paintDevicesDisabled(data, meta, tbody)) {
+      bindTooltips(tbody);
+      return;
+    }
     const devices = data.devices || [];
     if (strip) {
       strip.innerHTML = data.gateway
@@ -2017,37 +2333,40 @@ async function refreshDevicesPanel() {
         : `<span class="muted">No gateway detected</span>`;
     }
     if (meta) {
-      meta.textContent = `${devices.length} devices · passive neighbor cache`;
+      meta.textContent = data.warning || `${devices.length} devices · ${data.disclaimer || "passive neighbor cache"}`;
     }
     if (tbody) {
-      tbody.innerHTML =
-        devices
-          .map((d) => {
-            const pills = [];
-            if (d.online) pills.push(`<span class="pill pill-ok">online</span>`);
-            else pills.push(`<span class="pill pill-unknown">offline</span>`);
-            if (d.gateway) pills.push(`<span class="pill">gw</span>`);
-            if (d.source === "active_scan") pills.push(`<span class="pill">active scan</span>`);
-            const mac = escapeHtml(d.mac || "");
-            return `<tr data-mac="${mac}">
-              <td>${pills.join(" ")}</td>
-              <td>${escapeHtml(d.ip || "")}</td>
-              <td>${mac}</td>
-              <td>${escapeHtml(d.vendor || "")}</td>
-              <td><input type="text" class="device-alias" data-mac="${mac}" value="${escapeHtml(d.alias || "")}" maxlength="120" aria-label="Alias" /></td>
-              <td>
-                <button type="button" class="btn btn-secondary device-wol" data-mac="${mac}">WOL</button>
-                <button type="button" class="btn btn-secondary device-router" data-mac="${mac}">Notify router</button>
-                <button type="button" class="btn btn-secondary device-scan" data-ip="${escapeHtml(d.ip || "")}">Scan</button>
-                <button type="button" class="btn btn-secondary device-filter" data-ip="${escapeHtml(d.ip || "")}">Connections</button>
-              </td>
-            </tr>`;
-          })
-          .join("") || `<tr><td colspan="6" class="muted">No devices yet — click Refresh</td></tr>`;
+      tbody.innerHTML = devices.map(devicesRowHtml).join("") ||
+        `<tr><td colspan="${DEVICES_COLS}" class="muted">No devices yet — click Refresh</td></tr>`;
+      bindTooltips(tbody);
     }
   } catch (e) {
     if (meta) meta.textContent = e.message || "Devices failed";
   }
+}
+
+function topologyNodeKey(node, index) {
+  return String(node.ip || node.label || index);
+}
+
+function topologyShortLabel(node) {
+  return String(node.gateway ? "Gateway" : node.label || node.ip || "Node").slice(0, 18);
+}
+
+function topologyAvoidLabel(sel, positions) {
+  const candidates = [
+    { x: sel.x, y: sel.y + sel.r + 16, anchor: "middle" },
+    { x: sel.x, y: sel.y - sel.r - 8, anchor: "middle" },
+    { x: sel.x + sel.r + 10, y: sel.y + 4, anchor: "start" },
+    { x: sel.x - sel.r - 10, y: sel.y + 4, anchor: "end" },
+  ];
+  for (const c of candidates) {
+    const hit = positions.some(
+      (p) => p.index !== sel.index && Math.hypot(p.x - c.x, p.y - c.y) < (p.r || 10) + 10
+    );
+    if (!hit) return c;
+  }
+  return candidates[0];
 }
 
 function topologyLayout(nodes, edges) {
@@ -2059,8 +2378,8 @@ function topologyLayout(nodes, edges) {
   let rootIndex = nodes.findIndex((node) => node.gateway);
   if (rootIndex < 0) {
     rootIndex = nodes.reduce((best, node, index) => {
-      const score = degree.get(String(node.ip || node.label || "")) || 0;
-      const bestScore = degree.get(String(nodes[best].ip || nodes[best].label || "")) || 0;
+      const score = degree.get(topologyNodeKey(node, index)) || 0;
+      const bestScore = degree.get(topologyNodeKey(nodes[best], best)) || 0;
       return score > bestScore ? index : best;
     }, 0);
   }
@@ -2212,12 +2531,20 @@ function bindTopoExpands(root) {
 }
 
 function topologyGraphHtml(nodes, edges) {
-  if (!nodes.length) return `<div class="topo-empty muted">No topology nodes yet</div>`;
+  if (!nodes.length) {
+    topoPositions = [];
+    return `<div class="topo-empty muted">No topology nodes yet</div>`;
+  }
   const layout = topologyLayout(nodes, edges);
   const byId = new Map();
   for (const point of layout.positions) {
-    byId.set(String(point.node.ip || point.node.label || point.index), point);
+    byId.set(topologyNodeKey(point.node, point.index), point);
   }
+  topoPositions = layout.positions.map((p) => ({
+    ...p,
+    key: topologyNodeKey(p.node, p.index),
+    r: p.index === layout.rootIndex ? 16 : 10,
+  }));
   const lines = (edges || [])
     .map((edge) => {
       const from = byId.get(String(edge.from));
@@ -2230,13 +2557,16 @@ function topologyGraphHtml(nodes, edges) {
   const nodeGroups = layout.positions
     .map(({ node, index, x, y }) => {
       const isRoot = index === layout.rootIndex;
+      const key = topologyNodeKey(node, index);
+      const isSnmp = node.source === "snmp" || node.source === "lldp-stub";
       const tip = topologyNodeTip(node);
-      const rootLabel = isRoot ? String(node.gateway ? "Gateway" : node.label || node.ip || "Root").slice(0, 18) : "";
+      const r = isRoot ? 16 : 10;
+      const snmpFill = isSnmp && node.ok ? ' style="fill:var(--amber)"' : "";
       return `<g class="topo-node-group has-tip" tabindex="0" role="img"
+        data-topo-key="${escapeHtml(key)}"
         aria-label="${escapeHtml(tip)}" data-tip-text="${escapeHtml(tip)}">
-        <circle cx="${x}" cy="${y}" r="${isRoot ? 16 : 10}"
-          class="topo-node ${node.ok ? "ok" : "bad"}${isRoot ? " root" : ""}"></circle>
-        ${isRoot ? `<text x="${x}" y="${y + 30}" text-anchor="middle" class="topo-label">${escapeHtml(rootLabel)}</text>` : ""}
+        <circle cx="${x}" cy="${y}" r="${r}"${snmpFill}
+          class="topo-node ${node.ok ? "ok" : "bad"}${isRoot ? " root" : ""}${isSnmp ? " snmp" : ""}"></circle>
       </g>`;
     })
     .join("");
@@ -2245,8 +2575,159 @@ function topologyGraphHtml(nodes, edges) {
       <span>${nodes.length} devices · ${online} online</span>
       <span class="muted">Hover or focus a node for details</span>
     </div>
+    <div class="topo-viewport">
     <svg viewBox="0 0 ${layout.width} ${layout.height}" role="img"
-      aria-label="Radial topology map with ${nodes.length} nodes">${lines}${nodeGroups}</svg>`;
+      aria-label="Radial topology map with ${nodes.length} nodes">${lines}${nodeGroups}</svg>
+    </div>`;
+}
+
+function paintTopoSelectedLabel() {
+  const svg = $("#topoGraph")?.querySelector("svg");
+  if (!svg) return;
+  svg.querySelectorAll("text.topo-label").forEach((t) => t.remove());
+  if (!topoSelectedKey) return;
+  const sel = topoPositions.find((p) => p.key === topoSelectedKey);
+  if (!sel) return;
+  const pos = topologyAvoidLabel(sel, topoPositions);
+  const el = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  el.setAttribute("x", String(pos.x));
+  el.setAttribute("y", String(pos.y));
+  el.setAttribute("text-anchor", pos.anchor);
+  el.setAttribute("class", "topo-label");
+  el.textContent = topologyShortLabel(sel.node);
+  svg.appendChild(el);
+}
+
+function selectTopoNode(key, { scrollRow = true } = {}) {
+  topoSelectedKey = key || null;
+  const graph = $("#topoGraph");
+  const tbody = $("#topoBody");
+  graph?.querySelectorAll(".topo-node-group").forEach((g) => {
+    const on = !!topoSelectedKey && g.dataset.topoKey === topoSelectedKey;
+    g.classList.toggle("is-selected", on);
+    g.querySelector(".topo-node")?.classList.toggle("selected", on);
+  });
+  tbody?.querySelectorAll(".topo-row").forEach((tr) => {
+    tr.classList.toggle("is-selected", !!topoSelectedKey && tr.dataset.topoKey === topoSelectedKey);
+  });
+  paintTopoSelectedLabel();
+  if (scrollRow && topoSelectedKey) {
+    tbody?.querySelector(".topo-row.is-selected")?.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function applyTopoTransform(instant) {
+  const vp = $("#topoGraph")?.querySelector(".topo-viewport");
+  if (!vp) return;
+  vp.style.transition = instant || prefersReducedMotion() ? "none" : "";
+  vp.style.transform = `translate(${topoCam.x}px, ${topoCam.y}px) scale(${topoCam.k})`;
+}
+
+function topoZoomAt(clientX, clientY, factor) {
+  const graph = $("#topoGraph");
+  if (!graph?.querySelector(".topo-viewport")) return;
+  const r = graph.getBoundingClientRect();
+  const mx = clientX - r.left;
+  const my = clientY - r.top;
+  const next = Math.min(4, Math.max(0.4, topoCam.k * factor));
+  const ratio = next / topoCam.k;
+  topoCam.x = mx - (mx - topoCam.x) * ratio;
+  topoCam.y = my - (my - topoCam.y) * ratio;
+  topoCam.k = next;
+  applyTopoTransform(prefersReducedMotion());
+}
+
+function bindTopoSelect() {
+  const graph = $("#topoGraph");
+  if (graph && !graph.dataset.boundSelect) {
+    graph.dataset.boundSelect = "1";
+    graph.addEventListener("click", (e) => {
+      const g = e.target.closest(".topo-node-group");
+      if (!g || !graph.contains(g)) return;
+      selectTopoNode(g.dataset.topoKey);
+    });
+    graph.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const g = e.target.closest(".topo-node-group");
+      if (!g) return;
+      e.preventDefault();
+      selectTopoNode(g.dataset.topoKey);
+    });
+  }
+  const tbody = $("#topoBody");
+  if (tbody && !tbody.dataset.boundSelect) {
+    tbody.dataset.boundSelect = "1";
+    tbody.addEventListener("click", (e) => {
+      const tr = e.target.closest(".topo-row");
+      if (!tr || !tbody.contains(tr)) return;
+      selectTopoNode(tr.dataset.topoKey, { scrollRow: false });
+    });
+    tbody.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      if (e.target.closest(".topo-expand")) return;
+      const tr = e.target.closest(".topo-row");
+      if (!tr) return;
+      e.preventDefault();
+      selectTopoNode(tr.dataset.topoKey, { scrollRow: false });
+    });
+  }
+}
+
+function bindTopoPanZoom() {
+  const graph = $("#topoGraph");
+  if (graph && !graph.dataset.boundPanZoom) {
+    graph.dataset.boundPanZoom = "1";
+    graph.classList.add("is-zoomable");
+    let pan = null;
+    graph.addEventListener(
+      "wheel",
+      (e) => {
+        if (prefersReducedMotion()) return;
+        if (!e.target.closest(".topo-viewport")) return;
+        e.preventDefault();
+        topoZoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.25 : 0.8);
+      },
+      { passive: false }
+    );
+    graph.addEventListener("pointerdown", (e) => {
+      if (prefersReducedMotion()) return;
+      if (e.button !== 0) return;
+      if (e.target.closest(".topo-node-group")) return;
+      if (!e.target.closest(".topo-viewport")) return;
+      pan = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: topoCam.x, oy: topoCam.y };
+      graph.setPointerCapture(e.pointerId);
+    });
+    graph.addEventListener("pointermove", (e) => {
+      if (!pan || e.pointerId !== pan.id) return;
+      topoCam.x = pan.ox + (e.clientX - pan.sx);
+      topoCam.y = pan.oy + (e.clientY - pan.sy);
+      graph.classList.add("is-panning");
+      applyTopoTransform(true);
+    });
+    const endPan = (e) => {
+      if (!pan || e.pointerId !== pan.id) return;
+      pan = null;
+      graph.classList.remove("is-panning");
+    };
+    graph.addEventListener("pointerup", endPan);
+    graph.addEventListener("pointercancel", endPan);
+  }
+  const zoom = $("#topoZoom");
+  if (zoom && !zoom.dataset.boundZoom) {
+    zoom.dataset.boundZoom = "1";
+    const centerZoom = (factor) => {
+      const g = $("#topoGraph");
+      if (!g) return;
+      const box = g.getBoundingClientRect();
+      topoZoomAt(box.left + box.width / 2, box.top + box.height / 2, factor);
+    };
+    $("#topoZoomIn")?.addEventListener("click", () => centerZoom(1.25));
+    $("#topoZoomOut")?.addEventListener("click", () => centerZoom(0.8));
+    $("#topoZoomReset")?.addEventListener("click", () => {
+      topoCam = { k: 1, x: 0, y: 0 };
+      applyTopoTransform(prefersReducedMotion());
+    });
+  }
 }
 
 async function refreshTopologyPanel() {
@@ -2269,7 +2750,7 @@ async function refreshTopologyPanel() {
             const tip = topologyNodeTip(n);
             const detailId = `topo-detail-${idx}`;
             const status = n.ok ? "ok" : n.error || "fail";
-            return `<tr class="topo-row has-tip" tabindex="0" data-tip-text="${escapeHtml(tip)}">
+            return `<tr class="topo-row has-tip" tabindex="0" data-topo-key="${escapeHtml(topologyNodeKey(n, idx))}" data-tip-text="${escapeHtml(tip)}">
             <td><button type="button" class="row-expand topo-expand" aria-expanded="false" aria-controls="${detailId}" aria-label="Show node details">▸</button></td>
             <td>${escapeHtml(n.ip || "")}</td>
             <td>${escapeHtml(n.label || "")}</td>
@@ -2291,6 +2772,16 @@ async function refreshTopologyPanel() {
       const nodes = data.nodes || [];
       graph.innerHTML = topologyGraphHtml(nodes, data.edges || []);
       bindTooltips(graph);
+      bindTopoPanZoom();
+      bindTopoSelect();
+      applyTopoTransform(true);
+      const keys = new Set(nodes.map((n, i) => topologyNodeKey(n, i)));
+      if (topoSelectedKey && keys.has(topoSelectedKey)) {
+        selectTopoNode(topoSelectedKey, { scrollRow: false });
+      } else {
+        topoSelectedKey = null;
+        paintTopoSelectedLabel();
+      }
     }
   } catch (e) {
     if (meta) meta.textContent = e.message || "Topology failed";
@@ -2324,7 +2815,21 @@ async function refreshSnifferPanel() {
           </tr>`;
         })
         .join("") || `<tr><td colspan="6" class="muted">No events</td></tr>`;
+    bindSnifferRowTips(tbody);
   }
+}
+
+function bindSnifferRowTips(tbody) {
+  if (!tbody) return;
+  tbody.querySelectorAll("tr").forEach((tr) => {
+    const tds = tr.querySelectorAll("td");
+    if (tds.length < 6) return;
+    const ev = (tds[1].textContent || "").trim();
+    tds[1].classList.add("has-tip");
+    tds[1].tabIndex = 0;
+    tds[1].setAttribute("data-tip-text", ev ? `Flow ${ev} — snapshot metadata, not a packet capture.` : "Event type.");
+  });
+  bindTooltips(tbody);
 }
 
 function startSniffPoll() {
@@ -2367,6 +2872,7 @@ async function runScan() {
             </tr>`;
           })
           .join("") || `<tr><td colspan="3" class="muted">No open ports in top set</td></tr>`;
+      bindScanRowTips(tbody);
     }
     if (meta) {
       meta.textContent = data.ok
@@ -2376,6 +2882,26 @@ async function runScan() {
   } catch (e) {
     if (meta) meta.textContent = e.message || "Scan failed";
   }
+}
+
+function bindScanRowTips(tbody) {
+  if (!tbody) return;
+  tbody.querySelectorAll("tr").forEach((tr) => {
+    const tds = tr.querySelectorAll("td");
+    if (tds.length < 3) return;
+    const port = (tds[0].textContent || "").trim();
+    const cve = (tds[2].textContent || "").trim();
+    tds[0].classList.add("has-tip");
+    tds[0].tabIndex = 0;
+    tds[0].setAttribute("data-tip-text", port ? `Open port ${port} on a private/known-device target.` : "Port.");
+    tds[2].classList.add("has-tip");
+    tds[2].tabIndex = 0;
+    tds[2].setAttribute(
+      "data-tip-text",
+      !cve || cve === "—" ? "No advisory for this port." : `CVE advisory (stale/offline): ${cve}`
+    );
+  });
+  bindTooltips(tbody);
 }
 
 function setupConnectionsPanel() {
@@ -2390,6 +2916,24 @@ function setupConnectionsPanel() {
   const established = $("#connEstablishedOnly");
   if (established) {
     established.addEventListener("change", () => refreshConnectionsPanel());
+  }
+  const resolveDns = $("#connResolveDns");
+  if (resolveDns) {
+    resolveDns.addEventListener("change", async () => {
+      const on = !!resolveDns.checked;
+      const formBox = $("#settingsResolveDns");
+      if (formBox) formBox.checked = on;
+      try {
+        await api("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ connections_resolve_dns: on }),
+        });
+      } catch (e) {
+        console.error(e);
+      }
+      refreshConnectionsPanel();
+    });
   }
   const auto = $("#connAutoRefresh");
   if (auto) auto.addEventListener("change", () => syncConnAutoRefresh());
@@ -2491,6 +3035,57 @@ function setupConnectionsPanel() {
       const filterBtn = e.target.closest(".device-filter");
       if (filterBtn) {
         setConnView("connections");
+        return;
+      }
+      const pingBtn = e.target.closest(".device-ping");
+      if (pingBtn) {
+        const ip = pingBtn.getAttribute("data-ip");
+        pingBtn.disabled = true;
+        const meta = $("#devicesMeta");
+        if (meta) meta.textContent = `Ping ${ip}…`;
+        try {
+          const res = await api("/api/lan/devices/ping", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ip }),
+          });
+          const msg = res.ok
+            ? `Ping ${res.ip}: ${res.latency_ms != null ? `${Math.round(res.latency_ms)} ms` : "ok"}`
+            : res.error || "Ping failed";
+          if (meta) meta.textContent = msg;
+          alert(msg);
+        } catch (err) {
+          alert(err.message || "Ping failed");
+        } finally {
+          pingBtn.disabled = false;
+        }
+        return;
+      }
+      const trBtn = e.target.closest(".device-traceroute");
+      if (trBtn) {
+        const ip = trBtn.getAttribute("data-ip");
+        trBtn.disabled = true;
+        const meta = $("#devicesMeta");
+        if (meta) meta.textContent = `Traceroute ${ip}…`;
+        try {
+          const res = await api("/api/lan/devices/traceroute", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ip }),
+          });
+          const hops = (res.hops || []).map((h) => {
+            if (h.timeout || !h.ip) return `${h.hop} *`;
+            const rtt = h.rtt_ms != null ? `${Math.round(h.rtt_ms)} ms` : "";
+            return `${h.hop} ${h.ip} ${rtt}`.trim();
+          });
+          const msg = hops.length ? hops.join("\n") : (res.error || "No hops");
+          if (meta) meta.textContent = hops.length ? `Traceroute ${res.ip || ip}: ${hops.length} hops` : (res.error || "Traceroute failed");
+          alert(msg);
+        } catch (err) {
+          alert(err.message || "Traceroute failed");
+        } finally {
+          trBtn.disabled = false;
+        }
       }
     });
   }
@@ -2498,6 +3093,10 @@ function setupConnectionsPanel() {
   if (topoRefresh) topoRefresh.addEventListener("click", () => refreshTopologyPanel());
   const topoStop = $("#topoStop");
   if (topoStop) topoStop.addEventListener("click", () => api("/api/lan/topology/stop"));
+  bindTopoPanZoom();
+  bindTopoSelect();
+  const topoLegend = $("#topoLegend");
+  if (topoLegend) bindTooltips(topoLegend);
   const sniffStart = $("#sniffStart");
   if (sniffStart) {
     sniffStart.addEventListener("click", async () => {
@@ -2553,10 +3152,17 @@ function renderConnAdapters(adapters) {
     return;
   }
   strip.innerHTML = rows.map((a) => {
-    const rx = a.rx_mbps != null ? fmtMbps(a.rx_mbps) : "-";
-    const tx = a.tx_mbps != null ? fmtMbps(a.tx_mbps) : "-";
+    const rxB = fmtBytes(a.rx_bytes);
+    const txB = fmtBytes(a.tx_bytes);
+    const first = a.rx_mbps == null;
+    const rates = first
+      ? "since last refresh"
+      : `↓${fmtMbps(a.rx_mbps)} ↑${fmtMbps(a.tx_mbps)} Mbps`;
     const label = a.name || "Adapter";
-    return `<span class="meta-chip has-tip" tabindex="0" data-tip="conn-adapter-mbps"><span class="meta-label">${escapeHtml(label)}</span> ↓${rx} ↑${tx} Mbps</span>`;
+    const tip = first
+      ? `${label}: ${rxB} received, ${txB} sent (NIC counters). Rate since last refresh — first sample.`
+      : `${label}: ${rxB} received, ${txB} sent. ↓${fmtMbps(a.rx_mbps)} ↑${fmtMbps(a.tx_mbps)} Mbps from consecutive snapshots.`;
+    return `<span class="meta-chip has-tip" tabindex="0" data-tip-text="${escapeHtml(tip)}"><span class="meta-label">${escapeHtml(label)}</span> ↓${rxB} ↑${txB} · ${rates}</span>`;
   }).join("");
   bindTooltips(strip);
 }
@@ -2603,6 +3209,25 @@ function connStateTip(state, proto) {
     : "TCP connection state.";
 }
 
+function connDeltaClass(r) {
+  const d = String(r.delta || r._delta || "").toLowerCase();
+  if (d === "new" || r.is_new) return "conn-delta-new";
+  if (d === "changed" || d === "state-changed" || r.state_changed) return "conn-delta-changed";
+  if (d === "dropped") return "conn-delta-dropped";
+  return "";
+}
+
+function connRemoteTip(r) {
+  const remote = r.remote || "";
+  const name = r.remote_name || r.rdns || r.resolved || "";
+  const portName = r.portName || r.port_name || "";
+  if (!remote || remote === "-") return "Remote address:port — none (typical for UDP / listening sockets).";
+  const bits = [`Remote ${remote}`];
+  if (name) bits.push(`DNS ${name}`);
+  if (portName) bits.push(portName);
+  return bits.join(" · ");
+}
+
 function renderConnRows(rows) {
   const tbody = $("#connBody");
   if (!tbody) return;
@@ -2613,7 +3238,10 @@ function renderConnRows(rows) {
     const pid = r.pid != null ? String(r.pid) : "-";
     const local = r.local || "";
     const remote = r.remote || "";
+    const resolved = r.resolved || "";
     const state = r.state || "";
+    const service = r.serviceName || r.service || "";
+    const deltaCls = connDeltaClass(r);
     const procTip = unresolved
       ? tipCellAttr(
           "Process name unavailable for this PID (?). Your own processes should resolve without admin; other users or protected system processes may need Run as administrator."
@@ -2623,20 +3251,19 @@ function renderConnRows(rows) {
     const localTip = tipCellAttr(
       local ? `Local address:port — ${local}` : "Local address:port on this machine."
     );
-    const remoteTip = tipCellAttr(
-      !remote || remote === "-"
-        ? "Remote address:port — none (typical for UDP / listening sockets)."
-        : `Remote address:port — ${remote}`
-    );
-    return `<tr>
+    const remoteLabel = resolved && remote && remote !== "-"
+      ? `${remote} (${resolved})`
+      : remote;
+    return `<tr class="${deltaCls}">
       <td${tipCellAttr(connProtoTip(proto))}>${escapeHtml(proto)}</td>
       <td><span${procTip}>${escapeHtml(proc)}</span></td>
       <td${pidTip}>${escapeHtml(pid)}</td>
+      <td${tipCellAttr(service ? `Service: ${service}` : "No Windows service for this process.")}>${escapeHtml(service)}</td>
       <td${localTip}>${escapeHtml(local)}</td>
-      <td${remoteTip}>${escapeHtml(remote)}</td>
+      <td${tipCellAttr(connRemoteTip(r))}>${escapeHtml(remoteLabel)}</td>
       <td${tipCellAttr(connStateTip(state, proto))}>${escapeHtml(state)}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="6" class="muted">No connections in this snapshot</td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="muted">No connections in this snapshot</td></tr>`;
   bindTooltips(tbody);
 }
 
@@ -2647,7 +3274,7 @@ async function refreshConnectionsPanel() {
   const table = tbody?.closest("table");
   const establishedOnly = !!$("#connEstablishedOnly")?.checked;
   if (meta) meta.textContent = "Loading…";
-  if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="muted">Loading…</td></tr>`;
+  if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="muted">Loading…</td></tr>`;
   if (table) table.setAttribute("aria-busy", "true");
   if (refreshBtn) refreshBtn.disabled = true;
   try {
@@ -2662,13 +3289,13 @@ async function refreshConnectionsPanel() {
     if (meta) meta.textContent = bits.join(" · ") || (data.ok ? "Ready" : "Unavailable");
     if (!data.ok && tbody && !(data.connections || []).length) {
       tbody.innerHTML =
-        `<tr><td colspan="6" class="muted state-error">${escapeHtml(data.warning || data.error || "Snapshot failed")}</td></tr>`;
+        `<tr><td colspan="7" class="muted state-error">${escapeHtml(data.warning || data.error || "Snapshot failed")}</td></tr>`;
     }
   } catch (e) {
     console.error(e);
     if (tbody) {
       tbody.innerHTML =
-        `<tr><td colspan="6" class="muted state-error">Load failed: ${escapeHtml(e.message || e)}</td></tr>`;
+        `<tr><td colspan="7" class="muted state-error">Load failed: ${escapeHtml(e.message || e)}</td></tr>`;
     }
     if (meta) meta.textContent = "Load failed";
     renderConnAdapters([]);
@@ -2722,7 +3349,7 @@ function renderUsageLiveRows(apps, { controlEnabled = false } = {}) {
       action = `<button type="button" class="btn btn-secondary usage-block" data-exe="${escapeHtml(exe)}" data-app-key="${key}" ${exe ? "" : "disabled"}>Block</button>`;
     }
     return `<tr data-app-key="${key}">
-      <td title="${escapeHtml(exe)}">${label}</td>
+      <td${tipCellAttr(usageAppTip(a))}>${label}</td>
       <td>${fmtMbps(a.rate_in_mbps)}</td>
       <td>${fmtMbps(a.rate_out_mbps)}</td>
       <td>${fmtBytes(a.bytes_in)}</td>
@@ -2731,6 +3358,17 @@ function renderUsageLiveRows(apps, { controlEnabled = false } = {}) {
       <td>${action}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="7" class="muted">No active apps with traffic</td></tr>`;
+  bindTooltips(tbody);
+}
+
+function usageAppTip(a) {
+  const name = a.name || a.display_name || a.app_key || "?";
+  const exe = a.exe || a.exe_path || "";
+  const bits = [`App: ${name}`];
+  if (exe) bits.push(exe);
+  if (a.session_origin || a.origin) bits.push(`Session origin: ${a.session_origin || a.origin}`);
+  else bits.push("Session totals since helper start (or last refresh if origin not stored).");
+  return bits.join(" · ");
 }
 
 function resetUsageTrendChart() {
@@ -2783,6 +3421,7 @@ function ensureUsageTrend(buckets) {
     usageTrendChart.data.datasets[1].data = up;
     usageTrendChart.options.scales.y.suggestedMax = yMax;
     fitChartToBox(usageTrendChart);
+    wireUsageChartTip();
     return;
   }
   usageTrendChart = new Chart(ctx, {
@@ -2804,6 +3443,20 @@ function ensureUsageTrend(buckets) {
   });
   usageTrendChart.options.scales.y.suggestedMax = yMax;
   fitChartToBox(usageTrendChart);
+  wireUsageChartTip();
+}
+
+function wireUsageChartTip() {
+  if (!usageTrendChart) return;
+  wireChartTip(usageTrendChart, (index, chart) => {
+    const title = chart.data.labels?.[index] ?? "";
+    const lines = (chart.data.datasets || []).map((ds) => {
+      const v = ds.data?.[index];
+      if (v == null || Number.isNaN(Number(v))) return `${ds.label}: -`;
+      return `${ds.label}: ${v} MB`;
+    });
+    return { title, lines };
+  });
 }
 
 function paintUsageHelperStatus(st) {
@@ -3049,6 +3702,33 @@ function renderSpeedHistory(rows) {
       <td>${link}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="8" class="muted">No speed tests yet</td></tr>`;
+  bindSpeedHistoryTips(tbody);
+}
+
+function bindSpeedHistoryTips(tbody) {
+  if (!tbody) return;
+  tbody.querySelectorAll("tr").forEach((tr) => {
+    const tds = tr.querySelectorAll("td");
+    if (tds.length < 8) return;
+    const server = (tds[6].textContent || "").trim();
+    const jitter = (tds[4].textContent || "").trim();
+    const loss = (tds[5].textContent || "").trim();
+    const link = tds[7].querySelector("a");
+    tds[6].classList.add("has-tip");
+    tds[6].tabIndex = 0;
+    tds[6].setAttribute("data-tip-text", server ? `Ookla server: ${server}` : "No server recorded.");
+    tds[4].classList.add("has-tip");
+    tds[4].tabIndex = 0;
+    tds[4].setAttribute("data-tip-text", `Jitter ${jitter || "-"} ms on this test.`);
+    tds[5].classList.add("has-tip");
+    tds[5].tabIndex = 0;
+    tds[5].setAttribute("data-tip-text", `Packet loss ${loss || "-"}.`);
+    if (link) {
+      link.classList.add("has-tip");
+      link.setAttribute("data-tip-text", `Result URL: ${link.href}`);
+    }
+  });
+  bindTooltips(tbody);
 }
 
 async function refreshSpeed() {
@@ -3174,6 +3854,11 @@ async function loadSettings() {
   if (form.connections_enabled) {
     form.connections_enabled.checked = s.connections_enabled !== false;
   }
+  if (form.connections_resolve_dns) {
+    form.connections_resolve_dns.checked = !!s.connections_resolve_dns;
+  }
+  const toolbarResolve = $("#connResolveDns");
+  if (toolbarResolve) toolbarResolve.checked = !!s.connections_resolve_dns;
   if (form.usage_monitoring) {
     form.usage_monitoring.checked = !!s.usage_monitoring;
   }
@@ -3453,6 +4138,7 @@ function setupForms() {
       connections_enabled: form.connections_enabled
         ? form.connections_enabled.checked
         : true,
+      connections_resolve_dns: !!(form.connections_resolve_dns && form.connections_resolve_dns.checked),
       usage_monitoring: form.usage_monitoring
         ? form.usage_monitoring.checked
         : false,
@@ -3512,6 +4198,8 @@ function setupForms() {
         body: JSON.stringify({ paused: !!form.paused.checked }),
       });
       if (form.autostart) form.autostart.checked = !!saved.autostart;
+      const toolbarResolve = $("#connResolveDns");
+      if (toolbarResolve) toolbarResolve.checked = !!saved.connections_resolve_dns;
       const hint = $("#autostartHint");
       if (body.autostart && !saved.autostart) {
         $("#settingsMsg").textContent = "Saved, but Start with Windows failed. Try the Setup installer";
@@ -3587,6 +4275,8 @@ const tipController = {
   openTimer: null,
   skipDelay: false,
   delayMs: 380,
+  skipResetMs: 360,
+  skipResetTimer: null,
 };
 
 function ensureTipEl() {
@@ -3627,10 +4317,17 @@ function positionTip(anchor) {
   tip.style.visibility = "";
 }
 
+function applyTipInstant(on) {
+  const tip = ensureTipEl();
+  if (on) tip.setAttribute("data-instant", "");
+  else tip.removeAttribute("data-instant");
+}
+
 function showTip(anchor) {
   const payload = tipPayload(anchor);
   if (!payload) return;
   const tip = ensureTipEl();
+  applyTipInstant(!!tipController.skipDelay);
   tip.hidden = false;
   tip.innerHTML = payload.name
     ? `<span class="tip-name">${escapeHtml(payload.name)}</span><span class="tip-body">${escapeHtml(payload.meaning)}</span>`
@@ -3640,6 +4337,10 @@ function showTip(anchor) {
   positionTip(anchor);
   tip.classList.add("is-open");
   tipController.skipDelay = true;
+  if (tipController.skipResetTimer) {
+    clearTimeout(tipController.skipResetTimer);
+    tipController.skipResetTimer = null;
+  }
 }
 
 function hideTip() {
@@ -3656,10 +4357,20 @@ function hideTip() {
     tipController.anchor.removeAttribute("aria-describedby");
     tipController.anchor = null;
   }
+  if (tipController.skipResetTimer) clearTimeout(tipController.skipResetTimer);
+  tipController.skipResetTimer = setTimeout(() => {
+    tipController.skipDelay = false;
+    applyTipInstant(false);
+    tipController.skipResetTimer = null;
+  }, tipController.skipResetMs || 360);
 }
 
 function scheduleTip(anchor) {
   if (tipController.openTimer) clearTimeout(tipController.openTimer);
+  if (tipController.skipResetTimer) {
+    clearTimeout(tipController.skipResetTimer);
+    tipController.skipResetTimer = null;
+  }
   const delay = tipController.skipDelay ? 0 : tipController.delayMs;
   tipController.openTimer = setTimeout(() => showTip(anchor), delay);
 }

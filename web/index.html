@@ -61,9 +61,12 @@
             <button type="button" class="text-link adapter-link" data-goto-tab="connections" id="viewConnectionsLink" hidden>View connections</button>
           </div>
           <div class="status-hero-meta">
-            <div class="meta-chip"><span class="meta-label">Open</span> <span id="openCount">0</span></div>
-            <div class="meta-chip"><span class="meta-label">Gateway</span> <span id="heroGateway">-</span></div>
-            <div class="meta-chip"><span class="meta-label">Latency</span> <span id="heroLatency">-</span></div>
+            <div class="meta-chip has-tip pressable" tabindex="0" data-tip="hero-open"><span class="meta-label">Open</span> <span id="openCount">0</span></div>
+            <div class="meta-chip has-tip pressable" tabindex="0" data-tip="hero-gw"><span class="meta-label">Gateway</span> <span id="heroGateway">-</span></div>
+            <div class="meta-chip has-tip pressable" tabindex="0" data-tip="hero-latency"><span class="meta-label">Latency</span> <span id="heroLatency">-</span></div>
+            <div class="meta-chip has-tip pressable" id="httpCertChip" hidden tabindex="0" data-tip="http-cert">
+              <span class="meta-label">TLS</span> <span id="httpCertDays">-</span>
+            </div>
           </div>
         </div>
 
@@ -71,19 +74,19 @@
           <div class="quality-strip" id="qualityStrip">
             <div class="quality-kicker">Live quality</div>
             <div class="quality-body">
-              <div class="meta-chip quality-chip">
+              <div class="meta-chip quality-chip has-tip pressable" tabindex="0" data-tip="quality-loss">
                 <span class="meta-label">Loss</span>
                 <span id="qualityLoss">-</span>
               </div>
-              <div class="meta-chip quality-chip">
+              <div class="meta-chip quality-chip has-tip pressable" tabindex="0" data-tip="quality-jitter">
                 <span class="meta-label">Jitter</span>
                 <span id="qualityJitter">-</span>
               </div>
-              <div class="meta-chip quality-chip">
+              <div class="meta-chip quality-chip has-tip pressable" tabindex="0" data-tip="quality-avg">
                 <span class="meta-label">Avg</span>
                 <span id="qualityAvg">-</span>
               </div>
-              <div class="meta-chip quality-chip">
+              <div class="meta-chip quality-chip has-tip pressable" tabindex="0" data-tip="quality-last">
                 <span class="meta-label">Last</span>
                 <span id="qualityLast">-</span>
               </div>
@@ -99,11 +102,11 @@
                 <div class="provider-server muted" id="providerServer"></div>
               </div>
               <div class="provider-meta">
-                <div class="meta-chip provider-chip" id="providerPingChip" hidden>
+                <div class="meta-chip provider-chip has-tip pressable" id="providerPingChip" hidden tabindex="0" data-tip="provider-ping">
                   <span class="meta-label">Ping</span>
                   <span id="providerPing">-</span>
                 </div>
-                <div class="meta-chip provider-chip" id="providerWhenChip" hidden>
+                <div class="meta-chip provider-chip has-tip pressable" id="providerWhenChip" hidden tabindex="0" data-tip="provider-when">
                   <span class="meta-label">Measured</span>
                   <span id="providerWhen">-</span>
                 </div>
@@ -139,33 +142,49 @@
       </div>
 
       <div class="stats stats-dense">
-        <div class="stat">
+        <div class="stat has-tip pressable" tabindex="0" data-tip="stat-streak">
           <div class="stat-label">Uptime streak</div>
           <div class="stat-value" id="uptimeStreak">-</div>
           <div class="stat-sub" id="uptimeSub"></div>
         </div>
-        <div class="stat">
+        <div class="stat has-tip pressable" tabindex="0" data-tip="stat-24h">
           <div class="stat-label">24h downtime</div>
           <div class="stat-value" id="down24">-</div>
           <div class="stat-sub" id="down24pct"></div>
           <div class="stat-split" id="split24"></div>
         </div>
-        <div class="stat">
+        <div class="stat has-tip pressable" tabindex="0" data-tip="stat-7d">
           <div class="stat-label">7d downtime</div>
           <div class="stat-value" id="down7">-</div>
           <div class="stat-sub" id="down7pct"></div>
           <div class="stat-split" id="split7"></div>
         </div>
-        <div class="stat">
+        <div class="stat has-tip pressable" id="stat30d" tabindex="0" data-tip="stat-30d">
+          <div class="stat-label" id="stat30dLabel">Observed downtime</div>
+          <div class="stat-value" id="down30">-</div>
+          <div class="stat-sub" id="down30pct"></div>
+          <div class="stat-split" id="split30"></div>
+        </div>
+        <div class="stat has-tip pressable" tabindex="0" data-tip="stat-events">
           <div class="stat-label">Events (7d)</div>
           <div class="stat-value" id="events7">-</div>
           <div class="stat-sub" id="events7sub"></div>
         </div>
       </div>
 
+      <div class="uptime-bar-wrap" id="uptimeBar30Wrap">
+        <div class="section-head">
+          <h2 id="uptimeBar30Title">Uptime (observed)</h2>
+          <span class="muted" id="uptimeBar30Caption">Outage overlap — caption says 30d only if observed ≥ 30d</span>
+        </div>
+        <div class="uptime-bar" id="uptimeBar30" role="img" aria-label="Observed uptime versus downtime"></div>
+        <p class="muted uptime-bar-meta" id="uptimeBar30Meta"></p>
+      </div>
+
       <div class="charts-grid">
         <div class="chart-wrap">
-          <h2>Last 24h downtime by hour</h2>
+          <h2 id="sparkChartTitle">Last 24h downtime by hour</h2>
+          <p class="chart-caption muted" id="sparkChartCaption"></p>
           <div class="chart-box chart-box-sm">
             <canvas id="sparkChart" aria-label="Downtime by hour for the last 24 hours"></canvas>
           </div>
@@ -189,10 +208,10 @@
             <caption class="sr-only">Recent outages</caption>
             <thead>
               <tr>
-                <th scope="col">Type</th>
-                <th scope="col">Started</th>
-                <th scope="col">Duration</th>
-                <th scope="col">Notes</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="hist-type">Type</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="hist-started">Started</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="hist-duration">Duration</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="hist-notes">Notes</th>
               </tr>
             </thead>
             <tbody id="recentBody"></tbody>
@@ -250,11 +269,11 @@
           <thead>
             <tr>
               <th scope="col"><span class="sr-only">Incident details</span></th>
-              <th scope="col">Type</th>
-              <th scope="col">Started</th>
-              <th scope="col">Ended</th>
-              <th scope="col">Duration</th>
-              <th scope="col">Notes</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="hist-type">Type</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="hist-started">Started</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="hist-ended">Ended</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="hist-duration">Duration</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="hist-notes">Notes</th>
             </tr>
           </thead>
           <tbody id="outageBody"></tbody>
@@ -317,10 +336,10 @@
           <caption class="sr-only">Longest outages in the last 30 days</caption>
           <thead>
             <tr>
-              <th scope="col">Type</th>
-              <th scope="col">Started</th>
-              <th scope="col">Duration</th>
-              <th scope="col">Notes</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="hist-type">Type</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="hist-started">Started</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="hist-duration">Duration</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="hist-notes">Notes</th>
             </tr>
           </thead>
           <tbody id="longestBody"></tbody>
@@ -349,11 +368,11 @@
           <caption class="sr-only">Connectivity gaps inferred from Windows Event Logs</caption>
           <thead>
             <tr>
-              <th scope="col">Started</th>
-              <th scope="col">Ended</th>
-              <th scope="col">Duration</th>
-              <th scope="col">Source</th>
-              <th scope="col">Reason</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="log-started">Started</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="log-ended">Ended</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="log-duration">Duration</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="log-source">Source</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="log-reason">Reason</th>
             </tr>
           </thead>
           <tbody id="systemLogsBody"></tbody>
@@ -381,18 +400,23 @@
           <button type="button" class="btn btn-secondary" id="devicesExportJson">Export JSON</button>
           <span class="muted" id="devicesMeta" aria-live="polite"></span>
         </div>
+        <div class="stale-banner" id="devicesDisabledBanner" hidden role="status">
+          LAN Devices inventory is off. Enable it in Settings. ARP neighbors only — not a complete map.
+        </div>
         <div id="devicesGatewayStrip" class="conn-adapter-strip" aria-label="Gateway"></div>
         <div class="table-wrap">
           <table id="devicesTable">
             <caption class="sr-only">LAN devices</caption>
             <thead>
               <tr>
-                <th scope="col">Status</th>
-                <th scope="col">IP</th>
-                <th scope="col">MAC</th>
-                <th scope="col">Vendor</th>
-                <th scope="col">Alias</th>
-                <th scope="col">Actions</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="dev-status">Status</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="dev-ip">IP</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="dev-host">Hostname</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="dev-mac">MAC</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="dev-vendor">Vendor</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="dev-cat">Category</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="dev-alias">Alias</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="dev-actions">Actions</th>
               </tr>
             </thead>
             <tbody id="devicesBody"></tbody>
@@ -411,6 +435,10 @@
             <input type="checkbox" id="connAutoRefresh" />
             <span class="check-text">Auto-refresh (45s)</span>
           </label>
+          <label class="check has-tip" data-tip="conn-resolve">
+            <input type="checkbox" id="connResolveDns" />
+            <span class="check-text">Resolve DNS</span>
+          </label>
           <span class="muted" id="connMeta" aria-live="polite"></span>
         </div>
         <div id="connAdapterStrip" class="conn-adapter-strip" aria-label="Adapter throughput"></div>
@@ -422,6 +450,7 @@
                 <th scope="col" class="has-tip" tabindex="0" data-tip="conn-proto">Proto</th>
                 <th scope="col" class="has-tip" tabindex="0" data-tip="conn-process">Process</th>
                 <th scope="col" class="has-tip" tabindex="0" data-tip="conn-pid">PID</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="conn-service">Service</th>
                 <th scope="col" class="has-tip" tabindex="0" data-tip="conn-local">Local</th>
                 <th scope="col" class="has-tip" tabindex="0" data-tip="conn-remote">Remote</th>
                 <th scope="col" class="has-tip" tabindex="0" data-tip="conn-state">State</th>
@@ -458,13 +487,13 @@
             <caption class="sr-only">Live per-app usage</caption>
             <thead>
               <tr>
-                <th scope="col">App</th>
-                <th scope="col">↓ Mbps</th>
-                <th scope="col">↑ Mbps</th>
-                <th scope="col">Session in</th>
-                <th scope="col">Session out</th>
-                <th scope="col">Ignore</th>
-                <th scope="col">Block</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="usage-app">App</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="usage-down">↓ Mbps</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="usage-up">↑ Mbps</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="usage-sin">Session in</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="usage-sout">Session out</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="usage-ignore">Ignore</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="usage-block">Block</th>
               </tr>
             </thead>
             <tbody id="usageLiveBody"></tbody>
@@ -485,20 +514,31 @@
         <div class="filters conn-toolbar">
           <button type="button" class="btn btn-secondary" id="topoRefresh">Refresh topology</button>
           <button type="button" class="btn btn-secondary" id="topoStop">Cancel</button>
+          <div class="topo-zoom" id="topoZoom">
+            <button type="button" class="btn btn-secondary" id="topoZoomOut" aria-label="Zoom out">−</button>
+            <button type="button" class="btn btn-secondary" id="topoZoomIn" aria-label="Zoom in">+</button>
+            <button type="button" class="btn btn-ghost" id="topoZoomReset">Reset</button>
+          </div>
           <span class="muted" id="topoMeta" aria-live="polite"></span>
         </div>
+        <ul class="topo-legend" id="topoLegend" aria-label="Topology legend">
+          <li class="topo-legend-item has-tip" tabindex="0" data-tip="topo-gw"><span class="topo-swatch topo-swatch-gw"></span> Gateway</li>
+          <li class="topo-legend-item has-tip" tabindex="0" data-tip="topo-nb"><span class="topo-swatch topo-swatch-nb"></span> Neighbor</li>
+          <li class="topo-legend-item has-tip" tabindex="0" data-tip="topo-snmp"><span class="topo-swatch topo-swatch-snmp"></span> SNMP</li>
+          <li class="topo-legend-item has-tip" tabindex="0" data-tip="topo-sel"><span class="topo-swatch topo-swatch-sel"></span> Selected</li>
+        </ul>
         <div id="topoGraph" class="topo-graph" aria-label="Topology graph"></div>
         <div class="table-wrap">
           <table>
             <caption class="sr-only">Topology nodes</caption>
             <thead><tr>
               <th scope="col"><span class="sr-only">Expand</span></th>
-              <th scope="col">IP</th>
-              <th scope="col">Name</th>
-              <th scope="col">Status</th>
-              <th scope="col">Neighbor</th>
-              <th scope="col">Source</th>
-              <th scope="col">Conns</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="topo-ip">IP</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="topo-name">Name</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="dev-status">Status</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="topo-nb">Neighbor</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="topo-src">Source</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="topo-conns">Conns</th>
               <th scope="col">Descr</th>
             </tr></thead>
             <tbody id="topoBody"></tbody>
@@ -519,7 +559,14 @@
         <div class="table-wrap">
           <table>
             <caption class="sr-only">Sniffer events</caption>
-            <thead><tr><th>Time</th><th>Event</th><th>Proto</th><th>Src</th><th>Dst</th><th>Process</th></tr></thead>
+            <thead><tr>
+              <th class="has-tip" tabindex="0" data-tip="sniff-time">Time</th>
+              <th class="has-tip" tabindex="0" data-tip="sniff-event">Event</th>
+              <th class="has-tip" tabindex="0" data-tip="sniff-proto">Proto</th>
+              <th class="has-tip" tabindex="0" data-tip="sniff-src">Src</th>
+              <th class="has-tip" tabindex="0" data-tip="sniff-dst">Dst</th>
+              <th class="has-tip" tabindex="0" data-tip="sniff-proc">Process</th>
+            </tr></thead>
             <tbody id="sniffBody"></tbody>
           </table>
         </div>
@@ -536,7 +583,11 @@
         <div class="table-wrap">
           <table>
             <caption class="sr-only">Open ports</caption>
-            <thead><tr><th>Port</th><th>Banner</th><th>CVE</th></tr></thead>
+            <thead><tr>
+              <th class="has-tip" tabindex="0" data-tip="scan-port">Port</th>
+              <th class="has-tip" tabindex="0" data-tip="scan-banner">Banner</th>
+              <th class="has-tip" tabindex="0" data-tip="scan-cve">CVE</th>
+            </tr></thead>
             <tbody id="scanBody"></tbody>
           </table>
         </div>
@@ -592,14 +643,14 @@
           <caption class="sr-only">Speed test history</caption>
           <thead>
             <tr>
-              <th scope="col">When</th>
-              <th scope="col">Down</th>
-              <th scope="col">Up</th>
-              <th scope="col">Ping</th>
-              <th scope="col">Jitter</th>
-              <th scope="col">Loss</th>
-              <th scope="col">Server</th>
-              <th scope="col">Link</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="speed-when">When</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="speed-down">Down</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="speed-up">Up</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="speed-ping">Ping</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="speed-jitter-col">Jitter</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="speed-loss">Loss</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="speed-server">Server</th>
+              <th scope="col" class="has-tip" tabindex="0" data-tip="speed-link">Link</th>
             </tr>
           </thead>
           <tbody id="speedHistoryBody"></tbody>
@@ -648,18 +699,25 @@
         </fieldset>
         <fieldset>
           <legend>Connections &amp; Usage</legend>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-connections">
             <input type="checkbox" name="connections_enabled" />
             <span class="check-text">Enable Connections snapshot tab</span>
           </label>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-resolve-dns">
+            <input type="checkbox" name="connections_resolve_dns" id="settingsResolveDns" />
+            <span class="check-text">Resolve connection remote DNS</span>
+          </label>
+          <p class="field-hint" id="resolveDnsHint">
+            Off by default. Reverse-DNS for remotes (cached, capped). Unelevated Connections still work; names may stay IPs. Not GeoIP. No per-connection byte counters.
+          </p>
+          <label class="check has-tip" data-tip="set-usage">
             <input type="checkbox" name="usage_monitoring" aria-describedby="usageMonitorHint" />
             <span class="check-text">Usage monitoring (elevated helper)</span>
           </label>
           <p class="field-hint" id="usageMonitorHint">
             Starts a separate elevated .NET helper via UAC. Required for per-app byte rates and history. Off by default.
           </p>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-net-control">
             <input type="checkbox" name="network_control_enabled" aria-describedby="networkControlHint" />
             <span class="check-text">Network control (firewall block/unblock)</span>
           </label>
@@ -669,15 +727,15 @@
         </fieldset>
         <fieldset>
           <legend>LAN Devices &amp; Topology</legend>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-lan-devices">
             <input type="checkbox" name="lan_devices_enabled" />
             <span class="check-text">Enable Devices inventory</span>
           </label>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-lan-toast">
             <input type="checkbox" name="lan_new_device_toast" />
             <span class="check-text">Toast on new device</span>
           </label>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-snmp">
             <input type="checkbox" name="snmp_enabled" />
             <span class="check-text">Enable SNMP topology</span>
           </label>
@@ -690,15 +748,15 @@
         </fieldset>
         <fieldset>
           <legend>Sniffer &amp; Discovery</legend>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-sniffer">
             <input type="checkbox" name="sniffer_enabled" />
             <span class="check-text">Enable metadata sniffer</span>
           </label>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-sniffer-always">
             <input type="checkbox" name="sniffer_always_on" />
             <span class="check-text">Always-on sniffer (tray; metadata only)</span>
           </label>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-lan-discover">
             <input type="checkbox" name="lan_active_discovery" />
             <span class="check-text">Active subnet discovery (gated)</span>
           </label>
@@ -720,7 +778,7 @@
           <label class="wide">Router payload template (optional JSON with {{mac}} {{ip}} {{alias}})
             <textarea name="router_webhook_template" rows="2" maxlength="4000"></textarea>
           </label>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-router-auto">
             <input type="checkbox" name="router_webhook_auto_new" />
             <span class="check-text">Auto router notify on new unknown device</span>
           </label>
@@ -753,11 +811,11 @@
           <label>ES API key
             <input type="password" name="es_api_key" maxlength="500" autocomplete="off" />
           </label>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-prom">
             <input type="checkbox" name="prom_metrics_enabled" />
             <span class="check-text">Prometheus /metrics on 127.0.0.1:9108</span>
           </label>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-http-api">
             <input type="checkbox" name="http_api_enabled" />
             <span class="check-text">HTTP API on 127.0.0.1:9109 (token required)</span>
           </label>
@@ -777,7 +835,7 @@
           <label>Global monthly cap (MiB)
             <input type="number" name="usage_cap_global_monthly_mib" id="usageCapGlobalMonthlyMib" min="0" max="1048576" step="1" placeholder="optional" />
           </label>
-          <label class="check">
+          <label class="check has-tip" data-tip="set-auto-block">
             <input type="checkbox" name="usage_cap_auto_block" id="usageCapAutoBlock" />
             <span class="check-text">Auto-block when a cap is hit (requires Network control)</span>
           </label>

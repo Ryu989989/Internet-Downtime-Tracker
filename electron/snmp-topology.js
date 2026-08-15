@@ -42,6 +42,130 @@ function isPrivateIpv4(host) {
   return false;
 }
 
+/** Match topologyGraphHtml byId: node.ip || node.label || index */
+function graphNodeKey(node, index) {
+  if (!node) return String(index ?? "");
+  return String(node.ip || node.label || node.id || index || "");
+}
+
+function buildSysNameToIp(nodes) {
+  const map = new Map();
+  for (const n of nodes || []) {
+    const name = String((n && n.sysName) || "").trim().toLowerCase();
+    const ip = String((n && n.ip) || "").trim();
+    if (!name || !ip || map.has(name)) continue;
+    map.set(name, ip);
+  }
+  return map;
+}
+
+function buildIpToNode(nodes) {
+  const map = new Map();
+  for (const n of nodes || []) {
+    const ip = String((n && n.ip) || "").trim();
+    if (ip) map.set(ip, n);
+  }
+  return map;
+}
+
+/**
+ * LLDP remSysName (or IP) → graph key. Unmatched private/name → stub; public IPv4 dropped.
+ * @returns {{ key: string, stub: boolean, ip: string|null } | null}
+ */
+function resolveLldpTo(raw, sysNameToIp, ipToNode) {
+  const s = String(raw || "").trim().slice(0, 64);
+  if (!s) return null;
+  if (ipToNode && ipToNode.has(s)) return { key: s, stub: false, ip: s };
+  const mapped = sysNameToIp && sysNameToIp.get(s.toLowerCase());
+  if (mapped) return { key: mapped, stub: false, ip: mapped };
+  const ver = net.isIP(s);
+  if (ver === 4) {
+    if (!isPrivateIpv4(s)) return null;
+    return { key: s, stub: true, ip: s };
+  }
+  if (ver === 6) return null;
+  return { key: s, stub: true, ip: null };
+}
+
+function snmpNodeFromHost(h) {
+  return {
+    id: h.ip,
+    label: h.sysName || h.ip,
+    ip: h.ip,
+    ok: !!h.ok,
+    error: h.error || null,
+    sysName: h.sysName || null,
+    sysDescr: h.sysDescr,
+    sysObjectID: h.sysObjectID || null,
+    ifCount: h.ifCount != null ? h.ifCount : h.interfaces ? h.interfaces.length : null,
+    interfaces: h.interfaces || [],
+    source: "snmp",
+  };
+}
+
+function lldpStubNode(resolved) {
+  const key = resolved.key;
+  return {
+    id: key,
+    label: key,
+    ip: resolved.ip || null,
+    ok: false,
+    error: "not SNMP-polled",
+    sysName: resolved.ip ? null : key,
+    sysDescr: null,
+    sysObjectID: null,
+    ifCount: null,
+    interfaces: [],
+    source: "lldp-stub",
+  };
+}
+
+/** Build SNMP nodes + LLDP edges from pollHost-shaped rows (no live SNMP). */
+function lldpTopologyFromHosts(hosts) {
+  const nodes = [];
+  for (const h of hosts || []) {
+    if (!h || !h.ip) continue;
+    nodes.push(snmpNodeFromHost(h));
+  }
+  const sysNameToIp = buildSysNameToIp(nodes);
+  const ipToNode = buildIpToNode(nodes);
+  const seenKeys = new Set(nodes.map((n) => graphNodeKey(n)));
+  const seenEdges = new Set();
+  const edges = [];
+  let unpolled = 0;
+  for (const h of hosts || []) {
+    if (!h || !h.ip) continue;
+    for (const raw of h.neighbors || []) {
+      const resolved = resolveLldpTo(raw, sysNameToIp, ipToNode);
+      if (!resolved || resolved.key === h.ip) continue;
+      if (resolved.stub && !seenKeys.has(resolved.key)) {
+        nodes.push(lldpStubNode(resolved));
+        seenKeys.add(resolved.key);
+        if (resolved.ip) {
+          ipToNode.set(resolved.ip, nodes[nodes.length - 1]);
+        }
+        unpolled += 1;
+      }
+      const edgeKey = `${h.ip}\0${resolved.key}\0lldp`;
+      if (seenEdges.has(edgeKey)) continue;
+      seenEdges.add(edgeKey);
+      edges.push({ from: h.ip, to: resolved.key, type: "lldp" });
+    }
+  }
+  const out = {
+    ok: true,
+    mode: "snmp",
+    nodes,
+    edges,
+    unpolled_neighbors: unpolled,
+    disclaimer: "Topology from SNMP only — ARP/Devices alone is not a complete map.",
+  };
+  if (unpolled) {
+    out.warning = `${unpolled} LLDP neighbor${unpolled === 1 ? "" : "s"} not SNMP-polled — stub node(s) shown; not a switch fabric.`;
+  }
+  return out;
+}
+
 function stop() {
   cancelled = true;
   if (activeSession && typeof activeSession.close === "function") {
@@ -220,34 +344,7 @@ async function discoverTopology(opts = {}) {
     };
   }
   const hosts = await mapPool(seeds, MAX_CONCURRENCY, (ip) => pollHost(ip, community, timeoutMs));
-  const nodes = [];
-  const edges = [];
-  for (const h of hosts) {
-    if (!h) continue;
-    nodes.push({
-      id: h.ip,
-      label: h.sysName || h.ip,
-      ip: h.ip,
-      ok: !!h.ok,
-      error: h.error || null,
-      sysName: h.sysName || null,
-      sysDescr: h.sysDescr,
-      sysObjectID: h.sysObjectID || null,
-      ifCount: h.ifCount != null ? h.ifCount : h.interfaces ? h.interfaces.length : null,
-      interfaces: h.interfaces || [],
-      source: "snmp",
-    });
-    for (const n of h.neighbors || []) {
-      edges.push({ from: h.ip, to: String(n).slice(0, 64), type: "lldp" });
-    }
-  }
-  return {
-    ok: true,
-    available: true,
-    nodes,
-    edges,
-    disclaimer: "Topology from SNMP only — ARP/Devices alone is not a complete map.",
-  };
+  return { ...lldpTopologyFromHosts(hosts), available: true };
 }
 
 /** UDP reachability probe (not SNMP auth) for tests. */
@@ -289,6 +386,11 @@ module.exports = {
   SYS_OBJECT_ID,
   IF_NUMBER,
   isPrivateIpv4,
+  graphNodeKey,
+  buildSysNameToIp,
+  buildIpToNode,
+  resolveLldpTo,
+  lldpTopologyFromHosts,
   stop,
   snmpGet,
   discoverTopology,

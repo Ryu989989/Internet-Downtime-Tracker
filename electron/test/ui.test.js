@@ -34,7 +34,7 @@ describe("dashboard redesign contracts", () => {
     assert.match(html, /id="timeline24" role="group"/);
     assert.doesNotMatch(html, /id="timeline24" role="img"/);
     assert.match(html, /<caption class="sr-only">Recent outages<\/caption>/);
-    assert.match(html, /<th scope="col">Type<\/th>/);
+    assert.match(html, /<th scope="col"[^>]*data-tip="hist-type"[^>]*>Type<\/th>/);
   });
 
   it("connects expandable incidents and announces note saves", () => {
@@ -85,8 +85,14 @@ describe("dashboard redesign contracts", () => {
     assert.match(app, /topo-expand/);
     assert.match(app, /bindTooltips\(graph\)/);
     assert.match(app, /bindTooltips\(tbody\)/);
-    assert.match(html, /<th scope="col">Neighbor<\/th>/);
-    assert.match(html, /<th scope="col">Conns<\/th>/);
+    assert.match(html, /<th scope="col"[^>]*data-tip="topo-nb"[^>]*>Neighbor<\/th>/);
+    assert.match(html, /<th scope="col"[^>]*data-tip="topo-conns"[^>]*>Conns<\/th>/);
+    assert.match(app, /function topologyNodeKey\(/);
+    assert.match(app, /String\(node\.ip \|\| node\.label \|\| index\)/);
+    assert.match(app, /function bindTopoPanZoom\(/);
+    assert.match(app, /function selectTopoNode\(/);
+    assert.match(app, /prefersReducedMotion\(\)/);
+    assert.match(app, /topo-viewport/);
     assert.match(css, /\.topo-edge/);
     assert.match(css, /\.topo-detail/);
     assert.match(css, /\.topo-node-group:focus-visible/);
@@ -99,5 +105,26 @@ describe("dashboard redesign contracts", () => {
     assert.match(app, /buildUsageCapsAlertsFromForm/);
     assert.match(app, /usage_caps_json:\s*usageJson\.usage_caps_json/);
     assert.match(app, /usage_alerts_json:\s*usageJson\.usage_alerts_json/);
+  });
+
+  it("shows Devices-disabled warning and locks Overview/Devices/Connections/Usage tips", () => {
+    assert.match(app, /function paintDevicesDisabled\(/);
+    assert.match(app, /data\.warning/);
+    assert.match(app, /\$\(["']#devicesDisabledBanner["']\)/);
+    assert.match(app, /state-error/);
+    assert.match(html, /id="devicesDisabledBanner"/);
+    assert.match(html, /id="httpCertChip"/);
+    assert.match(html, /id="uptimeBar30"/);
+    assert.match(app, /class="btn btn-secondary device-ping"/);
+    assert.match(app, /class="btn btn-secondary device-traceroute"/);
+    assert.match(html, /id="connResolveDns"/);
+    assert.match(app, /wireChartTip\(usageTrendChart/);
+    assert.match(html, /<th scope="col"[^>]*data-tip="dev-cat"/);
+    assert.match(html, /<th scope="col"[^>]*data-tip="conn-service"/);
+    assert.match(html, /data-tip="stat-30d"/);
+    assert.match(html, /data-tip="http-cert"/);
+    assert.match(html, /<th scope="col"[^>]*data-tip="usage-app"/);
+    assert.match(html, /<th scope="col"[^>]*data-tip="hist-type"/);
+    assert.match(html, /<th scope="col"[^>]*data-tip="topo-nb"/);
   });
 });

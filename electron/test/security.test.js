@@ -259,6 +259,8 @@ describe("Connections/Usage IPC surface (preload allowlist)", () => {
       "utf8"
     );
     assert.match(preload, /connectionsSnapshot:/);
+    assert.match(preload, /lanDevicesPing:/);
+    assert.match(preload, /lanDevicesTraceroute:/);
     assert.match(preload, /usageStatus:/);
     assert.match(preload, /usageLive:/);
     assert.match(preload, /usageEnable:/);
@@ -271,11 +273,36 @@ describe("Connections/Usage IPC surface (preload allowlist)", () => {
   it("registers connections/usage channels via safeHandle in main", () => {
     const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
     assert.match(main, /safeHandle\("api:connections:snapshot"/);
+    assert.match(main, /safeHandle\("api:lan:devices:ping"/);
+    assert.match(main, /safeHandle\("api:lan:devices:traceroute"/);
     assert.match(main, /safeHandle\("api:usage:enable"/);
     assert.match(main, /safeHandle\("api:usage:block"/);
     assert.match(main, /assertControlAllowed/);
     assert.match(main, /sanitizeExePath/);
-    assert.doesNotMatch(main, /monitor\._tick[\s\S]{0,80}usageBridge/);
-    assert.doesNotMatch(main, /monitor\._tick[\s\S]{0,80}connections\./);
+    const monitor = fs.readFileSync(path.join(__dirname, "..", "monitor.js"), "utf8");
+    assert.doesNotMatch(monitor, /tracerouteHost/);
+    assert.doesNotMatch(monitor, /pingDevice/);
+    assert.doesNotMatch(monitor, /api:lan:devices:ping/);
+    assert.doesNotMatch(monitor, /api:lan:devices:traceroute/);
+    assert.doesNotMatch(monitor, /\bcheckHttp\b/);
+    assert.doesNotMatch(monitor, /https\.request/);
+    for (const mod of [
+      "lan-devices",
+      "lan-bridge",
+      "traceroute",
+      "usage-bridge",
+      "connections",
+      "snmp-topology",
+      "packet-sniffer",
+      "port-scan",
+    ]) {
+      assert.doesNotMatch(monitor, new RegExp(`require\\(["']\\./${mod}["']\\)`));
+    }
+    assert.doesNotMatch(monitor, /usage-bridge/);
+    assert.doesNotMatch(monitor, /snmp-topology/);
+    assert.doesNotMatch(monitor, /packet-sniffer/);
+    assert.doesNotMatch(monitor, /port-scan/);
+    assert.doesNotMatch(main, /observeSince:\s*monitor(?:\s*\?\s*monitor)?\.state\.started_at/);
+    assert.match(main, /db\.summary\(null, \{ observeSince \}\)/);
   });
 });

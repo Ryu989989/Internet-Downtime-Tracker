@@ -23,6 +23,7 @@
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --dur-fast: 120ms;
   --dur: 220ms;
+  --tip-delay: 380ms;
   /* Fluid shell. Fill the window; gutters are padding only. */
   --page-pad-x: clamp(1rem, 2vw, 2rem);
   --page-pad-y: clamp(0.85rem, 1.4vw, 1.35rem);
@@ -139,11 +140,18 @@ body {
     transform var(--dur-fast) var(--ease-out);
 }
 
+.has-tip {
+  cursor: help;
+}
+
 .pill:active,
 .pressable:active,
 .split-pill:active,
 .filters button.btn:active,
-.btn-ghost:active {
+.btn-ghost:active,
+.seg-btn:active,
+.text-link:active,
+.row-expand:active {
   transform: scale(0.97);
 }
 
@@ -259,7 +267,10 @@ main {
   .split-pill:active,
   .filters button.btn:active,
   .btn-ghost:active,
-  button.btn:active {
+  button.btn:active,
+  .seg-btn:active,
+  .text-link:active,
+  .row-expand:active {
     transform: none;
   }
   .logo,
@@ -772,6 +783,10 @@ button.btn-ghost:hover {
   transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 
+.ui-tooltip[data-instant] {
+  transition-duration: 0ms;
+}
+
 .ui-tooltip.is-open {
   opacity: 1;
   transform: translateY(0);
@@ -1052,6 +1067,11 @@ form.settings-form.settings-panel {
 
 .chart-empty[hidden] {
   display: none !important;
+}
+
+.chart-caption {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
 }
 
 .charts-grid {
@@ -1347,6 +1367,7 @@ button.btn:focus-visible,
   color: var(--muted);
   font-size: 0.82rem;
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 
 .seg-btn:hover {
@@ -1674,4 +1695,135 @@ a:hover {
 
 .topo-v {
   word-break: break-word;
+}
+
+.uptime-bar-wrap {
+  margin: 0 0 var(--content-gap);
+}
+
+.uptime-bar {
+  display: flex;
+  height: 0.85rem;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.uptime-bar-seg {
+  min-width: 2px;
+  height: 100%;
+}
+
+.uptime-bar-seg.up { background: color-mix(in srgb, var(--green) 72%, var(--surface-1)); }
+.uptime-bar-seg.down { background: var(--red); }
+.uptime-bar-seg.partial { background: var(--amber); }
+.uptime-bar-seg.unknown { background: var(--surface-3); }
+
+.uptime-bar-meta {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+}
+
+@keyframes conn-delta-flash {
+  from {
+    background: color-mix(in srgb, var(--delta-accent, var(--blue)) 28%, transparent);
+    box-shadow: inset 3px 0 0 var(--delta-accent, var(--blue));
+  }
+  to {
+    background: transparent;
+    box-shadow: inset 3px 0 0 transparent;
+  }
+}
+
+.conn-delta-new,
+.conn-delta-changed,
+.conn-delta-dropped {
+  animation: conn-delta-flash 1.1s var(--ease-out) 1;
+}
+
+.conn-delta-new { --delta-accent: var(--green); }
+.conn-delta-changed { --delta-accent: var(--amber); }
+.conn-delta-dropped { --delta-accent: var(--red); }
+
+.conn-toolbar .topo-zoom,
+.topo-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.topo-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1rem;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  list-style: none;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.topo-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.topo-swatch {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  border: 2px solid var(--surface-1);
+  background: var(--muted);
+}
+
+.topo-swatch-gw { background: var(--blue); border-width: 3px; }
+.topo-swatch-nb { background: var(--green); }
+.topo-swatch-snmp { background: var(--amber); }
+.topo-swatch-sel { background: var(--text); box-shadow: 0 0 0 2px var(--focus-ring); }
+
+.topo-viewport {
+  transform-origin: 0 0;
+  transition: transform 180ms var(--ease-out);
+}
+
+.topo-graph.is-panning {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.topo-graph.is-zoomable {
+  overflow: hidden;
+  touch-action: none;
+}
+
+.topo-node.selected,
+.topo-node-group.is-selected .topo-node {
+  stroke: var(--focus-ring);
+  stroke-width: 6;
+}
+
+.topo-row.is-selected {
+  background: color-mix(in srgb, var(--blue) 12%, transparent);
+}
+
+.device-port-chip {
+  margin-right: 0.2rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conn-delta-new,
+  .conn-delta-changed,
+  .conn-delta-dropped {
+    animation: none;
+    background: color-mix(in srgb, var(--delta-accent, var(--blue)) 14%, transparent);
+  }
+  .topo-viewport,
+  .topo-node,
+  .topo-edge,
+  .topo-label,
+  .topo-node-group {
+    transition: none;
+  }
 }

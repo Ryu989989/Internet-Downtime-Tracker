@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld("idt", {
   lanDevicesRefresh: () => ipcRenderer.invoke("api:lan:devices:refresh"),
   lanDevicesUpdate: (body) => ipcRenderer.invoke("api:lan:devices:update", body || {}),
   lanDevicesExport: (params) => ipcRenderer.invoke("api:lan:devices:export", params || {}),
+  lanDevicesPing: (body) => ipcRenderer.invoke("api:lan:devices:ping", body || {}),
+  lanDevicesTraceroute: (body) => ipcRenderer.invoke("api:lan:devices:traceroute", body || {}),
   lanWol: (body) => ipcRenderer.invoke("api:lan:wol", body || {}),
   lanTopology: () => ipcRenderer.invoke("api:lan:topology"),
   lanTopologyStop: () => ipcRenderer.invoke("api:lan:topology:stop"),

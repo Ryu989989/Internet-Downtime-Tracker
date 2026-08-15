@@ -2,12 +2,34 @@
 
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
+const dnsPromises = require("dns").promises;
+const { promisify } = require("util");
+const { spawn, execFile } = require("child_process");
 const { normalizeMac, formatMac, lookupOui } = require("./oui");
+const { pingHost } = require("./netcheck");
+const { tracerouteHost } = require("./traceroute");
+const { isPrivateOrLocalIp } = require("./port-scan");
+
+const execFileAsync = promisify(execFile);
 
 const SNAPSHOT_TIMEOUT_MS = 10_000;
 const MAX_STDOUT = 2_000_000;
 const ONLINE_TTL_S = 600;
+const HOSTNAME_MAX_PER_PASS = 8;
+const HOSTNAME_TTL_MS = 30 * 60 * 1000;
+const HOSTNAME_LOOKUP_MS = 1500;
+const DISABLED_WARNING = "LAN Devices disabled in Settings";
+
+/** @type {Map<string, { hostname: string|null, source: string, at: number }>} */
+const hostnameCache = new Map();
+/** @type {null | ((ip: string) => Promise<string|null>)} */
+let nbtstatOverride = null;
+/** @type {null | ((ip: string) => Promise<string|null>)} */
+let reverseOverride = null;
+/** @type {null | ((host: string, timeoutS?: number) => Promise<[boolean, number|null]>)} */
+let pingHostOverride = null;
+/** @type {null | (() => object)} */
+let settingsGetter = null;
 
 /** Classify IPv4 for topology display (not a full RFC map). */
 function classifyIpScope(ip) {
@@ -206,6 +228,26 @@ function unwrapPsArray(value) {
   return [value];
 }
 
+/** OUI/vendor heuristic — Apple→phone is a known ceiling (Macs share OUI). */
+function vendorCategory(vendor, { gateway } = {}) {
+  if (gateway === true || gateway === 1) return "router";
+  const v = String(vendor || "").toLowerCase();
+  if (!v) return "unknown";
+  if (
+    /cisco|netgear|d-link|dlink|linksys|tp-link|tplink|ubiquiti|asus|mikrotik|aruba|fortinet|juniper|zyxel|arris/.test(
+      v
+    )
+  ) {
+    return "router";
+  }
+  if (/raspberry|amazon|roku|sonos|tuya|philips|nest|ring|espressif|google/.test(v)) return "iot";
+  if (/apple|samsung|huawei|xiaomi|oneplus/.test(v)) return "phone";
+  if (/microsoft|vmware|qemu|virtualbox|parallels|realtek|intel|broadcom|hyper-v/.test(v)) {
+    return "pc";
+  }
+  return "unknown";
+}
+
 function shapeNeighbor(raw, gatewayIp, now) {
   const mac = formatMac(raw && (raw.mac || raw.LinkLayerAddress));
   if (!mac) return null;
@@ -215,10 +257,12 @@ function shapeNeighbor(raw, gatewayIp, now) {
   const isGw = gatewayIp && ip === gatewayIp;
   const state = String((raw && (raw.state || raw.State)) || "").slice(0, 32);
   const iface = String((raw && (raw.iface || raw.InterfaceAlias)) || "").slice(0, 64);
+  const vendor = lookupOui(mac);
   return {
     mac,
     ip,
-    vendor: lookupOui(mac),
+    vendor,
+    category: vendorCategory(vendor, { gateway: !!isGw }),
     state,
     iface,
     ip_scope: classifyIpScope(ip),
@@ -255,6 +299,255 @@ function parseSnapshot(stdout) {
 async function snapshot() {
   const { stdout } = await runPowerShell(buildNeighborScript(), SNAPSHOT_TIMEOUT_MS);
   return parseSnapshot(stdout);
+}
+
+function devicesDisabledPayload(warning = DISABLED_WARNING) {
+  return {
+    ok: false,
+    devices: [],
+    warning,
+    lan_devices_enabled: false,
+    meta: { lan_devices_enabled: false, warning },
+  };
+}
+
+const HOSTNAME_SOURCE_NONE = "none";
+const HOSTNAME_SOURCE_LAST_KNOWN = "last-known";
+
+/** Last enrichListedDevices pass — disclaimer follows row source, not cache size. */
+let lastEnrichedHadHostnameSource = false;
+
+function sourceMeansLookedUp(source) {
+  return Boolean(source) && source !== HOSTNAME_SOURCE_NONE;
+}
+
+function hostnameSourceFor(row, cached) {
+  if (cached && cached.source && cached.source !== HOSTNAME_SOURCE_NONE) return cached.source;
+  if (row && row.hostname_source && row.hostname_source !== HOSTNAME_SOURCE_NONE) {
+    return row.hostname_source;
+  }
+  if (String((row && row.hostname) || "").trim()) return HOSTNAME_SOURCE_LAST_KNOWN;
+  return (cached && cached.source) || HOSTNAME_SOURCE_NONE;
+}
+
+function devicesDisclaimer({ hostnamesQueried } = {}) {
+  return hostnamesQueried
+    ? "Neighbor cache plus on-demand hostname lookup (PTR/NBT) — not a complete network map."
+    : "Passive neighbor cache — not a complete network map.";
+}
+
+function hadActiveHostnameLookups(devices) {
+  if (Array.isArray(devices)) {
+    return devices.some((d) => sourceMeansLookedUp(d && d.hostname_source));
+  }
+  if (lastEnrichedHadHostnameSource) return true;
+  for (const rec of hostnameCache.values()) {
+    if (sourceMeansLookedUp(rec.source)) return true;
+  }
+  return false;
+}
+
+function parseNbtstat(stdout) {
+  let fallback = null;
+  const re = /^\s*(\S+)\s+<([0-9A-Fa-f]{2})>\s+UNIQUE\b/gm;
+  let m;
+  while ((m = re.exec(String(stdout || "")))) {
+    const name = m[1];
+    if (!name || name.startsWith("__")) continue;
+    if (m[2].toLowerCase() === "00") return name.slice(0, 120);
+    if (!fallback) fallback = name.slice(0, 120);
+  }
+  return fallback;
+}
+
+function setHostnameResolversForTest({ nbtstat = null, reverse = null } = {}) {
+  nbtstatOverride = nbtstat;
+  reverseOverride = reverse;
+}
+
+function resetHostnameCacheForTest() {
+  hostnameCache.clear();
+  lastEnrichedHadHostnameSource = false;
+  nbtstatOverride = null;
+  reverseOverride = null;
+}
+
+function setPingHostForTest(fn) {
+  pingHostOverride = fn;
+}
+
+function resetPingHostForTest() {
+  pingHostOverride = null;
+}
+
+function setSettingsGetter(fn) {
+  settingsGetter = typeof fn === "function" ? fn : null;
+}
+
+function lanDevicesEnabled() {
+  const s = settingsGetter ? settingsGetter() || {} : {};
+  return s.lan_devices_enabled !== false;
+}
+
+function devicesDisabledProbe(ip, extra) {
+  return {
+    ok: false,
+    ip: ip || "",
+    error: DISABLED_WARNING,
+    warning: DISABLED_WARNING,
+    lan_devices_enabled: false,
+    ...extra,
+  };
+}
+
+async function nbtstatName(ip) {
+  if (nbtstatOverride) return nbtstatOverride(ip);
+  if (process.platform !== "win32") return null;
+  try {
+    const r = await execFileAsync("nbtstat", ["-A", ip], {
+      timeout: HOSTNAME_LOOKUP_MS,
+      windowsHide: true,
+    });
+    return parseNbtstat(r.stdout);
+  } catch (err) {
+    return parseNbtstat((err && err.stdout) || "") || null;
+  }
+}
+
+async function reverseDnsName(ip) {
+  if (reverseOverride) return reverseOverride(ip);
+  try {
+    const names = await Promise.race([
+      dnsPromises.reverse(ip),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("PTR timeout")), HOSTNAME_LOOKUP_MS)
+      ),
+    ]);
+    const name = Array.isArray(names) ? names[0] : names;
+    return name ? String(name).replace(/\.$/, "").slice(0, 120) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function lookupHostname(ip) {
+  let hostname = await nbtstatName(ip);
+  let source = hostname ? "NBT" : "none";
+  if (!hostname) {
+    hostname = await reverseDnsName(ip);
+    if (hostname) source = "PTR";
+  }
+  const rec = { hostname: hostname || null, source, at: Date.now() };
+  hostnameCache.set(ip, rec);
+  return rec;
+}
+
+/**
+ * Rate-limited NetBIOS/PTR after ARP snapshot — not inside snapshot().
+ */
+async function resolveEmptyHostnames(devices, { max = HOSTNAME_MAX_PER_PASS } = {}) {
+  const cap = Math.max(0, Number(max) || 0);
+  let lookups = 0;
+  const now = Date.now();
+  const out = [];
+  for (const d of devices || []) {
+    const row = { ...d };
+    const ip = String(row.ip || "").trim();
+    const existing = String(row.hostname || "").trim();
+    if (existing) {
+      const cached = hostnameCache.get(ip);
+      row.hostname_source = hostnameSourceFor(row, cached);
+      out.push(row);
+      continue;
+    }
+    const cached = ip ? hostnameCache.get(ip) : null;
+    if (cached && now - cached.at < HOSTNAME_TTL_MS) {
+      if (cached.hostname) row.hostname = cached.hostname;
+      row.hostname_source = cached.source;
+      out.push(row);
+      continue;
+    }
+    if (!ip || !isPrivateOrLocalIp(ip) || lookups >= cap) {
+      row.hostname_source = "none";
+      out.push(row);
+      continue;
+    }
+    lookups += 1;
+    const rec = await lookupHostname(ip);
+    if (rec.hostname) row.hostname = rec.hostname;
+    row.hostname_source = rec.source;
+    out.push(row);
+  }
+  return { devices: out, lookups };
+}
+
+function openPortsFromScanRow(row) {
+  if (!row) return [];
+  let parsed = row.ports_json;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(parsed)) return [];
+  const ports = [];
+  for (const item of parsed) {
+    if (typeof item === "number" && Number.isFinite(item)) {
+      ports.push(item);
+      continue;
+    }
+    if (item && item.open && item.port != null) ports.push(Number(item.port));
+  }
+  return ports.filter((n) => Number.isFinite(n));
+}
+
+function enrichListedDevices(devices, getScanForIp) {
+  const out = (devices || []).map((d) => {
+    const ip = d && d.ip;
+    const scan = typeof getScanForIp === "function" ? getScanForIp(ip) : null;
+    const cached = ip ? hostnameCache.get(String(ip)) : null;
+    return {
+      ...d,
+      category: vendorCategory(d && d.vendor, { gateway: d && d.gateway }),
+      hostname_source: hostnameSourceFor(d, cached),
+      open_ports: openPortsFromScanRow(scan),
+    };
+  });
+  lastEnrichedHadHostnameSource = out.some((d) => sourceMeansLookedUp(d.hostname_source));
+  return out;
+}
+
+function targetIp(body) {
+  if (typeof body === "string") return body.trim();
+  return String((body && (body.ip || body.host)) || "").trim();
+}
+
+async function pingDevice(body = {}) {
+  const ip = targetIp(body);
+  if (!lanDevicesEnabled()) {
+    return devicesDisabledProbe(ip, { latency_ms: null });
+  }
+  if (!ip) return { ok: false, ip: "", latency_ms: null, error: "Missing host" };
+  if (!isPrivateOrLocalIp(ip)) {
+    return { ok: false, ip, latency_ms: null, error: "Target must be a private/local IP" };
+  }
+  const ping = pingHostOverride || pingHost;
+  const [ok, latency_ms] = await ping(ip);
+  return { ok: !!ok, ip, latency_ms: latency_ms != null ? latency_ms : null };
+}
+
+async function tracerouteDevice(body = {}) {
+  const ip = targetIp(body);
+  if (!lanDevicesEnabled()) {
+    return devicesDisabledProbe(ip, { hops: [], hop_limit: 15 });
+  }
+  if (!ip) return { ok: false, ip: "", hops: [], error: "Missing host", hop_limit: 15 };
+  if (!isPrivateOrLocalIp(ip)) {
+    return { ok: false, ip, hops: [], error: "Target must be a private/local IP", hop_limit: 15 };
+  }
+  return tracerouteHost(ip);
 }
 
 /**
@@ -462,6 +755,7 @@ function neighborTopologyFromDevices(devices) {
 
 module.exports = {
   ONLINE_TTL_S,
+  HOSTNAME_MAX_PER_PASS,
   buildNeighborScript,
   shapeNeighbor,
   parseSnapshot,
@@ -484,4 +778,19 @@ module.exports = {
   normalizeMac,
   formatMac,
   lookupOui,
+  vendorCategory,
+  parseNbtstat,
+  resolveEmptyHostnames,
+  openPortsFromScanRow,
+  enrichListedDevices,
+  devicesDisabledPayload,
+  devicesDisclaimer,
+  hadActiveHostnameLookups,
+  pingDevice,
+  tracerouteDevice,
+  setSettingsGetter,
+  setHostnameResolversForTest,
+  resetHostnameCacheForTest,
+  setPingHostForTest,
+  resetPingHostForTest,
 };

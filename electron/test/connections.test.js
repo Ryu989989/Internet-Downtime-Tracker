@@ -8,10 +8,28 @@ const {
   computeAdapterRates,
   snapshot,
   buildSnapshotScript,
+  buildServiceScript,
   setRunPowerShellForTest,
+  setReverseLookupForTest,
   resetRunPowerShellForTest,
   ROW_CAP,
+  DNS_LOOKUP_CAP,
+  DNS_TIMEOUT_MS,
+  RESOLVE_DNS_SETTING,
 } = require("../connections");
+
+function mockSnap(connections, services = [], adapters = []) {
+  setRunPowerShellForTest(async (script) => {
+    if (/Win32_Service/.test(script)) {
+      return { stdout: JSON.stringify(services), stderr: "", code: 0 };
+    }
+    return {
+      stdout: JSON.stringify({ connections, adapters, captured_at: Date.now() }),
+      stderr: "",
+      code: 0,
+    };
+  });
+}
 
 afterEach(() => {
   resetRunPowerShellForTest();
@@ -133,5 +151,227 @@ describe("snapshot", () => {
     assert.equal(result.connections.length, 1);
     assert.equal(result.connections[0].process, "chrome");
     assert.equal(result.adapters[0].name, "Wi-Fi");
+    assert.equal(result.connections[0].portName, "https");
+    assert.equal(result.connections[0].resolved, null);
+    assert.equal(result.connections[0].serviceName, null);
+    assert.equal(result.connections[0].delta, null);
+  });
+});
+
+describe("enrichment", () => {
+  it("maps well-known ports locally (not DNS)", async () => {
+    mockSnap([
+      {
+        proto: "TCP",
+        process: "nginx",
+        pid: 1,
+        local: "0.0.0.0:80",
+        remote: "-",
+        state: "Listen",
+      },
+      {
+        proto: "TCP",
+        process: "chrome",
+        pid: 2,
+        local: "10.0.0.2:50000",
+        remote: "[2001:db8::1]:443",
+        state: "Established",
+      },
+      {
+        proto: "TCP",
+        process: "app",
+        pid: 3,
+        local: "10.0.0.2:50001",
+        remote: "203.0.113.9:49152",
+        state: "Established",
+      },
+    ]);
+    const result = await snapshot();
+    const byPid = Object.fromEntries(result.connections.map((r) => [r.pid, r.portName]));
+    assert.equal(byPid[1], "http");
+    assert.equal(byPid[2], "https");
+    assert.equal(byPid[3], null);
+  });
+
+  it("skips reverse-DNS unless resolveDns; caps, caches, times out", async () => {
+    assert.equal(RESOLVE_DNS_SETTING, "connections_resolve_dns");
+    const calls = [];
+    let resolveLate;
+    setReverseLookupForTest((ip) => {
+      calls.push(ip);
+      if (ip === "203.0.113.1") return new Promise((r) => { resolveLate = r; });
+      return `host-${ip}.example`;
+    });
+    const rows = [];
+    for (let i = 1; i <= DNS_LOOKUP_CAP + 2; i++) {
+      rows.push({
+        proto: "TCP",
+        process: "p",
+        pid: i,
+        local: `10.0.0.2:${40000 + i}`,
+        remote: `203.0.113.${i}:443`,
+        state: "Established",
+      });
+    }
+    mockSnap(rows);
+
+    const off = await snapshot();
+    assert.equal(calls.length, 0);
+    assert.ok(off.connections.every((r) => r.resolved == null));
+
+    resetRunPowerShellForTest();
+    mockSnap(rows);
+    setReverseLookupForTest((ip) => {
+      calls.push(ip);
+      if (ip === "203.0.113.1") return new Promise((r) => { resolveLate = r; });
+      return `host-${ip}.example`;
+    });
+
+    const on = await snapshot({ resolveDns: true });
+    if (resolveLate) resolveLate("late.example");
+    assert.equal(calls.length, DNS_LOOKUP_CAP);
+    const resolved = on.connections.filter((r) => r.resolved);
+    const missing = on.connections.filter((r) => !r.resolved);
+    assert.equal(resolved.length, DNS_LOOKUP_CAP - 1);
+    assert.equal(missing.length, 3);
+    const timed = on.connections.find((r) => r.remote.startsWith("203.0.113.1:"));
+    assert.equal(timed.resolved, null);
+
+    const firstBatch = calls.slice();
+    const again = await snapshot({ resolveDns: true });
+    assert.equal(calls.length, DNS_LOOKUP_CAP + 2);
+    assert.deepEqual(calls.slice(0, DNS_LOOKUP_CAP), firstBatch);
+    const third = await snapshot({ resolveDns: true });
+    assert.equal(calls.length, DNS_LOOKUP_CAP + 2);
+    assert.equal(again.connections.filter((r) => r.resolved).length, DNS_LOOKUP_CAP + 1);
+    assert.equal(third.connections.find((r) => r.remote.startsWith("203.0.113.1:")).resolved, null);
+    assert.ok(DNS_TIMEOUT_MS > 0);
+  });
+
+  it("joins Win32_Service by pid from one cached CIM query", async () => {
+    let svcCalls = 0;
+    let snapCalls = 0;
+    setRunPowerShellForTest(async (script) => {
+      if (/Win32_Service/.test(script)) {
+        svcCalls += 1;
+        return {
+          stdout: JSON.stringify([
+            { Name: "Dnscache", ProcessId: 99 },
+            { Name: "Dhcp", ProcessId: 99 },
+          ]),
+          stderr: "",
+          code: 0,
+        };
+      }
+      snapCalls += 1;
+      return {
+        stdout: JSON.stringify({
+          connections: [
+            {
+              proto: "UDP",
+              process: "svchost",
+              pid: 99,
+              local: "0.0.0.0:53",
+              remote: "-",
+              state: "Listen",
+            },
+          ],
+          adapters: [],
+          captured_at: 1,
+        }),
+        stderr: "",
+        code: 0,
+      };
+    });
+    const a = await snapshot();
+    const b = await snapshot();
+    assert.equal(svcCalls, 1);
+    assert.equal(snapCalls, 2);
+    assert.equal(a.connections[0].serviceName, "Dnscache, Dhcp");
+    assert.equal(b.connections[0].serviceName, "Dnscache, Dhcp");
+    assert.match(buildServiceScript(), /Get-CimInstance[\s\S]*Win32_Service/);
+  });
+
+  it("marks new / dropped / state-changed for one cycle", async () => {
+    const row = (over) => ({
+      proto: "TCP",
+      process: "c",
+      pid: 1,
+      local: "10.0.0.2:1",
+      remote: "1.1.1.1:443",
+      state: "Established",
+      ...over,
+    });
+    let current = [row({ pid: 1 }), row({ pid: 2, local: "10.0.0.2:2" })];
+    mockSnap(current);
+    const first = await snapshot({ trackDelta: true });
+    assert.ok(first.connections.every((c) => c.delta == null));
+
+    current = [row({ pid: 1, state: "TimeWait" }), row({ pid: 3, local: "10.0.0.2:3" })];
+    mockSnap(current);
+    const second = await snapshot({ trackDelta: true });
+    const byPid = Object.fromEntries(second.connections.map((c) => [c.pid, c.delta]));
+    assert.equal(byPid[1], "state-changed");
+    assert.equal(byPid[3], "new");
+    assert.equal(byPid[2], "dropped");
+
+    const third = await snapshot({ trackDelta: true });
+    assert.equal(third.connections.length, 2);
+    assert.ok(third.connections.every((c) => c.delta == null));
+    assert.ok(!third.connections.some((c) => c.pid === 2));
+  });
+
+  it("sidecar snapshot does not steal UI delta or adapter sample", async () => {
+    const listen = {
+      proto: "TCP",
+      process: "srv",
+      pid: 1,
+      local: "10.0.0.2:80",
+      remote: "-",
+      state: "Listen",
+    };
+    const est = {
+      proto: "TCP",
+      process: "chrome",
+      pid: 2,
+      local: "10.0.0.2:50000",
+      remote: "1.1.1.1:443",
+      state: "Established",
+    };
+    const nic = (rx) => [{ name: "Ethernet", rx_bytes: rx, tx_bytes: 0 }];
+
+    mockSnap([listen, est], [], nic(100));
+    const ui1 = await snapshot({ trackDelta: true, trackAdapters: true });
+    assert.ok(ui1.connections.every((c) => c.delta == null));
+    assert.equal(ui1.adapters[0].rx_mbps, null);
+
+    mockSnap([est], [], []);
+    const side = await snapshot({ establishedOnly: true });
+    assert.equal(side.connections.length, 1);
+    assert.equal(side.connections[0].pid, 2);
+    assert.equal(side.connections[0].delta, null);
+    assert.ok(!side.connections.some((c) => c.delta === "dropped"));
+
+    mockSnap([listen, est], [], nic(200));
+    const ui2 = await snapshot({ trackDelta: true, trackAdapters: true });
+    const byPid2 = Object.fromEntries(ui2.connections.map((c) => [c.pid, c.delta]));
+    assert.equal(byPid2[1], null);
+    assert.equal(byPid2[2], null);
+    assert.ok(!ui2.connections.some((c) => c.delta === "dropped"));
+    assert.equal(typeof ui2.adapters[0].rx_mbps, "number");
+
+    mockSnap(
+      [{ ...est, state: "TimeWait" }, { ...listen, pid: 3, local: "10.0.0.2:81" }],
+      [],
+      nic(200)
+    );
+    const side2 = await snapshot({ establishedOnly: true });
+    assert.ok(!side2.connections.some((c) => c.delta === "dropped" || c.delta === "new"));
+
+    const ui3 = await snapshot({ trackDelta: true, trackAdapters: true });
+    const byPid3 = Object.fromEntries(ui3.connections.map((c) => [c.pid, c.delta]));
+    assert.equal(byPid3[2], "state-changed");
+    assert.equal(byPid3[3], "new");
+    assert.equal(byPid3[1], "dropped");
   });
 });
