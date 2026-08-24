@@ -469,6 +469,29 @@ function setPill(el, label, ok) {
     "pill" + tip + " " + (ok === true ? "pill-ok" : ok === false ? "pill-down" : "pill-unknown");
 }
 
+function pillKindClass(kind) {
+  if (kind === "ok") return "pill-ok";
+  if (kind === "down") return "pill-down";
+  if (kind === "amber") return "pill-amber";
+  return "pill-unknown";
+}
+
+function paintLayerPills(s, extraClass) {
+  const pills = s && s.layer_pills;
+  if (!pills) return false;
+  const extra = extraClass ? extraClass + " " : "";
+  const apply = (el, pill) => {
+    if (!el || !pill) return;
+    el.textContent = pill.text;
+    el.className = `pill ${extra}${pillKindClass(pill.kind)}`.trim();
+  };
+  apply($("#pillLan"), pills.lan);
+  apply($("#pillWan"), pills.wan);
+  apply($("#pillDns"), pills.dns);
+  apply($("#pillHttp"), pills.http);
+  return true;
+}
+
 function activateTab(tab, { focusPanel = false } = {}) {
   const btn = $(`.tab[data-tab="${tab}"]`);
   if (!btn) return;
@@ -1619,27 +1642,29 @@ let lastAnnouncedStatus = "";
 
 function paintStatus(s) {
   if (!s) return;
-  setPill($("#pillLan"), `LAN ${s.lan_ok === true ? "UP" : s.lan_ok === false ? "DOWN" : "-"}`, s.lan_ok);
-  if (s.lan_ok === false) {
-    $("#pillWan").textContent = `WAN ${s.wan_ok === true ? "UP" : "DOWN"}`;
-    $("#pillWan").className = "pill has-tip " + (s.wan_ok ? "pill-ok" : "pill-amber");
-  } else {
-    setPill($("#pillWan"), `WAN ${s.wan_ok === true ? "UP" : s.wan_ok === false ? "DOWN" : "-"}`, s.wan_ok);
-  }
-  if ($("#pillDns")) {
-    if (s.lan_ok !== true || s.wan_ok !== true) {
-      $("#pillDns").textContent = "DNS -";
-      $("#pillDns").className = "pill pill-unknown has-tip";
+  if (!paintLayerPills(s, "has-tip")) {
+    setPill($("#pillLan"), `LAN ${s.lan_ok === true ? "UP" : s.lan_ok === false ? "DOWN" : "-"}`, s.lan_ok);
+    if (s.lan_ok === false) {
+      $("#pillWan").textContent = `WAN ${s.wan_ok === true ? "UP" : "DOWN"}`;
+      $("#pillWan").className = "pill has-tip " + (s.wan_ok ? "pill-ok" : "pill-amber");
     } else {
-      setPill($("#pillDns"), `DNS ${s.dns_ok === true ? "UP" : s.dns_ok === false ? "DOWN" : "-"}`, s.dns_ok);
+      setPill($("#pillWan"), `WAN ${s.wan_ok === true ? "UP" : s.wan_ok === false ? "DOWN" : "-"}`, s.wan_ok);
     }
-  }
-  if ($("#pillHttp")) {
-    if (s.lan_ok !== true || s.wan_ok !== true || s.dns_ok !== true) {
-      $("#pillHttp").textContent = "HTTP -";
-      $("#pillHttp").className = "pill pill-unknown has-tip";
-    } else {
-      setPill($("#pillHttp"), `HTTP ${s.http_ok === true ? "UP" : s.http_ok === false ? "DOWN" : "-"}`, s.http_ok);
+    if ($("#pillDns")) {
+      if (s.lan_ok !== true || s.wan_ok !== true) {
+        $("#pillDns").textContent = "DNS -";
+        $("#pillDns").className = "pill pill-unknown has-tip";
+      } else {
+        setPill($("#pillDns"), `DNS ${s.dns_ok === true ? "UP" : s.dns_ok === false ? "DOWN" : "-"}`, s.dns_ok);
+      }
+    }
+    if ($("#pillHttp")) {
+      if (s.lan_ok !== true || s.wan_ok !== true || s.dns_ok !== true) {
+        $("#pillHttp").textContent = "HTTP -";
+        $("#pillHttp").className = "pill pill-unknown has-tip";
+      } else {
+        setPill($("#pillHttp"), `HTTP ${s.http_ok === true ? "UP" : s.http_ok === false ? "DOWN" : "-"}`, s.http_ok);
+      }
     }
   }
   const bits = [];
@@ -1678,33 +1703,8 @@ function paintStatus(s) {
     }
   }
 
-  let title = "All clear";
-  let sub = "LAN, WAN, DNS, and HTTP path OK";
-  if (s.paused) {
-    title = "Paused";
-    sub = "Monitoring is paused. Resume from Settings or the tray";
-  } else if (s.monitor_stale) {
-    title = "Monitor stalled";
-    sub = "The last probe is older than expected. Check Pause or restart";
-  } else if (s.probe_suppressed) {
-    title = "Speed test running";
-    sub = "Probes paused so the test won’t pollute History";
-  } else if (s.lan_ok === false) {
-    title = "LAN down";
-    sub = "Gateway unreachable. A local network issue is likely";
-  } else if (s.wan_ok === false) {
-    title = "WAN down";
-    sub = "LAN up, public internet unreachable";
-  } else if (s.dns_ok === false) {
-    title = "DNS down";
-    sub = "TCP path up, DNS resolution failing";
-  } else if (s.http_ok === false) {
-    title = "HTTP path down";
-    sub = "DNS OK, web connectivity check failing (captive portal?)";
-  } else if (s.lan_ok == null || s.wan_ok == null) {
-    title = "Warming up";
-    sub = "Waiting for first probe results";
-  }
+  const title = s.status_title != null ? s.status_title : "All clear";
+  const sub = s.status_sub != null ? s.status_sub : "LAN, WAN, DNS, and HTTP path OK";
   if ($("#statusTitle")) $("#statusTitle").textContent = title;
   if ($("#statusSub")) $("#statusSub").textContent = sub;
   const announcement = `${title}. ${sub}`;
@@ -3908,6 +3908,34 @@ async function loadSettings() {
   if (form.minimize_to_tray) {
     form.minimize_to_tray.checked = s.minimize_to_tray !== false;
   }
+  if (form.widget_enabled) form.widget_enabled.checked = !!s.widget_enabled;
+  if (form.widget_always_on_top) {
+    form.widget_always_on_top.checked = s.widget_always_on_top !== false;
+  }
+  const widgetModKeys = ["headline", "layers", "metrics", "quality", "streak", "recent", "quiet", "speed"];
+  const widgetModDefaults = {
+    headline: true,
+    layers: true,
+    metrics: true,
+    quality: false,
+    streak: false,
+    recent: false,
+    quiet: false,
+    speed: true,
+  };
+  let widgetMods = {};
+  try {
+    widgetMods = JSON.parse(s.widget_modules_json || "{}") || {};
+  } catch {
+    widgetMods = {};
+  }
+  for (const k of widgetModKeys) {
+    const el = form[`widget_mod_${k}`];
+    if (!el) continue;
+    el.checked = Object.prototype.hasOwnProperty.call(widgetMods, k)
+      ? !!widgetMods[k]
+      : widgetModDefaults[k];
+  }
   if (form.connections_enabled) {
     form.connections_enabled.checked = s.connections_enabled !== false;
   }
@@ -3972,6 +4000,9 @@ async function loadSettings() {
     "degradation_loss_pct",
     "degradation_latency_ms",
     "degradation_jitter_ms",
+    "widget_fill_pct",
+    "widget_width",
+    "widget_height",
   ];
   for (const k of numKeys) {
     if (form[k]) form[k].value = s[k] != null ? s[k] : "";
@@ -4215,6 +4246,23 @@ function setupForms() {
       minimize_to_tray: form.minimize_to_tray
         ? form.minimize_to_tray.checked
         : true,
+      widget_enabled: !!(form.widget_enabled && form.widget_enabled.checked),
+      widget_always_on_top: form.widget_always_on_top
+        ? form.widget_always_on_top.checked
+        : true,
+      widget_fill_pct: form.widget_fill_pct ? Number(form.widget_fill_pct.value) : 72,
+      widget_width: form.widget_width ? Number(form.widget_width.value) : 360,
+      widget_height: form.widget_height ? Number(form.widget_height.value) : 220,
+      widget_modules_json: JSON.stringify({
+        headline: !!(form.widget_mod_headline && form.widget_mod_headline.checked),
+        layers: !!(form.widget_mod_layers && form.widget_mod_layers.checked),
+        metrics: !!(form.widget_mod_metrics && form.widget_mod_metrics.checked),
+        quality: !!(form.widget_mod_quality && form.widget_mod_quality.checked),
+        streak: !!(form.widget_mod_streak && form.widget_mod_streak.checked),
+        recent: !!(form.widget_mod_recent && form.widget_mod_recent.checked),
+        quiet: !!(form.widget_mod_quiet && form.widget_mod_quiet.checked),
+        speed: !!(form.widget_mod_speed && form.widget_mod_speed.checked),
+      }),
       connections_enabled: form.connections_enabled
         ? form.connections_enabled.checked
         : true,

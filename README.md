@@ -17,7 +17,8 @@ Cross-platform **Electron** tray app that monitors **LAN** (router/gateway), **W
 - Incident snapshots on outage open/close (adapter, latency, layer flags) — expandable in History
 - Stale-monitor banner when probes stop unexpectedly (not while Pause / speed test)
 - Dashboard tabs: Overview, History, Patterns, System logs (OS-inferred gaps), **Network** (Devices / Connections / Usage / Topology / Sniffer / Scan), Monitors (custom targets), Speed (Ookla CLI), Settings
-- System tray: Open Dashboard, Pause/Resume, Start with Windows, Quit
+- Optional frameless **desktop status widget** (Settings or tray → Show desktop widget): live LAN/WAN/DNS/HTTP at a glance
+- System tray: Open Dashboard, Show desktop widget, Pause/Resume, Start with Windows, Quit
 - Single-instance lock; dashboard via `BrowserWindow` + IPC (no public bind). Opt-in Prometheus/HTTP API bind **127.0.0.1 only** (never `0.0.0.0`)
 - Data under OS-appropriate user data directories (`%LOCALAPPDATA%\InternetDowntimeTracker\` on Windows, `~/Library/Application Support/InternetDowntimeTracker` on macOS, `~/.config/InternetDowntimeTracker` or the XDG config dir on Linux); same SQLite schema as the old Python app
 - SQLite via **sql.js** (no native C++ build tools required)
@@ -126,7 +127,7 @@ Output under `dist/`:
 
 | Action | How |
 |--------|-----|
-| Open dashboard | Tray → **Open Dashboard** (or double-click tray icon) |
+| Open dashboard | Tray → **Open Dashboard** (or double-click tray icon / widget) |
 | Pause probes | Tray → **Pause** / **Resume**, or **Settings** |
 | Autostart | Tray → **Start with Windows**, or **Settings** |
 | Quit | Tray → **Quit** (closing the window only hides to tray) |

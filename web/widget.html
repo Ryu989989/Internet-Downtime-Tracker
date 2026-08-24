@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'"
+  />
+  <title>Status</title>
+  <link rel="stylesheet" href="widget.css" />
+  <script src="widget.js" defer></script>
+</head>
+<body>
+  <div class="hud" id="hud" data-layout="standard" data-accent="gray" data-scrim="0">
+    <div class="accent" id="accent" aria-hidden="true"></div>
+    <div class="panel">
+      <div class="chrome">
+        <button type="button" class="open-dash no-drag" id="openDash">Open dashboard</button>
+      </div>
+      <div class="body">
+        <section class="mod mod-headline" data-mod="headline">
+          <div class="headline-scrim">
+            <h1 id="title">Warming up</h1>
+            <p class="sub" id="sub">Waiting for first probe results</p>
+          </div>
+        </section>
+        <section class="mod mod-layers" data-mod="layers">
+          <span class="pill pill-unknown" id="pillLan">LAN -</span>
+          <span class="pill pill-unknown" id="pillWan">WAN -</span>
+          <span class="pill pill-unknown" id="pillDns">DNS -</span>
+          <span class="pill pill-unknown" id="pillHttp">HTTP -</span>
+        </section>
+        <section class="mod mod-metrics" data-mod="metrics" hidden>
+          <span class="meta-chip"><span class="meta-label">Latency</span><span id="chipLatency">-</span></span>
+          <span class="meta-chip"><span class="meta-label">Gateway</span><span id="chipGw">-</span></span>
+          <span class="meta-chip"><span class="meta-label">Open</span><span id="chipOpen">0</span></span>
+        </section>
+        <section class="mod mod-speed" data-mod="speed">
+          <span class="meta-chip"><span class="meta-label">Last speed</span><span id="chipSpeed">-</span></span>
+        </section>
+        <section class="mod mod-quality" data-mod="quality" hidden>
+          <span class="meta-chip"><span class="meta-label">Loss</span><span id="chipLoss">-</span></span>
+          <span class="meta-chip"><span class="meta-label">Jitter</span><span id="chipJitter">-</span></span>
+          <span class="meta-chip" id="chipDegraded" hidden><span class="meta-label">Quality</span><span>Degraded</span></span>
+        </section>
+        <section class="mod mod-streak" data-mod="streak" hidden>
+          <span class="meta-chip"><span class="meta-label">Streak</span><span id="chipStreak">-</span></span>
+        </section>
+        <section class="mod mod-recent" data-mod="recent" hidden>
+          <p class="mod-label">Recent</p>
+          <ul class="recent" id="recentList"></ul>
+        </section>
+        <p class="quiet-badge" id="quietBadge" data-mod="quiet" hidden>Quiet hours</p>
+      </div>
+    </div>
+    <span class="sr-only" id="live" aria-live="polite" aria-atomic="true"></span>
+  </div>
+</body>
+</html>

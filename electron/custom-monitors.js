@@ -18,6 +18,7 @@ const { notify } = require("./notify-webhooks");
 const active = new Map();
 let stopped = true;
 let notifyFn = notify;
+let onFlip = null;
 let probeOverrides = null;
 
 function setNotifyFn(fn) {
@@ -31,6 +32,7 @@ function setProbeFunctionsForTest(fns) {
 function resetForTest() {
   stopCustomMonitors();
   notifyFn = notify;
+  onFlip = null;
   probeOverrides = null;
 }
 
@@ -128,6 +130,13 @@ async function tick(m, { db, monitor }) {
           title,
           body: { monitor_id: m.id, name: m.name || m.id, type: m.type, host: m.host || m.url, ok: result.ok, latency_ms: result.latency_ms },
         });
+        if (typeof onFlip === "function") {
+          onFlip({
+            title,
+            detail: `${m.type || ""} ${m.host || m.url || ""}`.trim(),
+            ok: result.ok,
+          });
+        }
       } catch (err) {
         console.error("monitor notify failed", err);
       }
@@ -140,8 +149,9 @@ async function tick(m, { db, monitor }) {
   }
 }
 
-function startCustomMonitors({ db, monitor } = {}) {
+function startCustomMonitors({ db, monitor, onFlip: flipCb } = {}) {
   stopCustomMonitors();
+  onFlip = typeof flipCb === "function" ? flipCb : null;
   if (!db) return;
   const monitors = parseMonitors(db.getSettings());
   if (!monitors.length) return;

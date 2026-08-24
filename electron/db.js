@@ -11,6 +11,17 @@ const APP_DIR_NAME = "InternetDowntimeTracker";
 /** Full sql.js export is expensive; debounce aggressively (probes are high-churn). */
 const PERSIST_DEBOUNCE_MS = 30_000;
 
+const DEFAULT_WIDGET_MODULES = {
+  headline: true,
+  layers: true,
+  metrics: true,
+  quality: false,
+  streak: false,
+  recent: false,
+  quiet: false,
+  speed: true,
+};
+
 const DEFAULT_SETTINGS = {
   poll_interval_s: 5,
   debounce_fail_count: 2,
@@ -70,6 +81,14 @@ const DEFAULT_SETTINGS = {
   email_smtp_pass: "",
   email_from: "",
   email_to: "",
+  widget_enabled: false,
+  widget_always_on_top: true,
+  widget_width: 360,
+  widget_height: 220,
+  widget_x: null,
+  widget_y: null,
+  widget_fill_pct: 72,
+  widget_modules_json: JSON.stringify(DEFAULT_WIDGET_MODULES),
 };
 
 const SETTINGS_BOUNDS = {
@@ -83,6 +102,9 @@ const SETTINGS_BOUNDS = {
   degradation_latency_ms: { min: 0, max: 30000 },
   degradation_jitter_ms: { min: 0, max: 30000 },
   email_smtp_port: { min: 1, max: 65535 },
+  widget_fill_pct: { min: 20, max: 92 },
+  widget_width: { min: 220, max: 720 },
+  widget_height: { min: 88, max: 480 },
 };
 
 const BOOL_SETTINGS = new Set([
@@ -105,6 +127,8 @@ const BOOL_SETTINGS = new Set([
   "lan_active_discovery",
   "router_webhook_auto_new",
   "auto_traceroute_on_outage",
+  "widget_enabled",
+  "widget_always_on_top",
 ]);
 
 const JSON_SETTINGS = new Set([
@@ -113,6 +137,7 @@ const JSON_SETTINGS = new Set([
   "notify_webhooks_json",
   "notify_quiet_hours_json",
   "monitors_json",
+  "widget_modules_json",
 ]);
 
 const STRING_SETTINGS_MAX = {
@@ -251,6 +276,37 @@ function normalizeJsonArrayOrObjectSetting(value, preferArray) {
   return text;
 }
 
+function normalizeWidgetModulesJson(value) {
+  let obj;
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return JSON.stringify(DEFAULT_WIDGET_MODULES);
+    try {
+      obj = JSON.parse(s);
+    } catch {
+      return JSON.stringify(DEFAULT_WIDGET_MODULES);
+    }
+  } else if (value && typeof value === "object" && !Array.isArray(value)) {
+    obj = value;
+  } else {
+    return JSON.stringify(DEFAULT_WIDGET_MODULES);
+  }
+  const out = { ...DEFAULT_WIDGET_MODULES };
+  for (const k of Object.keys(DEFAULT_WIDGET_MODULES)) {
+    if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+    const b = coerceBoolSetting(obj[k]);
+    if (b != null) out[k] = b;
+  }
+  return JSON.stringify(out);
+}
+
+function normalizeWidgetCoord(value) {
+  if (value == null || String(value).trim() === "") return null;
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n)) return null;
+  return n;
+}
+
 function normalizeSettingValue(key, value) {
   if (BOOL_SETTINGS.has(key)) {
     return coerceBoolSetting(value);
@@ -267,6 +323,12 @@ function normalizeSettingValue(key, value) {
   if (key === "notify_quiet_hours_json") {
     return normalizeJsonArrayOrObjectSetting(value, false);
   }
+  if (key === "widget_modules_json") {
+    return normalizeWidgetModulesJson(value);
+  }
+  if (key === "widget_x" || key === "widget_y") {
+    return normalizeWidgetCoord(value);
+  }
   if (key === "router_webhook_url") {
     if (value == null || value === "") return "";
     const s = String(value).trim();
@@ -279,7 +341,12 @@ function normalizeSettingValue(key, value) {
     if (s.length > STRING_SETTINGS_MAX[key]) return null;
     return s;
   }
-  if (key === "speedtest_interval_min") {
+  if (
+    key === "speedtest_interval_min" ||
+    key === "widget_fill_pct" ||
+    key === "widget_width" ||
+    key === "widget_height"
+  ) {
     const n = Math.trunc(Number(value));
     if (!Number.isFinite(n)) return null;
     const bounds = SETTINGS_BOUNDS[key];
@@ -867,7 +934,7 @@ class TrackerDb {
         continue;
       }
       const normalized = normalizeSettingValue(key, value);
-      if (normalized == null) continue;
+      if (normalized == null && key !== "widget_x" && key !== "widget_y") continue;
       this._run(
         `INSERT INTO settings (key, value) VALUES (?, ?)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
@@ -1605,6 +1672,9 @@ class TrackerDb {
             server_location: latestSpeed.server_location || null,
             ping_ms: latestSpeed.ping_ms != null ? latestSpeed.ping_ms : null,
             tested_at: latestSpeed.tested_at,
+            download_mbps:
+              latestSpeed.download_mbps != null ? latestSpeed.download_mbps : null,
+            upload_mbps: latestSpeed.upload_mbps != null ? latestSpeed.upload_mbps : null,
           }
         : null,
     };

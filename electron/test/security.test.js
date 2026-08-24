@@ -270,6 +270,19 @@ describe("Connections/Usage IPC surface (preload allowlist)", () => {
     assert.doesNotMatch(preload, /exposeInMainWorld\("idt",\s*ipcRenderer/);
   });
 
+  it("widget preload is a slim allowlist", () => {
+    const preload = fs.readFileSync(
+      path.join(__dirname, "..", "preload-widget.js"),
+      "utf8"
+    );
+    assert.match(preload, /getStatus:/);
+    assert.match(preload, /openDashboard:/);
+    assert.match(preload, /widgetBoundsChanged:/);
+    assert.match(preload, /onWidgetPrefs:/);
+    assert.doesNotMatch(preload, /updateSettings:/);
+    assert.doesNotMatch(preload, /usageEnable:/);
+  });
+
   it("registers connections/usage channels via safeHandle in main", () => {
     const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
     assert.match(main, /safeHandle\("api:connections:snapshot"/);

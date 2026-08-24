@@ -9,6 +9,7 @@ const {
 } = require("./netcheck");
 const { layerPillTips } = require("./uptime-bar");
 const { notify: notifyChannels } = require("./notify-webhooks");
+const { statusHeadline, layerPills } = require("./status-copy");
 
 const ADAPTER_EVERY_N = 30;
 const QUALITY_EVERY_N = 6;
@@ -71,12 +72,13 @@ function buildAutoOutageNote(state, type) {
 }
 
 class Monitor {
-  constructor(db, { probeFn = null, onState = null, onOutage = null, tracerouteFn = null } = {}) {
+  constructor(db, { probeFn = null, onState = null, onOutage = null, onDegradation = null, tracerouteFn = null } = {}) {
     this.db = db;
     this.probeFn = probeFn || null;
     this.tracerouteFn = tracerouteFn || null;
     this.onState = onState;
     this.onOutage = onOutage;
+    this.onDegradation = onDegradation;
     this.state = {
       lan_ok: null,
       wan_ok: null,
@@ -224,7 +226,24 @@ class Monitor {
       probe_suppressed: this.state.probe_suppressed,
       now: tNow,
     });
+    const head = statusHeadline({
+      paused: this.state.paused,
+      monitor_stale,
+      probe_suppressed: !!this.state.probe_suppressed,
+      lan_ok: this.state.lan_ok,
+      wan_ok: this.state.wan_ok,
+      dns_ok: this.state.dns_ok,
+      http_ok: this.state.http_ok,
+    });
     return {
+      status_title: head.title,
+      status_sub: head.sub,
+      layer_pills: layerPills({
+        lan_ok: this.state.lan_ok,
+        wan_ok: this.state.wan_ok,
+        dns_ok: this.state.dns_ok,
+        http_ok: this.state.http_ok,
+      }),
       lan_ok: this.state.lan_ok,
       wan_ok: this.state.wan_ok,
       dns_ok: this.state.dns_ok,
@@ -419,6 +438,9 @@ class Monitor {
         title,
         body,
       });
+      if (typeof this.onDegradation === "function") {
+        this.onDegradation({ action, title });
+      }
     } catch (err) {
       console.error("degradation notify failed", err);
     }

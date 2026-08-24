@@ -121,8 +121,53 @@ describe("new settings clamp and round-trip", async () => {
       "email_smtp_pass",
       "email_from",
       "email_to",
+      "widget_enabled",
+      "widget_always_on_top",
+      "widget_width",
+      "widget_height",
+      "widget_x",
+      "widget_y",
+      "widget_fill_pct",
+      "widget_modules_json",
     ]) {
       assert.ok(Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key), `missing default for ${key}`);
     }
+    const s = db.getSettings();
+    assert.equal(s.widget_enabled, false);
+    assert.equal(s.widget_always_on_top, true);
+    assert.equal(s.widget_width, 360);
+    assert.equal(s.widget_height, 220);
+    assert.equal(s.widget_x, null);
+    assert.equal(s.widget_y, null);
+    assert.equal(s.widget_fill_pct, 72);
+    assert.equal(s.widget_modules_json, DEFAULT_SETTINGS.widget_modules_json);
+  });
+
+  it("clamps widget fill, width, and height", () => {
+    assert.equal(normalizeSettingValue("widget_fill_pct", 10), 20);
+    assert.equal(normalizeSettingValue("widget_fill_pct", 99), 92);
+    assert.equal(normalizeSettingValue("widget_fill_pct", 72), 72);
+    assert.equal(normalizeSettingValue("widget_width", 100), 220);
+    assert.equal(normalizeSettingValue("widget_width", 800), 720);
+    assert.equal(normalizeSettingValue("widget_height", 10), 88);
+    assert.equal(normalizeSettingValue("widget_height", 999), 480);
+    assert.equal(normalizeSettingValue("widget_x", null), null);
+    assert.equal(normalizeSettingValue("widget_x", ""), null);
+    assert.equal(normalizeSettingValue("widget_x", -40), -40);
+    assert.equal(normalizeSettingValue("widget_y", "12.9"), 12);
+  });
+
+  it("resets bad widget_modules_json to default", () => {
+    assert.equal(normalizeSettingValue("widget_modules_json", "not-json"), DEFAULT_SETTINGS.widget_modules_json);
+    assert.equal(normalizeSettingValue("widget_modules_json", "[]"), DEFAULT_SETTINGS.widget_modules_json);
+    const merged = JSON.parse(normalizeSettingValue("widget_modules_json", '{"headline":false,"unknown":true}'));
+    assert.equal(merged.headline, false);
+    assert.equal(merged.layers, true);
+    assert.equal(merged.speed, true);
+    assert.equal(merged.unknown, undefined);
+    const speedOff = JSON.parse(normalizeSettingValue("widget_modules_json", '{"speed":false}'));
+    assert.equal(speedOff.speed, false);
+    db.updateSettings({ widget_modules_json: "nope" });
+    assert.equal(db.getSettings().widget_modules_json, DEFAULT_SETTINGS.widget_modules_json);
   });
 });

@@ -285,8 +285,10 @@ describe("monitor probe suppress / cool-down", async () => {
     db.updateSettings({ poll_interval_s: 5 });
     const snap = monitor.snapshot();
     assert.equal(snap.monitor_stale, true);
+    assert.equal(snap.status_title, "Monitor stalled");
     monitor.state.paused = true;
     assert.equal(monitor.snapshot().monitor_stale, false);
+    assert.equal(monitor.snapshot().status_title, "Paused");
   });
 });
 

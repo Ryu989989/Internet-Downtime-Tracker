@@ -731,6 +731,60 @@
           </p>
         </fieldset>
         <fieldset>
+          <legend>Desktop widget</legend>
+          <label class="check">
+            <input type="checkbox" name="widget_enabled" />
+            <span class="check-text">Show desktop widget</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="widget_always_on_top" />
+            <span class="check-text">Always on top</span>
+          </label>
+          <label>Panel fill (%)
+            <input type="number" name="widget_fill_pct" min="20" max="92" step="1" />
+          </label>
+          <p class="field-hint">Panel background only; text stays opaque.</p>
+          <label>Width (px)
+            <input type="number" name="widget_width" min="220" max="720" step="1" />
+          </label>
+          <label>Height (px)
+            <input type="number" name="widget_height" min="88" max="480" step="1" />
+          </label>
+          <label class="check">
+            <input type="checkbox" name="widget_mod_headline" />
+            <span class="check-text">Headline</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="widget_mod_layers" />
+            <span class="check-text">Layer pills</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="widget_mod_metrics" />
+            <span class="check-text">Metrics</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="widget_mod_speed" />
+            <span class="check-text">Last speed test</span>
+          </label>
+          <p class="field-hint">Last completed Ookla test (not a new probe).</p>
+          <label class="check">
+            <input type="checkbox" name="widget_mod_quality" />
+            <span class="check-text">Quality</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="widget_mod_streak" />
+            <span class="check-text">Uptime streak</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="widget_mod_recent" />
+            <span class="check-text">Recent events</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="widget_mod_quiet" />
+            <span class="check-text">Quiet hours badge</span>
+          </label>
+        </fieldset>
+        <fieldset>
           <legend>Connections &amp; Usage</legend>
           <label class="check has-tip" data-tip="set-connections">
             <input type="checkbox" name="connections_enabled" />

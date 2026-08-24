@@ -25,10 +25,12 @@ let db = null;
 /** @type {import("./monitor").Monitor | null} */
 let monitor = null;
 let metricsTimer = null;
+let onRecentEvent = null;
 
 function init(deps) {
   db = deps.db;
   monitor = deps.monitor || null;
+  onRecentEvent = typeof deps.onRecentEvent === "function" ? deps.onRecentEvent : null;
   lanDevices.setSettingsGetter(() => settings());
   packetSniffer.setFetchFlowsForTest(async () => {
     const snap = await connections.snapshot({
@@ -99,11 +101,19 @@ async function refreshDevices() {
   if (s.lan_new_device_toast && merged.newDevices.length) {
     for (const d of merged.newDevices.slice(0, 3)) {
       try {
+        const detail = `${d.ip || "?"} (${d.mac})${d.vendor ? " — " + d.vendor : ""}`;
         if (Notification.isSupported()) {
           new Notification({
             title: "New LAN device",
-            body: `${d.ip || "?"} (${d.mac})${d.vendor ? " — " + d.vendor : ""}`,
+            body: detail,
           }).show();
+        }
+        if (onRecentEvent) {
+          try {
+            onRecentEvent({ kind: "lan", title: "New LAN device", detail });
+          } catch {
+            /* ignore */
+          }
         }
       } catch {
         /* ignore */
@@ -456,13 +466,25 @@ async function pushMetrics() {
 
 async function onOutageEvent(kind, outage) {
   const s = settings();
+  const body = {
+    type: outage && outage.type,
+    id: outage && outage.id,
+  };
+  if (outage && outage.status_title != null) body.status_title = outage.status_title;
+  if (outage && Object.prototype.hasOwnProperty.call(outage, "lan_ok")) {
+    body.lan_ok = outage.lan_ok;
+    body.wan_ok = outage.wan_ok;
+    body.dns_ok = outage.dns_ok;
+    body.http_ok = outage.http_ok;
+  }
+  if (outage && outage.latency_ms != null) body.latency_ms = outage.latency_ms;
   await notify.notify({
     urls: s.notify_webhooks_json,
     quietHours: s.notify_quiet_hours_json,
     settings: s,
     event: kind,
     title: `Outage ${kind}: ${outage && outage.type}`,
-    body: { type: outage && outage.type, id: outage && outage.id },
+    body,
   });
 }
 

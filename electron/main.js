@@ -22,6 +22,8 @@ const { startCustomMonitors, stopCustomMonitors, customMonitorStatus, parseMonit
 const { createSpeedtestScheduler } = require("./speedtest-scheduler");
 const { traceroutePublic } = require("./traceroute");
 const notifyChannels = require("./notify-webhooks");
+const widget = require("./widget");
+const { statusHeadline, layerLatencyLine } = require("./status-copy");
 
 /** Exports always land under downloads/temp — ignore renderer-supplied paths. */
 function resolveExportDest(kind) {
@@ -48,6 +50,14 @@ const lastUsageSampleBytes = new Map();
 let usageRollupTimer = null;
 let usagePruneTick = 0;
 let speedtestScheduler = null;
+/** In-memory last-3 widget events (not persisted). */
+const recentEvents = [];
+const WIDGET_IPC_CHANNELS = new Set([
+  "api:status",
+  "api:settings",
+  "api:widget:openDashboard",
+  "api:widget:bounds",
+]);
 
 function isBenignPipeError(err) {
   if (!err) return false;
@@ -94,12 +104,25 @@ process.on("unhandledRejection", (reason) => {
   }
 });
 
+function isMainSender(event) {
+  return !!(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents);
+}
+
+function isWidgetSender(event) {
+  const w = widget.getWindow();
+  return !!(w && !w.isDestroyed() && event.sender === w.webContents);
+}
+
+function senderAllowed(event, channel) {
+  if (!event || event.sender.isDestroyed()) return false;
+  if (isMainSender(event)) return true;
+  return isWidgetSender(event) && WIDGET_IPC_CHANNELS.has(channel);
+}
+
 function safeHandle(channel, handler) {
   ipcMain.handle(channel, async (event, ...args) => {
     try {
-      if (event.sender.isDestroyed()) return null;
-      if (!mainWindow || mainWindow.isDestroyed()) return null;
-      if (event.sender !== mainWindow.webContents) return null;
+      if (!senderAllowed(event, channel)) return null;
       return await handler(event, ...args);
     } catch (err) {
       if (event.sender.isDestroyed() || isBenignPipeError(err)) return null;
@@ -110,6 +133,125 @@ function safeHandle(channel, handler) {
       }
       throw err;
     }
+  });
+}
+
+function pushRecent(kind, title, detail) {
+  recentEvents.push({
+    at: Date.now() / 1000,
+    kind: String(kind || ""),
+    title: String(title || ""),
+    detail: String(detail || ""),
+  });
+  if (recentEvents.length > 3) recentEvents.splice(0, recentEvents.length - 3);
+  pushStatusUpdate();
+}
+
+function lastSpeedPayload() {
+  if (!db || typeof db.latestSpeedTest !== "function") return null;
+  try {
+    const row = db.latestSpeedTest();
+    if (!row) return null;
+    return {
+      isp: row.isp || null,
+      server_name: row.server_name || null,
+      ping_ms: row.ping_ms != null ? Number(row.ping_ms) : null,
+      tested_at: row.tested_at,
+      download_mbps: row.download_mbps != null ? Number(row.download_mbps) : null,
+      upload_mbps: row.upload_mbps != null ? Number(row.upload_mbps) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function decorateSnapshot(snap) {
+  if (!snap) return snap;
+  const out = { ...snap, recent_events: recentEvents.slice() };
+  try {
+    const s = db ? db.getSettings() : null;
+    out.quiet_hours_active = !!(
+      s &&
+      notifyChannels.inQuietHours(notifyChannels.parseQuietHours(s.notify_quiet_hours_json))
+    );
+    if (s) {
+      out.widget_fill_pct = s.widget_fill_pct;
+      out.widget_modules_json = s.widget_modules_json;
+    }
+  } catch {
+    out.quiet_hours_active = false;
+  }
+  out.last_speed = lastSpeedPayload();
+  if (monitor) out.state_color = stateColor(monitor.state);
+  return out;
+}
+
+function persistWidgetBounds(bounds) {
+  if (!db || quitting || !bounds) return;
+  try {
+    db.updateSettings({
+      widget_x: bounds.x,
+      widget_y: bounds.y,
+      widget_width: bounds.width,
+      widget_height: bounds.height,
+    });
+  } catch (err) {
+    console.error("widget bounds persist failed", err);
+  }
+}
+
+function syncWidget(settings) {
+  const s = settings || (db ? db.getSettings() : null) || {};
+  if (!s.widget_enabled) {
+    widget.destroy();
+    return;
+  }
+  widget.create({
+    settings: s,
+    preloadPath: path.join(__dirname, "preload-widget.js"),
+    htmlPath: path.join(__dirname, "..", "web", "widget.html"),
+    iconPath: resolveAppIconPath(),
+    onBoundsChanged: persistWidgetBounds,
+    onClosed: () => {
+      if (quitting || !db) return;
+      try {
+        db.updateSettings({ widget_enabled: false });
+      } catch {
+        /* ignore */
+      }
+      if (tray) {
+        try {
+          tray.setContextMenu(buildTrayMenu());
+        } catch {
+          /* ignore */
+        }
+      }
+    },
+  });
+  pushStatusUpdate();
+}
+
+function applyWidgetFromSettingsBody(body, updated) {
+  if (!body || !updated) return;
+  const touched = Object.keys(body).some((k) => String(k).startsWith("widget_"));
+  if (!touched) return;
+  syncWidget(updated);
+  if (tray && Object.prototype.hasOwnProperty.call(body, "widget_enabled")) {
+    try {
+      tray.setContextMenu(buildTrayMenu());
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function hookCustomMonitors() {
+  startCustomMonitors({
+    db,
+    monitor,
+    onFlip: (info) => {
+      pushRecent("monitor", info && info.title, info && info.detail);
+    },
   });
 }
 
@@ -194,7 +336,9 @@ function createWindow() {
       hideToTray();
       return;
     }
-    // Setting off: allow real close → app exits (see window-all-closed).
+    if (widget.isOpen()) {
+      return;
+    }
     quitting = true;
   });
 
@@ -237,6 +381,21 @@ function buildTrayMenu() {
   const autoOn = autostart.isEnabled();
   return Menu.buildFromTemplate([
     { label: "Open Dashboard", click: () => showDashboard() },
+    {
+      label: "Show desktop widget",
+      type: "checkbox",
+      checked: !!(db && db.getSettings().widget_enabled),
+      click: (item) => {
+        if (!db) return;
+        try {
+          const updated = db.updateSettings({ widget_enabled: !!item.checked });
+          syncWidget(updated);
+        } catch (err) {
+          console.error(err);
+        }
+        if (tray) tray.setContextMenu(buildTrayMenu());
+      },
+    },
     {
       label: paused ? "Resume" : "Pause",
       click: () => {
@@ -281,20 +440,35 @@ function createTray() {
 }
 
 function pushStatusUpdate() {
-  if (!monitor || !mainWindow || mainWindow.isDestroyed()) return;
+  if (!monitor) return;
+  let payload;
   try {
-    const wc = mainWindow.webContents;
-    if (!wc || wc.isDestroyed()) return;
-    wc.send("status:update", monitor.snapshot());
+    payload = decorateSnapshot(monitor.snapshot());
   } catch (err) {
     if (!isBenignPipeError(err)) {
       try {
-        console.error("status:update push failed", err);
+        console.error("status:update snapshot failed", err);
       } catch {
         /* ignore */
       }
     }
+    return;
   }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      const wc = mainWindow.webContents;
+      if (wc && !wc.isDestroyed()) wc.send("status:update", payload);
+    } catch (err) {
+      if (!isBenignPipeError(err)) {
+        try {
+          console.error("status:update push failed", err);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+  widget.push("status:update", payload);
 }
 
 function onMonitorState(state) {
@@ -319,22 +493,39 @@ function maybeNotifyOutage(event) {
   if (!event || !db || !monitor) return;
   if (monitor.state.probe_suppressed || monitor._suppressProbes) return;
   const settings = db.getSettings();
+  const snap = monitor.snapshot();
+  const head = statusHeadline(snap);
+  const layerLine = layerLatencyLine(snap);
+  event.status_title = head.title;
+  event.lan_ok = snap.lan_ok;
+  event.wan_ok = snap.wan_ok;
+  event.dns_ok = snap.dns_ok;
+  event.http_ok = snap.http_ok;
+  event.latency_ms = snap.latency_ms;
   if (settings.toast_alerts && Notification.isSupported()) {
-    const type = String(event.type || "outage").toUpperCase();
     if (event.action === "open") {
       new Notification({
-        title: `${type} outage started`,
-        body: "Connectivity check failed after debounce.",
+        title: head.title,
+        body: layerLine,
       }).show();
     } else if (event.action === "close") {
       const dur =
         event.duration_ms != null ? fmtDuration(event.duration_ms) : "unknown duration";
       new Notification({
-        title: `${type} outage ended`,
-        body: `Recovered · ${dur}`,
+        title: head.title,
+        body: `Recovered · ${dur} · ${layerLine}`,
       }).show();
     }
   }
+  pushRecent(
+    "outage",
+    event.action === "close" ? "Recovered" : head.title,
+    event.action === "close"
+      ? `${String(event.type || "outage").toUpperCase()}${
+          event.duration_ms != null ? " · " + fmtDuration(event.duration_ms) : ""
+        }`
+      : layerLine
+  );
   lanBridge
     .onOutageEvent(event.action === "open" ? "outage_open" : "outage_close", event)
     .catch(() => {});
@@ -386,6 +577,7 @@ function processLiveUsageApps(apps, suppress) {
         } catch {
           /* ignore */
         }
+        pushRecent("usage", "New app seen", name || appKey);
       }
     }
     if (suppress || ignoredKeys.has(appKey) || (existing && existing.ignored)) continue;
@@ -451,6 +643,7 @@ function evaluateUsageAlertsAndCaps() {
         body: fire.message || "Usage threshold reached",
       }).show();
     }
+    pushRecent("usage", "Usage alert", fire.message || "Usage threshold reached");
   }
   const capHits = usageControl.evaluateCaps({
     capsJson: settings.usage_caps_json,
@@ -471,6 +664,7 @@ function evaluateUsageAlertsAndCaps() {
     if (settings.toast_alerts) {
       new Notification({ title: "Usage cap", body: capBody }).show();
     }
+    pushRecent("usage", "Usage cap", capBody);
     // Auto-block only with master toggle + explicit auto_block in caps JSON; once per cooldown.
     if (settings.network_control_enabled && hit.auto_block && hit.exe_path) {
       const exe = usageControl.sanitizeExePath(hit.exe_path);
@@ -542,7 +736,20 @@ function historyObservationClocks() {
 }
 
 function registerIpc() {
-  safeHandle("api:status", () => monitor.snapshot());
+  safeHandle("api:status", () => decorateSnapshot(monitor.snapshot()));
+  safeHandle("api:widget:openDashboard", () => {
+    showDashboard();
+    return { ok: true };
+  });
+  safeHandle("api:widget:bounds", (_e, body = {}) => {
+    persistWidgetBounds({
+      x: body.x,
+      y: body.y,
+      width: body.width,
+      height: body.height,
+    });
+    return { ok: true };
+  });
   safeHandle("api:monitors:status", () => {
     const monitors = db ? parseMonitors(db.getSettings()) : [];
     const history = db ? db.listMonitorChecks({ limit: 1000 }) : [];
@@ -572,7 +779,7 @@ function registerIpc() {
       if (speedtestScheduler) speedtestScheduler.startSpeedtestScheduler();
     }
     if (Object.prototype.hasOwnProperty.call(body || {}, "monitors_json")) {
-      startCustomMonitors({ db, monitor });
+      hookCustomMonitors();
     }
     if (Object.prototype.hasOwnProperty.call(body || {}, "probe_retention_days")) {
       try {
@@ -630,6 +837,7 @@ function registerIpc() {
     } catch (err) {
       console.error("lan integration settings failed", err);
     }
+    applyWidgetFromSettingsBody(body || {}, updated);
     return updated;
   });
   safeHandle("api:monitor:pause", (_e, paused) => {
@@ -901,16 +1109,25 @@ function boot() {
     monitor = new Monitor(db, {
       onState: onMonitorState,
       onOutage: maybeNotifyOutage,
+      onDegradation: (ev) => {
+        pushRecent("degradation", ev && ev.title, "");
+      },
       tracerouteFn: traceroutePublic,
     });
-    lanBridge.init({ db, monitor });
+    lanBridge.init({
+      db,
+      monitor,
+      onRecentEvent: (ev) => {
+        pushRecent(ev && ev.kind, ev && ev.title, ev && ev.detail);
+      },
+    });
     speedtestScheduler = createSpeedtestScheduler({ db, monitor, speedtest, usageBridge, userDataPath: () => app.getPath("userData") });
     registerIpc();
     createWindow();
     createTray();
     monitor.start();
     speedtestScheduler.startSpeedtestScheduler();
-    startCustomMonitors({ db, monitor });
+    hookCustomMonitors();
 
     // Flush any queued quiet-hours digests once quiet hours end, even if the
     // user does not change settings.
@@ -954,18 +1171,19 @@ function boot() {
     } else {
       showDashboard();
     }
+    syncWidget(db.getSettings());
   });
 }
 
 app.on("window-all-closed", (e) => {
-  // Tray mode: keep process alive with no visible window.
-  if (!quitting && minimizeToTrayEnabled()) {
+  if (!quitting && (minimizeToTrayEnabled() || widget.isOpen())) {
     e.preventDefault();
   }
 });
 
 app.on("before-quit", () => {
   quitting = true;
+  widget.destroy();
   if (speedtestScheduler) speedtestScheduler.stopSpeedtestScheduler();
   stopCustomMonitors();
   stopUsageRollupInterval();
