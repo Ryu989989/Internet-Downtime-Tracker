@@ -718,8 +718,8 @@
           </label>
           <p class="field-hint" id="autostartHint">
             Registers this app to run at sign-in (current exe path). Prefer the
-            installed Setup build, or keep the portable .exe in a fixed folder.
-            don’t move/rename it after enabling.
+            Setup installer — the portable build unpacks to Temp, and Windows
+            can relaunch that copy after reboot without Chromium’s ffmpeg.dll.
           </p>
           <label class="check">
             <input type="checkbox" name="minimize_to_tray" aria-describedby="minimizeHint" />

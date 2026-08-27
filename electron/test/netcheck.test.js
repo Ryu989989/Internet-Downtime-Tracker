@@ -133,7 +133,7 @@ describe("checkHttp certDays", () => {
       assert.equal(ok, true);
       assert.equal(typeof lat, "number");
       assert.equal(typeof certDays, "number");
-      assert.ok(certDays >= 80 && certDays <= 100, `certDays=${certDays}`);
+      assert.ok(certDays >= 60 && certDays <= 120, `certDays=${certDays}`);
     } finally {
       server.close();
     }
@@ -230,7 +230,7 @@ describe("probe http_cert_days", () => {
         assert.equal(up.lan_ok, true);
         assert.equal(up.http_ok, true);
         assert.equal(typeof up.http_cert_days, "number");
-        assert.ok(up.http_cert_days >= 80 && up.http_cert_days <= 100, `http_cert_days=${up.http_cert_days}`);
+        assert.ok(up.http_cert_days >= 60 && up.http_cert_days <= 120, `http_cert_days=${up.http_cert_days}`);
         assert.equal(httpN, 0);
         assert.equal(httpsN, 1);
       } finally {

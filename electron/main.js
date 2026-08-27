@@ -263,7 +263,11 @@ if (!gotLock) {
   app.on("second-instance", () => {
     showDashboard();
   });
-  app.whenReady().then(boot).catch((err) => {
+  app.whenReady().then(() => {
+    autostart.unregisterApplicationRestart();
+    setTimeout(() => autostart.unregisterApplicationRestart(), 4000);
+    return boot();
+  }).catch((err) => {
     console.error("boot failed", err);
     app.quit();
   });

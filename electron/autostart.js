@@ -11,6 +11,20 @@ const path = require("path");
 
 const RUN_KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const VALUE_NAME = "InternetDowntimeTracker";
+/** Electron setLoginItemSettings writes this (appId) — unquoted, may pin temp unpack. */
+const ELECTRON_RUN_VALUE = "com.local.internetdowntimetracker";
+
+/** Packaged Windows: registry-only. Electron's login item is unquoted and can pin process.execPath. */
+function useElectronLoginItems(platform = process.platform, isPackaged) {
+  if (isPackaged === undefined) {
+    try {
+      isPackaged = !!require("electron").app.isPackaged;
+    } catch {
+      isPackaged = false;
+    }
+  }
+  return !(platform === "win32" && isPackaged);
+}
 
 /** Stable path to the user-launched exe (portable wrapper or installed binary). */
 function resolvedExePath() {
@@ -50,6 +64,10 @@ function isEnabledElectron() {
 
 function setElectron(enabled) {
   const { app } = require("electron");
+  if (!useElectronLoginItems(process.platform, app.isPackaged)) {
+    app.setLoginItemSettings({ openAtLogin: false, openAsHidden: false });
+    return;
+  }
   const on = !!enabled;
   const opts = { openAtLogin: on, openAsHidden: on };
   if (!app.isPackaged) {
@@ -61,11 +79,54 @@ function setElectron(enabled) {
     opts.path = exe;
     opts.args = [project];
   } else {
-    // Packaged (NSIS or portable): always pin the stable launch path.
     opts.path = resolvedExePath();
     opts.args = [];
   }
   app.setLoginItemSettings(opts);
+}
+
+function deleteRunValue(name) {
+  if (process.platform !== "win32" || !name) return;
+  try {
+    const { execFileSync } = require("child_process");
+    execFileSync(
+      "reg",
+      ["delete", `HKCU\\${RUN_KEY}`, "/v", name, "/f"],
+      { windowsHide: true, stdio: ["ignore", "ignore", "ignore"] }
+    );
+  } catch {
+    /* already absent */
+  }
+}
+
+/**
+ * Chromium RegisterApplicationRestart relaunches the inner exe after reboot.
+ * Portable unpacks to %TEMP% then deletes it on exit — leftover dir is missing
+ * ffmpeg.dll (Chromium load-time dep, not an app feature).
+ */
+function unregisterApplicationRestart() {
+  if (process.platform !== "win32") return;
+  const root = process.env.SystemRoot || "C:\\Windows";
+  const ps = path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const script =
+    'Add-Type -TypeDefinition @"\n' +
+    "using System.Runtime.InteropServices;\n" +
+    "public static class NativeRestart {\n" +
+    "  [DllImport(\"kernel32.dll\")] public static extern int UnregisterApplicationRestart();\n" +
+    "}\n" +
+    '"@\n' +
+    "[NativeRestart]::UnregisterApplicationRestart() | Out-Null\n";
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  try {
+    require("child_process").execFile(
+      ps,
+      ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encoded],
+      { windowsHide: true, timeout: 10000 },
+      () => {}
+    );
+  } catch {
+    /* ignore */
+  }
 }
 
 function extractRegistryCommand(regQueryOutput) {
@@ -145,7 +206,7 @@ function setRegistry(enabled) {
 function isEnabled() {
   if (process.platform !== "win32") return false;
   try {
-    if (isEnabledElectron()) return true;
+    if (useElectronLoginItems() && isEnabledElectron()) return true;
   } catch {
     /* ignore */
   }
@@ -168,6 +229,7 @@ function setEnabled(enabled) {
   } catch (err) {
     console.error("registry autostart update failed", err);
   }
+  deleteRunValue(ELECTRON_RUN_VALUE);
   return isEnabled();
 }
 
@@ -186,5 +248,8 @@ module.exports = {
   resolvedExePath,
   registryCommandMatchesExe,
   extractRegistryCommand,
+  useElectronLoginItems,
+  unregisterApplicationRestart,
   VALUE_NAME,
+  ELECTRON_RUN_VALUE,
 };

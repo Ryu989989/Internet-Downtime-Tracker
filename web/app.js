@@ -4349,7 +4349,7 @@ function setupForms() {
         $("#settingsMsg").textContent = "Saved, but Start with Windows failed. Try the Setup installer";
         if (hint) {
           hint.textContent =
-            "Could not register at sign-in. Run the Setup installer, or keep the portable .exe in a fixed folder and try again.";
+            "Could not register at sign-in. Run the Setup installer (portable Temp unpacks break after reboot).";
         }
       } else if (saved.autostart && saved.autostart_path) {
         $("#settingsMsg").textContent = "Saved";

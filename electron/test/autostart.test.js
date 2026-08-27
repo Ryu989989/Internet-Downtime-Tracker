@@ -52,3 +52,17 @@ describe("autostart registry path match", () => {
     assert.equal(registryCommandMatchesExe(`"${exe}" "C:\\proj"`, exe), true);
   });
 });
+
+describe("autostart windows packaged login items", () => {
+  const { useElectronLoginItems, ELECTRON_RUN_VALUE } = require("../autostart");
+
+  it("skips Electron login items on packaged Windows", () => {
+    assert.equal(useElectronLoginItems("win32", true), false);
+    assert.equal(useElectronLoginItems("win32", false), true);
+    assert.equal(useElectronLoginItems("darwin", true), true);
+  });
+
+  it("Electron Run value is the appId", () => {
+    assert.equal(ELECTRON_RUN_VALUE, "com.local.internetdowntimetracker");
+  });
+});
