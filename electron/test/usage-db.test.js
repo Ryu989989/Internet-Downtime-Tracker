@@ -89,6 +89,8 @@ describe("usage db rollup", () => {
     const freshAt = Date.now() / 1000;
     db.insertWifiSample({ mac: "aa:bb:cc:dd:ee:ff", source: "host_nic", at: oldAt, rssi: -70 });
     db.insertWifiSample({ mac: "aa:bb:cc:dd:ee:ff", source: "asus", at: freshAt, rssi: -50 });
+    db.insertWifiEvent({ at: oldAt, kind: "roam", source: "host_nic", ssid: "Home" });
+    db.insertWifiEvent({ at: freshAt, kind: "disconnect", source: "wlan", ssid: "Home" });
     db.insertRouterHealthSample({ at: oldAt, cpu_pct: 10, vendor: "asuswrt" });
     db.insertRouterHealthSample({ at: freshAt, cpu_pct: 20, vendor: "asuswrt" });
     db.pruneProbes();
@@ -101,6 +103,8 @@ describe("usage db rollup", () => {
     assert.ok(db._get("SELECT * FROM outages WHERE id=?", [outageId]));
     assert.equal(db._get("SELECT COUNT(*) AS c FROM probes").c, 1);
     assert.equal(db._get("SELECT COUNT(*) AS c FROM wifi_samples").c, 1);
+    assert.equal(db._get("SELECT COUNT(*) AS c FROM wifi_events").c, 1);
+    assert.equal(db._get("SELECT kind FROM wifi_events").kind, "disconnect");
     assert.equal(db._get("SELECT COUNT(*) AS c FROM router_health_samples").c, 1);
     assert.equal(db.getLatestRouterHealth().cpu_pct, 20);
     assert.equal(db.listWifiHistory({ mac: "aa:bb:cc:dd:ee:ff" }).length, 1);
@@ -108,6 +112,7 @@ describe("usage db rollup", () => {
     const fn = src.match(/pruneProbes\([\s\S]*?\n  \}/)[0];
     assert.match(fn, /DELETE FROM probes/);
     assert.match(fn, /DELETE FROM wifi_samples/);
+    assert.match(fn, /DELETE FROM wifi_events/);
     assert.match(fn, /DELETE FROM router_health_samples/);
     assert.doesNotMatch(fn, /DELETE FROM outages/);
   });
@@ -156,5 +161,52 @@ describe("usage settings bools", () => {
     assert.equal(updated.network_control_enabled, true);
     const reloaded = db.getSettings();
     assert.equal(reloaded.usage_monitoring, true);
+  });
+});
+
+describe("wifi_events", () => {
+  let dir;
+  let db;
+
+  before(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "idt-wifi-events-"));
+    db = await TrackerDb.open(path.join(dir, "tracker.db"));
+  });
+
+  after(() => {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("insertWifiEvent skips empty kind and dedups same at/kind/source/event_id within 1s", () => {
+    const at = 1_700_000_100;
+    assert.equal(db.insertWifiEvent({ at, kind: "", source: "wlan" }), null);
+    assert.equal(db.insertWifiEvent({ at, kind: null, source: "wlan" }), null);
+    const first = db.insertWifiEvent({
+      at,
+      kind: "disconnect",
+      source: "wlan",
+      event_id: 8003,
+      ssid: "Home",
+    });
+    assert.ok(first);
+    assert.equal(first.kind, "disconnect");
+    const dup = db.insertWifiEvent({
+      at: at + 0.4,
+      kind: "disconnect",
+      source: "wlan",
+      event_id: 8003,
+    });
+    assert.equal(dup, null);
+    const other = db.insertWifiEvent({
+      at: at + 0.4,
+      kind: "connect",
+      source: "wlan",
+      event_id: 8001,
+    });
+    assert.ok(other);
+    const listed = db.listWifiEvents({ fromTs: at - 1, toTs: at + 2, limit: 500 });
+    assert.equal(listed.length, 2);
+    assert.ok(listed.every((r) => r.kind === "disconnect" || r.kind === "connect"));
   });
 });
