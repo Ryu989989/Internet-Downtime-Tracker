@@ -319,7 +319,7 @@ describe("router poller / IPC", () => {
     await lanBridge.pollRouterOnce();
     const lanId = db.openOutage("lan", started);
     db.insertWifiEvent({
-      at: started + 1,
+      at: started,
       kind: "disconnect",
       event_id: 8003,
       source: "WLAN",

@@ -274,7 +274,7 @@ describe("scanWindowsLogs EventData script and events array", () => {
     const hit = getCached({ from: 1, to: 1_800_000_000 });
     assert.ok(hit);
     assert.ok(hit.cached);
-    assert.match(String(hit.events[0].message), /first-scan/);
+    assert.match(String(hit.events[0].reason), /first-scan/);
     clearCache();
   });
 });
