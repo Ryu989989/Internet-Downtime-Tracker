@@ -34,8 +34,10 @@ const MERGE_GAP_MS = 60_000;
 /** @type {{ from: number, to: number, scanned_at: number, gaps: object[], sources: string[], warnings: string[] } | null} */
 let cache = null;
 
-const DISCONNECT_IDS = new Set([10001, 8003, 27, 32, 4202]);
-const CONNECT_IDS = new Set([10000, 8001, 4201]);
+const DISCONNECT_IDS = new Set([10001, 8003, 11004, 27, 32, 4202]);
+const CONNECT_IDS = new Set([10000, 8001, 8000, 8002, 11000, 11001, 11005, 4201, 107, 12013]);
+const FAIL_IDS = new Set([11002, 11006]);
+const SLEEP_IDS = new Set([42]);
 
 const QUERY_SPECS = [
   {
@@ -45,7 +47,7 @@ const QUERY_SPECS = [
   },
   {
     log: "Microsoft-Windows-WLAN-AutoConfig/Operational",
-    ids: [8001, 8003],
+    ids: [8001, 8003, 8000, 8002, 11000, 11001, 11002, 11004, 11005, 11006, 12013],
     label: "WLAN",
   },
   {
@@ -54,12 +56,20 @@ const QUERY_SPECS = [
     providers: ["Tcpip", "NDIS", "Dhcp-Client", "e1dexpress", "Netwtw04", "Netwtw06", "Netwtw10", "Netwtw12", "Netwtw14"],
     label: "System/NIC",
   },
+  {
+    log: "System",
+    ids: [42, 107],
+    providers: ["Microsoft-Windows-Kernel-Power"],
+    label: "Kernel-Power",
+  },
 ];
 
 function classifyEvent(id) {
   const n = Number(id);
   if (DISCONNECT_IDS.has(n)) return "disconnect";
   if (CONNECT_IDS.has(n)) return "connect";
+  if (FAIL_IDS.has(n)) return "fail";
+  if (SLEEP_IDS.has(n)) return "sleep";
   return null;
 }
 
@@ -199,6 +209,8 @@ function normalizeRawEvents(rawList) {
 
     const provider = raw.ProviderName || raw.providerName || raw.provider || "";
     const source = raw._sourceLabel || provider || "Windows";
+    const eventData =
+      raw.EventData != null ? raw.EventData : raw.eventData != null ? raw.eventData : null;
     out.push({
       time: timeSec,
       kind,
@@ -210,6 +222,7 @@ function normalizeRawEvents(rawList) {
         provider,
         source,
       }),
+      eventData,
     });
   }
   return out;
@@ -272,7 +285,7 @@ function runPowerShell(script, timeoutMs) {
 }
 
 function buildScanScript(fromDateIso, toDateIso) {
-  // Emit JSON array of {TimeCreated,Id,ProviderName,Message,_sourceLabel}
+  // Emit JSON array of {TimeCreated,Id,ProviderName,Message,EventData,_sourceLabel}
   const specsJson = JSON.stringify(
     QUERY_SPECS.map((s) => ({
       LogName: s.log,
@@ -300,7 +313,7 @@ foreach ($s in $specs) {
         }
         if (-not $ok) {
           # System NIC events: also accept common wireless/ethernet substrings
-          if ($s.LogName -eq 'System') {
+          if ($s.LogName -eq 'System' -and $s.Label -eq 'System/NIC') {
             $pn = [string]$e.ProviderName
             if ($pn -match 'Tcpip|NDIS|Dhcp|Netwtw|e1d|Intel|Realtek|Killer|Broadcom|Qualcomm|MediaTek|Wi-?Fi|Wireless') { $ok = $true }
           }
@@ -308,18 +321,30 @@ foreach ($s in $specs) {
         if (-not $ok) { continue }
       }
       $msg = if ($e.Message) { (($e.Message -replace '[\\r\\n]+',' ') -replace '\\s+',' ').Trim() } else { '' }
-      if ($msg.Length -gt 200) { $msg = $msg.Substring(0, 200) }
+      if ($msg.Length -gt 800) { $msg = $msg.Substring(0, 800) }
+      $edObj = $null
+      try {
+        $xml = [xml]$e.ToXml()
+        $edMap = [ordered]@{}
+        foreach ($d in @($xml.Event.EventData.Data)) {
+          $n = $d.Name
+          if (-not $n) { continue }
+          $edMap[$n] = [string]$d.'#text'
+        }
+        if ($edMap.Count -gt 0) { $edObj = [pscustomobject]$edMap }
+      } catch {}
       $all += [pscustomobject]@{
         TimeCreated = $e.TimeCreated.ToUniversalTime().ToString('o')
         Id = $e.Id
         ProviderName = $e.ProviderName
         Message = $msg
+        EventData = $edObj
         _sourceLabel = $s.Label
       }
     }
   } catch {}
 }
-if ($all.Count -eq 0) { '[]' } else { $all | ConvertTo-Json -Compress -Depth 3 }
+if ($all.Count -eq 0) { '[]' } else { $all | ConvertTo-Json -Compress -Depth 5 }
 `.trim();
 }
 
@@ -353,6 +378,7 @@ async function scanWindowsLogs(params = {}) {
       to,
       scanned_at: Date.now() / 1000,
       gaps: [],
+      events: [],
       count: 0,
       event_count: 0,
       sources: [],
@@ -392,6 +418,7 @@ async function scanWindowsLogs(params = {}) {
       to,
       scanned_at: Date.now() / 1000,
       gaps: [],
+      events: [],
       count: 0,
       event_count: 0,
       sources: sourcesTried,
@@ -422,6 +449,7 @@ async function scanWindowsLogs(params = {}) {
     to,
     scanned_at: Date.now() / 1000,
     gaps,
+    events,
     count: gaps.length,
     event_count: events.length,
     sources: sourcesTried,
@@ -476,6 +504,7 @@ module.exports = {
   getCached,
   clearCache,
   powershellExe,
+  QUERY_SPECS,
   setRunPowerShellForTest: (fn) => {
     runPowerShellOverride = fn;
   },
