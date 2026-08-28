@@ -40,6 +40,7 @@ const DEFAULT_SETTINGS = {
   network_control_enabled: false,
   usage_caps_json: "{}",
   usage_alerts_json: "{}",
+  wifi_alerts_json: "{}",
   lan_devices_enabled: true,
   lan_new_device_toast: false,
   snmp_enabled: false,
@@ -65,6 +66,17 @@ const DEFAULT_SETTINGS = {
   router_webhook_url: "",
   router_webhook_template: "",
   router_webhook_auto_new: false,
+  router_poll_enabled: false,
+  router_writes_enabled: false,
+  router_vendor: "asuswrt",
+  router_host: "",
+  router_https: false,
+  router_user: "admin",
+  router_password: "",
+  router_interval_s: 30,
+  router_port: "",
+  router_targets_json: "[]",
+  router_secrets_json: "{}",
   speedtest_interval_min: 0,
   auto_traceroute_on_outage: false,
   degradation_loss_pct: 0,
@@ -97,6 +109,7 @@ const SETTINGS_BOUNDS = {
   probe_retention_days: { min: 1, max: 365 },
   port: { min: 1, max: 65535 },
   lan_discovery_interval_min: { min: 5, max: 1440 },
+  router_interval_s: { min: 15, max: 300 },
   speedtest_interval_min: { min: 0, max: 10080 },
   degradation_loss_pct: { min: 0, max: 100 },
   degradation_latency_ms: { min: 0, max: 30000 },
@@ -126,6 +139,9 @@ const BOOL_SETTINGS = new Set([
   "http_api_enabled",
   "lan_active_discovery",
   "router_webhook_auto_new",
+  "router_poll_enabled",
+  "router_writes_enabled",
+  "router_https",
   "auto_traceroute_on_outage",
   "widget_enabled",
   "widget_always_on_top",
@@ -134,10 +150,13 @@ const BOOL_SETTINGS = new Set([
 const JSON_SETTINGS = new Set([
   "usage_caps_json",
   "usage_alerts_json",
+  "wifi_alerts_json",
   "notify_webhooks_json",
   "notify_quiet_hours_json",
   "monitors_json",
   "widget_modules_json",
+  "router_targets_json",
+  "router_secrets_json",
 ]);
 
 const STRING_SETTINGS_MAX = {
@@ -154,6 +173,9 @@ const STRING_SETTINGS_MAX = {
   http_api_token: 128,
   router_webhook_url: 2000,
   router_webhook_template: 4000,
+  router_host: 253,
+  router_user: 64,
+  router_password: 256,
   telegram_bot_token: 256,
   telegram_chat_id: 120,
   ntfy_host: 120,
@@ -172,10 +194,15 @@ const LIST_OUTAGES_LIMIT_MAX = 5000;
 const SECRET_SETTINGS = new Set([
   "telegram_bot_token",
   "email_smtp_pass",
+  "router_password",
+  "router_secrets_json",
   "influx_token",
   "es_api_key",
   "http_api_token",
 ]);
+
+const ROUTER_TARGETS_CAP = 4;
+const ROUTER_TARGET_VENDORS = new Set(["asuswrt", "nighthawk", "unifi", "omada"]);
 
 /**
  * Coerce/clamp a settings value. Returns null to reject (keep prior / skip write).
@@ -194,6 +221,86 @@ function coerceBoolSetting(value) {
 }
 
 const USAGE_JSON_SETTINGS_MAX = 8000;
+const WIFI_ALERTS_MACS_CAP = 64;
+const DEFAULT_WIFI_ALERTS = {
+  enabled: false,
+  rssi_dbm: null,
+  signal_pct: null,
+  debounce_n: 3,
+  macs: [],
+};
+
+function normalizeAlertMac(raw) {
+  const hex = String(raw || "")
+    .replace(/[^0-9a-fA-F]/g, "")
+    .toUpperCase();
+  if (hex.length !== 12) return null;
+  return hex.match(/.{2}/g).join(":");
+}
+
+/** Canonical wifi_alerts_json: { enabled, rssi_dbm, signal_pct, debounce_n, macs[] }. */
+function normalizeWifiAlertsJson(value) {
+  let obj;
+  if (value == null) return null;
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return null;
+    try {
+      obj = JSON.parse(s);
+    } catch {
+      return null;
+    }
+  } else if (typeof value === "object") {
+    obj = value;
+  } else {
+    return null;
+  }
+  if (obj === null || Array.isArray(obj) || typeof obj !== "object") return null;
+  const rssiRaw = obj.rssi_dbm;
+  let rssi_dbm = null;
+  if (rssiRaw != null && rssiRaw !== "") {
+    const n = Number(rssiRaw);
+    if (Number.isFinite(n)) rssi_dbm = Math.min(0, Math.max(-120, Math.round(n)));
+  }
+  const pctRaw = obj.signal_pct;
+  let signal_pct = null;
+  if (pctRaw != null && pctRaw !== "") {
+    const n = Number(pctRaw);
+    if (Number.isFinite(n)) signal_pct = Math.min(100, Math.max(0, Math.round(n)));
+  }
+  let debounce_n = Math.trunc(Number(obj.debounce_n));
+  if (!Number.isFinite(debounce_n) || debounce_n < 1) debounce_n = 3;
+  debounce_n = Math.min(20, Math.max(1, debounce_n));
+  const macs = [];
+  const seen = new Set();
+  const rawMacs = Array.isArray(obj.macs) ? obj.macs : typeof obj.macs === "string" ? obj.macs.split(/[\s,]+/) : [];
+  for (const item of rawMacs) {
+    const mac = normalizeAlertMac(item);
+    if (!mac || seen.has(mac)) continue;
+    seen.add(mac);
+    macs.push(mac);
+    if (macs.length >= WIFI_ALERTS_MACS_CAP) break;
+  }
+  const text = JSON.stringify({
+    enabled: !!obj.enabled,
+    rssi_dbm,
+    signal_pct,
+    debounce_n,
+    macs,
+  });
+  if (text.length > USAGE_JSON_SETTINGS_MAX) return null;
+  return text;
+}
+
+function parseWifiAlertsJson(value) {
+  const n = normalizeWifiAlertsJson(value);
+  if (n == null) return { ...DEFAULT_WIFI_ALERTS, macs: [] };
+  try {
+    return JSON.parse(n);
+  } catch {
+    return { ...DEFAULT_WIFI_ALERTS, macs: [] };
+  }
+}
 
 /** Normalize usage_caps_json / usage_alerts_json to a compact object JSON string. */
 function normalizeUsageJsonSetting(value) {
@@ -307,12 +414,174 @@ function normalizeWidgetCoord(value) {
   return n;
 }
 
+function legacyRouterTargetFromSettings(s) {
+  const vendor = String((s && s.router_vendor) || "asuswrt")
+    .trim()
+    .toLowerCase();
+  return {
+    id: "default",
+    vendor: ROUTER_TARGET_VENDORS.has(vendor) ? vendor : "asuswrt",
+    host: String((s && s.router_host) || "").trim(),
+    user: String((s && s.router_user) || "").trim() || "admin",
+    port: String((s && s.router_port) || "").trim(),
+    https: !!(s && s.router_https),
+    enabled: true,
+  };
+}
+
+function parseRouterTargetsJson(value) {
+  let arr;
+  if (value == null || value === "") return [];
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return [];
+    try {
+      arr = JSON.parse(s);
+    } catch {
+      return null;
+    }
+  } else if (Array.isArray(value)) {
+    arr = value;
+  } else {
+    return null;
+  }
+  if (!Array.isArray(arr)) return null;
+  const out = [];
+  const seen = new Set();
+  for (const t of arr) {
+    if (out.length >= ROUTER_TARGETS_CAP) break;
+    if (!t || typeof t !== "object") continue;
+    const id = String(t.id || "")
+      .trim()
+      .slice(0, 64);
+    if (!id || seen.has(id) || !/^[a-zA-Z0-9_-]+$/.test(id)) continue;
+    const vendor = String(t.vendor || "")
+      .trim()
+      .toLowerCase();
+    if (!ROUTER_TARGET_VENDORS.has(vendor)) continue;
+    const host = String(t.host == null ? "" : t.host)
+      .trim()
+      .slice(0, 253);
+    const user = String(t.user == null ? "" : t.user)
+      .trim()
+      .slice(0, 64) || "admin";
+    let port = "";
+    if (t.port != null && String(t.port).trim() !== "") {
+      const n = Math.trunc(Number(t.port));
+      if (!Number.isFinite(n) || n < 1 || n > 65535) continue;
+      port = String(n);
+    }
+    const en = coerceBoolSetting(t.enabled);
+    const row = {
+      id,
+      vendor,
+      host,
+      user,
+      port,
+      https: !!t.https,
+      enabled: en == null ? true : en,
+    };
+    if (vendor === "asuswrt") {
+      const ssh_user = String(t.ssh_user == null ? "" : t.ssh_user).trim().slice(0, 64);
+      let ssh_key_path = String(t.ssh_key_path == null ? "" : t.ssh_key_path)
+        .trim()
+        .slice(0, 512)
+        .replace(/[\r\n\0]/g, "");
+      if (/BEGIN .+ PRIVATE KEY/i.test(ssh_key_path) || ssh_key_path === "-" || ssh_key_path.startsWith("-")) {
+        ssh_key_path = "";
+      }
+      const ifaceRaw = Array.isArray(t.ssh_ifaces) ? t.ssh_ifaces.join(",") : t.ssh_ifaces;
+      const ssh_ifaces = String(ifaceRaw == null ? "" : ifaceRaw).trim().slice(0, 128);
+      if (ssh_user) row.ssh_user = ssh_user;
+      if (ssh_key_path) row.ssh_key_path = ssh_key_path;
+      if (ssh_ifaces) row.ssh_ifaces = ssh_ifaces;
+    }
+    out.push(row);
+    seen.add(id);
+  }
+  return out;
+}
+
+function parseRouterSecretsJson(value) {
+  let obj;
+  if (value == null || value === "") return {};
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return {};
+    try {
+      obj = JSON.parse(s);
+    } catch {
+      return null;
+    }
+  } else if (typeof value === "object" && !Array.isArray(value)) {
+    obj = value;
+  } else {
+    return null;
+  }
+  const out = {};
+  for (const [id, creds] of Object.entries(obj)) {
+    const key = String(id)
+      .trim()
+      .slice(0, 64);
+    if (!key || !creds || typeof creds !== "object") continue;
+    out[key] = {
+      password: String(creds.password == null ? "" : creds.password).slice(0, 256),
+      api_key: String(creds.api_key == null ? "" : creds.api_key).slice(0, 256),
+    };
+  }
+  const text = JSON.stringify(out);
+  if (text.length > USAGE_JSON_SETTINGS_MAX) return null;
+  return out;
+}
+
+function mergeRouterSecrets(incoming, existing, targetIds) {
+  const old = parseRouterSecretsJson(existing) || {};
+  const inc = parseRouterSecretsJson(incoming);
+  if (inc == null) return old;
+  const ids =
+    Array.isArray(targetIds) && targetIds.length ? targetIds : Object.keys({ ...old, ...inc });
+  const out = {};
+  for (const id of ids) {
+    const n = inc[id] || {};
+    const o = old[id] || {};
+    out[id] = {
+      password: String(n.password || "").trim() || o.password || "",
+      api_key: String(n.api_key || "").trim() || o.api_key || "",
+    };
+  }
+  return out;
+}
+
+function resolveRouterTargets(s) {
+  const settings = s || {};
+  let targets = parseRouterTargetsJson(settings.router_targets_json);
+  if (targets == null) targets = [];
+  let secrets = parseRouterSecretsJson(settings.router_secrets_json);
+  if (secrets == null) secrets = {};
+  if (!targets.length) {
+    const t = legacyRouterTargetFromSettings(settings);
+    targets = [t];
+    const prev = secrets.default || {};
+    secrets = {
+      ...secrets,
+      default: {
+        password: String(settings.router_password || prev.password || ""),
+        api_key: String(prev.api_key || ""),
+      },
+    };
+  }
+  return { targets, secrets };
+}
+
 function normalizeSettingValue(key, value) {
   if (BOOL_SETTINGS.has(key)) {
     return coerceBoolSetting(value);
   }
   if (key === "usage_caps_json" || key === "usage_alerts_json") {
     return normalizeUsageJsonSetting(value);
+  }
+  if (key === "wifi_alerts_json") {
+    return normalizeWifiAlertsJson(value);
   }
   if (key === "notify_webhooks_json") {
     const raw = normalizeJsonArrayOrObjectSetting(value, true);
@@ -334,6 +603,35 @@ function normalizeSettingValue(key, value) {
     const s = String(value).trim();
     if (s.length > STRING_SETTINGS_MAX.router_webhook_url) return null;
     return normalizeWebhookUrl(s) || null;
+  }
+  if (key === "router_vendor") {
+    const s = String(value == null ? "" : value).trim().toLowerCase();
+    if (ROUTER_TARGET_VENDORS.has(s)) return s;
+    return null;
+  }
+  if (key === "router_port") {
+    if (value == null || String(value).trim() === "") return "";
+    const n = Math.trunc(Number(value));
+    if (!Number.isFinite(n) || n < 1 || n > 65535) return null;
+    return String(n);
+  }
+  if (key === "router_user") {
+    const s = String(value == null ? "" : value).trim();
+    if (!s) return "admin";
+    if (s.length > STRING_SETTINGS_MAX.router_user) return null;
+    return s;
+  }
+  if (key === "router_targets_json") {
+    const parsed = parseRouterTargetsJson(value);
+    if (parsed == null) return null;
+    const text = JSON.stringify(parsed);
+    if (text.length > USAGE_JSON_SETTINGS_MAX) return null;
+    return text;
+  }
+  if (key === "router_secrets_json") {
+    const parsed = parseRouterSecretsJson(value);
+    if (parsed == null) return null;
+    return JSON.stringify(parsed);
   }
   if (STRING_SETTINGS_MAX[key] != null && key !== "notify_webhooks_json" && key !== "notify_quiet_hours_json") {
     if (value == null) return "";
@@ -657,6 +955,134 @@ class TrackerDb {
     }
   }
 
+  _putSetting(key, value) {
+    this._run(
+      `INSERT INTO settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+      [key, JSON.stringify(value)]
+    );
+  }
+
+  _settingRow(key) {
+    const row = this._get("SELECT value FROM settings WHERE key=?", [key]);
+    if (!row) return undefined;
+    try {
+      return JSON.parse(row.value);
+    } catch {
+      return row.value;
+    }
+  }
+
+  _migrateLegacyRouterTargets() {
+    const existing = parseRouterTargetsJson(this._settingRow("router_targets_json"));
+    if (existing && existing.length) return;
+    const s = {
+      router_vendor: this._settingRow("router_vendor"),
+      router_host: this._settingRow("router_host"),
+      router_user: this._settingRow("router_user"),
+      router_password: this._settingRow("router_password"),
+      router_port: this._settingRow("router_port"),
+      router_https: this._settingRow("router_https"),
+    };
+    const target = legacyRouterTargetFromSettings(s);
+    const secrets = parseRouterSecretsJson(this._settingRow("router_secrets_json")) || {};
+    if (!String((secrets.default && secrets.default.password) || "").trim()) {
+      secrets.default = {
+        password: String(s.router_password || "").slice(0, 256),
+        api_key: (secrets.default && secrets.default.api_key) || "",
+      };
+    }
+    this._putSetting("router_targets_json", JSON.stringify([target]));
+    this._putSetting("router_secrets_json", JSON.stringify(secrets));
+  }
+
+  _applyRouterTargetUpdates(updates, existing, next) {
+    const hasTargets = Object.prototype.hasOwnProperty.call(updates, "router_targets_json");
+    const hasSecrets = Object.prototype.hasOwnProperty.call(updates, "router_secrets_json");
+    const legacyKeys = [
+      "router_vendor",
+      "router_host",
+      "router_user",
+      "router_password",
+      "router_port",
+      "router_https",
+    ];
+    const hasLegacy = legacyKeys.some((k) => Object.prototype.hasOwnProperty.call(updates, k));
+    if (!hasTargets && !hasSecrets && !hasLegacy) return;
+
+    let targets = parseRouterTargetsJson(next.router_targets_json) || [];
+    if (hasTargets) {
+      const parsed = parseRouterTargetsJson(updates.router_targets_json);
+      if (parsed) targets = parsed;
+    }
+    if (!targets.length) {
+      targets = [legacyRouterTargetFromSettings(next)];
+    } else if (hasLegacy && !hasTargets) {
+      let idx = targets.findIndex((t) => t.id === "default");
+      if (idx < 0) idx = 0;
+      const t = { ...targets[idx] };
+      if (Object.prototype.hasOwnProperty.call(updates, "router_vendor")) {
+        t.vendor = next.router_vendor === "nighthawk" ? "nighthawk" : t.vendor;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "router_host")) {
+        t.host = String(next.router_host || "").trim();
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "router_user")) {
+        t.user = String(next.router_user || "").trim() || "admin";
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "router_port")) {
+        t.port = String(next.router_port || "").trim();
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "router_https")) {
+        t.https = !!next.router_https;
+      }
+      targets[idx] = t;
+    }
+
+    const ids = targets.map((t) => t.id);
+    let secrets = parseRouterSecretsJson(next.router_secrets_json) || {};
+    if (hasSecrets) {
+      const raw = updates.router_secrets_json;
+      const blank = raw == null || String(raw).trim() === "";
+      secrets = mergeRouterSecrets(blank ? "{}" : raw, secrets, ids);
+    } else {
+      secrets = mergeRouterSecrets("{}", secrets, ids);
+      if (Object.prototype.hasOwnProperty.call(updates, "router_password")) {
+        const pw = String(updates.router_password || "").trim();
+        if (pw) {
+          const id = (targets.find((x) => x.id === "default") || targets[0]).id;
+          const prev = secrets[id] || {};
+          secrets[id] = { password: pw, api_key: prev.api_key || "" };
+        }
+      }
+    }
+
+    const targetsJson = JSON.stringify(targets);
+    const secretsJson = JSON.stringify(secrets);
+    this._putSetting("router_targets_json", targetsJson);
+    this._putSetting("router_secrets_json", secretsJson);
+    next.router_targets_json = targetsJson;
+    next.router_secrets_json = secretsJson;
+
+    const t0 = targets[0];
+    if (!t0) return;
+    this._putSetting("router_vendor", t0.vendor);
+    this._putSetting("router_host", t0.host);
+    this._putSetting("router_user", t0.user);
+    this._putSetting("router_port", t0.port);
+    this._putSetting("router_https", t0.https);
+    next.router_vendor = t0.vendor;
+    next.router_host = t0.host;
+    next.router_user = t0.user;
+    next.router_port = t0.port;
+    next.router_https = t0.https;
+    const pw = secrets[t0.id] && secrets[t0.id].password;
+    if (pw) {
+      this._putSetting("router_password", pw);
+      next.router_password = pw;
+    }
+  }
+
   _run(sql, params = []) {
     try {
       this.db.run(sql, params);
@@ -793,10 +1219,61 @@ class TrackerDb {
         last_seen REAL,
         online INTEGER NOT NULL DEFAULT 0,
         source TEXT,
-        gateway INTEGER NOT NULL DEFAULT 0
+        gateway INTEGER NOT NULL DEFAULT 0,
+        wifi_rssi REAL,
+        wifi_signal_pct REAL,
+        wifi_band TEXT,
+        wifi_tx_mbps REAL,
+        wifi_rx_mbps REAL,
+        wifi_node_mac TEXT,
+        wifi_ssid TEXT,
+        last_wifi_at REAL
       );
       CREATE INDEX IF NOT EXISTS idx_lan_devices_ip ON lan_devices(ip);
       CREATE INDEX IF NOT EXISTS idx_lan_devices_last ON lan_devices(last_seen);
+
+      CREATE TABLE IF NOT EXISTS wifi_samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mac TEXT NOT NULL,
+        source TEXT,
+        at REAL NOT NULL,
+        rssi REAL,
+        signal_pct REAL,
+        band TEXT,
+        ssid TEXT,
+        bssid TEXT,
+        channel INTEGER,
+        tx_mbps REAL,
+        rx_mbps REAL,
+        node_mac TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_wifi_samples_mac_at ON wifi_samples(mac, at);
+
+      CREATE TABLE IF NOT EXISTS router_health_samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at REAL NOT NULL,
+        cpu_pct REAL,
+        mem_used REAL,
+        mem_total REAL,
+        wan_ok INTEGER,
+        wan_ip TEXT,
+        model TEXT,
+        firmware TEXT,
+        vendor TEXT,
+        extra_json TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_router_health_at ON router_health_samples(at);
+
+      CREATE TABLE IF NOT EXISTS router_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at REAL NOT NULL,
+        target_id TEXT,
+        action TEXT NOT NULL,
+        mac TEXT,
+        ok INTEGER NOT NULL DEFAULT 0,
+        error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_router_actions_at ON router_actions(at);
 
       CREATE TABLE IF NOT EXISTS lan_scan_results (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -838,6 +1315,7 @@ class TrackerDb {
         JSON.stringify(value),
       ]);
     }
+    this._migrateLegacyRouterTargets();
   }
 
   _migrateSchema() {
@@ -895,6 +1373,30 @@ class TrackerDb {
     if (!lanCols.has("iface")) {
       this._run("ALTER TABLE lan_devices ADD COLUMN iface TEXT");
     }
+    if (!lanCols.has("wifi_rssi")) {
+      this._run("ALTER TABLE lan_devices ADD COLUMN wifi_rssi REAL");
+    }
+    if (!lanCols.has("wifi_signal_pct")) {
+      this._run("ALTER TABLE lan_devices ADD COLUMN wifi_signal_pct REAL");
+    }
+    if (!lanCols.has("wifi_band")) {
+      this._run("ALTER TABLE lan_devices ADD COLUMN wifi_band TEXT");
+    }
+    if (!lanCols.has("wifi_tx_mbps")) {
+      this._run("ALTER TABLE lan_devices ADD COLUMN wifi_tx_mbps REAL");
+    }
+    if (!lanCols.has("wifi_rx_mbps")) {
+      this._run("ALTER TABLE lan_devices ADD COLUMN wifi_rx_mbps REAL");
+    }
+    if (!lanCols.has("wifi_node_mac")) {
+      this._run("ALTER TABLE lan_devices ADD COLUMN wifi_node_mac TEXT");
+    }
+    if (!lanCols.has("wifi_ssid")) {
+      this._run("ALTER TABLE lan_devices ADD COLUMN wifi_ssid TEXT");
+    }
+    if (!lanCols.has("last_wifi_at")) {
+      this._run("ALTER TABLE lan_devices ADD COLUMN last_wifi_at REAL");
+    }
   }
 
   close() {
@@ -921,8 +1423,10 @@ class TrackerDb {
   updateSettings(updates) {
     const allowed = new Set(Object.keys(DEFAULT_SETTINGS));
     const existing = this.getSettings();
+    const next = { ...existing };
+    const skip = new Set(["router_targets_json", "router_secrets_json"]);
     for (const [key, value] of Object.entries(updates || {})) {
-      if (!allowed.has(key)) continue;
+      if (!allowed.has(key) || skip.has(key)) continue;
       // The UI redacts secrets to empty strings. Don't overwrite a saved secret
       // with a blank value from the form.
       if (
@@ -935,12 +1439,10 @@ class TrackerDb {
       }
       const normalized = normalizeSettingValue(key, value);
       if (normalized == null && key !== "widget_x" && key !== "widget_y") continue;
-      this._run(
-        `INSERT INTO settings (key, value) VALUES (?, ?)
-         ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-        [key, JSON.stringify(normalized)]
-      );
+      next[key] = normalized;
+      this._putSetting(key, normalized);
     }
+    this._applyRouterTargetUpdates(updates || {}, existing, next);
     this._persistImmediate();
     return this.getSettings();
   }
@@ -1245,6 +1747,9 @@ class TrackerDb {
     }
     const cutoff = Date.now() / 1000 - days * 86400;
     this._run("DELETE FROM probes WHERE timestamp < ?", [cutoff]);
+    this._run("DELETE FROM wifi_samples WHERE at < ?", [cutoff]);
+    this._run("DELETE FROM router_health_samples WHERE at < ?", [cutoff]);
+    this._run("DELETE FROM router_actions WHERE at < ?", [cutoff]);
     this._persistImmediate();
     return 0;
   }
@@ -1693,9 +2198,15 @@ class TrackerDb {
   upsertLanDevice(row) {
     const mac = String(row.mac || "").toUpperCase();
     if (!mac) return null;
+    const numOrNull = (v) => {
+      if (v == null || v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
     this._run(
-      `INSERT INTO lan_devices (mac, ip, vendor, alias, notes, hostname, state, iface, first_seen, last_seen, online, source, gateway)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO lan_devices (mac, ip, vendor, alias, notes, hostname, state, iface, first_seen, last_seen, online, source, gateway,
+         wifi_rssi, wifi_signal_pct, wifi_band, wifi_tx_mbps, wifi_rx_mbps, wifi_node_mac, wifi_ssid, last_wifi_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(mac) DO UPDATE SET
          ip=excluded.ip,
          vendor=COALESCE(excluded.vendor, lan_devices.vendor),
@@ -1707,7 +2218,15 @@ class TrackerDb {
          last_seen=excluded.last_seen,
          online=excluded.online,
          source=excluded.source,
-         gateway=excluded.gateway`,
+         gateway=excluded.gateway,
+         wifi_rssi=COALESCE(excluded.wifi_rssi, lan_devices.wifi_rssi),
+         wifi_signal_pct=COALESCE(excluded.wifi_signal_pct, lan_devices.wifi_signal_pct),
+         wifi_band=COALESCE(excluded.wifi_band, lan_devices.wifi_band),
+         wifi_tx_mbps=COALESCE(excluded.wifi_tx_mbps, lan_devices.wifi_tx_mbps),
+         wifi_rx_mbps=COALESCE(excluded.wifi_rx_mbps, lan_devices.wifi_rx_mbps),
+         wifi_node_mac=COALESCE(excluded.wifi_node_mac, lan_devices.wifi_node_mac),
+         wifi_ssid=COALESCE(excluded.wifi_ssid, lan_devices.wifi_ssid),
+         last_wifi_at=COALESCE(excluded.last_wifi_at, lan_devices.last_wifi_at)`,
       [
         mac,
         row.ip != null ? String(row.ip).slice(0, 64) : null,
@@ -1722,6 +2241,14 @@ class TrackerDb {
         row.online ? 1 : 0,
         row.source != null ? String(row.source).slice(0, 32) : "neighbor",
         row.gateway ? 1 : 0,
+        numOrNull(row.wifi_rssi),
+        numOrNull(row.wifi_signal_pct),
+        row.wifi_band != null ? String(row.wifi_band).slice(0, 32) : null,
+        numOrNull(row.wifi_tx_mbps),
+        numOrNull(row.wifi_rx_mbps),
+        row.wifi_node_mac != null ? String(row.wifi_node_mac).toUpperCase().slice(0, 32) : null,
+        row.wifi_ssid != null ? String(row.wifi_ssid).slice(0, 64) : null,
+        numOrNull(row.last_wifi_at),
       ]
     );
     return this.getLanDevice(mac);
@@ -1787,6 +2314,123 @@ class TrackerDb {
       [target]
     );
   }
+
+  insertWifiSample(row) {
+    const mac = String(row.mac || "").toUpperCase();
+    if (!mac) return null;
+    const numOrNull = (v) => {
+      if (v == null || v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const at = numOrNull(row.at) != null ? numOrNull(row.at) : Date.now() / 1000;
+    this._run(
+      `INSERT INTO wifi_samples (mac, source, at, rssi, signal_pct, band, ssid, bssid, channel, tx_mbps, rx_mbps, node_mac)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        mac,
+        row.source != null ? String(row.source).slice(0, 32) : null,
+        at,
+        numOrNull(row.rssi),
+        numOrNull(row.signal_pct),
+        row.band != null ? String(row.band).slice(0, 32) : null,
+        row.ssid != null ? String(row.ssid).slice(0, 64) : null,
+        row.bssid != null ? String(row.bssid).toUpperCase().slice(0, 32) : null,
+        numOrNull(row.channel) != null ? Math.trunc(numOrNull(row.channel)) : null,
+        numOrNull(row.tx_mbps),
+        numOrNull(row.rx_mbps),
+        row.node_mac != null ? String(row.node_mac).toUpperCase().slice(0, 32) : null,
+      ]
+    );
+    this._persist();
+  }
+
+  listWifiHistory({ mac, fromTs = null, toTs = null, limit = 5000 } = {}) {
+    const m = String(mac || "").toUpperCase();
+    if (!m) return [];
+    const clauses = ["mac = ?"];
+    const params = [m];
+    if (fromTs != null) {
+      clauses.push("at >= ?");
+      params.push(Number(fromTs));
+    }
+    if (toTs != null) {
+      clauses.push("at <= ?");
+      params.push(Number(toTs));
+    }
+    const lim = Math.max(1, Math.min(10000, Math.trunc(Number(limit)) || 5000));
+    params.push(lim);
+    return this._all(
+      `SELECT * FROM wifi_samples WHERE ${clauses.join(" AND ")} ORDER BY at ASC LIMIT ?`,
+      params
+    );
+  }
+
+  insertRouterHealthSample(row) {
+    const numOrNull = (v) => {
+      if (v == null || v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const at = numOrNull(row.at) != null ? numOrNull(row.at) : Date.now() / 1000;
+    this._run(
+      `INSERT INTO router_health_samples (at, cpu_pct, mem_used, mem_total, wan_ok, wan_ip, model, firmware, vendor, extra_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        at,
+        numOrNull(row.cpu_pct),
+        numOrNull(row.mem_used),
+        numOrNull(row.mem_total),
+        row.wan_ok == null ? null : row.wan_ok ? 1 : 0,
+        row.wan_ip != null ? String(row.wan_ip).slice(0, 64) : null,
+        row.model != null ? String(row.model).slice(0, 120) : null,
+        row.firmware != null ? String(row.firmware).slice(0, 120) : null,
+        row.vendor != null ? String(row.vendor).slice(0, 32) : null,
+        row.extra_json != null ? String(row.extra_json).slice(0, 8000) : null,
+      ]
+    );
+    this._persist();
+  }
+
+  getLatestRouterHealth() {
+    return this._get(
+      "SELECT * FROM router_health_samples ORDER BY at DESC LIMIT 1"
+    );
+  }
+
+  insertRouterAction(row = {}) {
+    const action = String(row.action || "").trim().slice(0, 64);
+    if (!action) return null;
+    const numOrNull = (v) => {
+      if (v == null || v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const at = numOrNull(row.at) != null ? numOrNull(row.at) : Date.now() / 1000;
+    let err = row.error == null || row.error === "" ? null : String(row.error).slice(0, 500);
+    if (err) {
+      err = err.replace(/(password|api[_-]?key|secret|token)\s*[:=]\s*\S+/gi, "$1=[redacted]");
+    }
+    this._run(
+      `INSERT INTO router_actions (at, target_id, action, mac, ok, error)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        at,
+        row.target_id != null ? String(row.target_id).slice(0, 64) : null,
+        action,
+        row.mac != null && String(row.mac).trim() !== "" ? String(row.mac).slice(0, 32) : null,
+        row.ok ? 1 : 0,
+        err,
+      ]
+    );
+    this._persist();
+    return this._get("SELECT * FROM router_actions ORDER BY id DESC LIMIT 1");
+  }
+
+  listRouterActions({ limit = 50 } = {}) {
+    const lim = Math.min(500, Math.max(1, Math.trunc(Number(limit)) || 50));
+    return this._all(`SELECT * FROM router_actions ORDER BY at DESC LIMIT ${lim}`);
+  }
 }
 
 module.exports = {
@@ -1799,6 +2443,11 @@ module.exports = {
   JSON_SETTINGS,
   STRING_SETTINGS_MAX,
   SECRET_SETTINGS,
+  ROUTER_TARGETS_CAP,
+  parseRouterTargetsJson,
+  parseRouterSecretsJson,
+  parseWifiAlertsJson,
+  resolveRouterTargets,
   normalizeSettingValue,
   normalizeSettingsObject,
   encodeSnapshotJson,

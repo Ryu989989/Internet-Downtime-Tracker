@@ -144,8 +144,12 @@ Object.assign(LAYER_TIPS, {
   "dev-mac": { name: "MAC", meaning: "Hardware address from ARP/neighbor." },
   "dev-vendor": { name: "Vendor", meaning: "OUI vendor lookup." },
   "dev-cat": { name: "Category", meaning: "Heuristic from OUI/vendor: router, phone, pc, iot, or unknown." },
+  "dev-wifi": {
+    name: "Wi-Fi",
+    meaning: "Band plus RSSI dBm or signal %. Ethernet if the router reports wired. Em dash if no RF sample. Click the row for 24h history.",
+  },
   "dev-alias": { name: "Alias", meaning: "Local label you set. Saved on this machine." },
-  "dev-actions": { name: "Actions", meaning: "WOL, router notify, scan, connections filter, ping, traceroute (on-demand IPC — not on the probe tick)." },
+  "dev-actions": { name: "Actions", meaning: "WOL, router notify, scan, connections filter, ping, traceroute, Block/Allow when router writes are on." },
   "conn-service": { name: "Service", meaning: "Windows service owning this process (cached Win32_Service). Empty if none." },
   "conn-resolve": { name: "Resolve DNS", meaning: "Reverse-DNS remotes (cached, capped). Off by default. No GeoIP. No sent/recv counters." },
   "usage-app": { name: "App", meaning: "Display name / exe. Needs the elevated Usage helper." },
@@ -190,9 +194,47 @@ Object.assign(LAYER_TIPS, {
   "set-prom": { name: "Prometheus", meaning: "127.0.0.1:9108 only — never 0.0.0.0." },
   "set-http-api": { name: "HTTP API", meaning: "127.0.0.1:9109 + token. Never public bind." },
   "set-auto-block": { name: "Auto-block", meaning: "Needs Network control + Usage helper. Blocks by exe when a cap is hit." },
+  "adapter-kind": { name: "Adapter", meaning: "Active NIC this PC is using, from the OS." },
+  "adapter-wifi": { name: "Wi-Fi", meaning: "Wi-Fi NIC this PC is using (OS). SSID and RSSI are from this radio, not the router client list." },
+  "adapter-ethernet": { name: "Ethernet", meaning: "Wired NIC this PC is using (OS). Network Wi-Fi below is from the router poll when enabled — not this radio." },
+  "adapter-ssid": { name: "SSID", meaning: "Network name this PC is associated with (this radio). Not the router’s client list." },
+  "adapter-rssi": {
+    name: "RSSI",
+    meaning: "Received signal in dBm. More negative is weaker. Typical: -30 excellent, -70 usable, -80 poor.",
+  },
+  "adapter-signal": {
+    name: "Signal",
+    meaning: "OS-reported signal quality (%). Independent of dBm — not converted from RSSI.",
+  },
+  "adapter-signal-nodbm": {
+    name: "Signal",
+    meaning: "OS-reported signal quality (%). dBm (RSSI) is unavailable on this OS/path (Windows netsh often has % only) — never estimated from %.",
+  },
+  "adapter-band": { name: "Band", meaning: "Radio band and channel from this PC’s Wi-Fi association." },
+  "router-ssid": {
+    name: "Router Wi-Fi",
+    meaning: "SSID from the router API (latest poll) — most common among online Wi-Fi clients. Not this PC’s radio.",
+  },
+  "router-rssi": {
+    name: "This PC RSSI",
+    meaning: "This PC’s RSSI as seen by the AP (router client list). Not this NIC. dBm only — never estimated from %.",
+  },
+  "router-signal": {
+    name: "Signal",
+    meaning: "AP-reported signal quality (%) for this PC. Independent of dBm — never estimated from %.",
+  },
+  "router-signal-nodbm": {
+    name: "Signal",
+    meaning: "AP-reported signal quality (%) for this PC. dBm is unavailable from the router for this client — never estimated from %.",
+  },
+  "router-band": { name: "Band", meaning: "Radio band for this PC as reported by the AP (router poll)." },
+  "router-clients": {
+    name: "Clients",
+    meaning: "This PC is on Ethernet. Count and RSSI are online AP Wi-Fi clients from the router poll — not this radio.",
+  },
 });
 
-let sparkChart, hourChart, dowChart, latencyChart, speedTrendChart, usageTrendChart;
+let sparkChart, hourChart, dowChart, latencyChart, speedTrendChart, usageTrendChart, deviceWifiChart;
 let speedRunning = false;
 let connAutoRefreshTimer = null;
 let connView = "devices";
@@ -443,6 +485,34 @@ async function api(path, opts) {
     if (path === "/api/lan/router-notify") {
       const body = opts && opts.body ? JSON.parse(opts.body) : {};
       return window.idt.lanRouterNotify(body);
+    }
+    if (path === "/api/lan/router/test") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      const fn = window.idt.lanRouterTest;
+      if (typeof fn !== "function") return { ok: false, error: "not implemented" };
+      return fn(body.target_id ?? body.targetId ?? null);
+    }
+    if (path === "/api/lan/router/action") {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      const fn = window.idt.lanRouterAction;
+      if (typeof fn !== "function") return { ok: false, error: "not implemented" };
+      return fn(body);
+    }
+    if (path.startsWith("/api/lan/wifi/history")) {
+      const q = path.includes("?") ? new URLSearchParams(path.split("?")[1]) : new URLSearchParams();
+      const params = { mac: q.get("mac") || "" };
+      const fromRaw = q.get("fromTs") || q.get("from");
+      const toRaw = q.get("toTs") || q.get("to");
+      if (fromRaw) params.fromTs = Number(fromRaw);
+      if (toRaw) params.toTs = Number(toRaw);
+      const fn = window.idt.lanWifiHistory;
+      if (typeof fn !== "function") return { samples: [] };
+      return fn(params);
+    }
+    if (path === "/api/lan/router/health" || path === "/api/lan/router-health") {
+      const fn = window.idt.lanRouterHealth;
+      if (typeof fn !== "function") return null;
+      return fn();
     }
     if (path === "/api/monitor/pause") {
       const body = opts && opts.body ? JSON.parse(opts.body) : {};
@@ -813,7 +883,7 @@ function scheduleChartsResize() {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       Chart.defaults.devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
-      for (const c of [sparkChart, latencyChart, hourChart, dowChart, speedTrendChart, usageTrendChart]) {
+      for (const c of [sparkChart, latencyChart, hourChart, dowChart, speedTrendChart, usageTrendChart, deviceWifiChart]) {
         fitChartToBox(c);
       }
     });
@@ -1640,6 +1710,188 @@ function paintQuality(q, degraded) {
 
 let lastAnnouncedStatus = "";
 
+function finiteOrNull(v) {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function fmtHostWifiBand(band, channel) {
+  const raw = band == null || band === "" ? "" : String(band).trim();
+  const ghz = raw ? (/ghz/i.test(raw) ? raw : `${raw} GHz`) : "";
+  const ch = finiteOrNull(channel);
+  const chBit = ch != null ? `ch ${Math.round(ch)}` : "";
+  return [ghz, chBit].filter(Boolean).join(" · ");
+}
+
+function setChipLabel(chip, text) {
+  const lab = chip && chip.querySelector(".meta-label");
+  if (lab && text) lab.textContent = text;
+}
+
+function fmtRouterClients(ow) {
+  const n = Number(ow && ow.client_count) || 0;
+  const bits = [String(n)];
+  const med = finiteOrNull(ow && ow.median_rssi);
+  const weak = finiteOrNull(ow && ow.weakest_rssi);
+  if (med != null && weak != null && med !== weak) {
+    bits.push(`med ${Math.round(med)}`, `weak ${Math.round(weak)}`);
+  } else if (weak != null) {
+    bits.push(`${Math.round(weak)} dBm`);
+  } else if (med != null) {
+    bits.push(`${Math.round(med)} dBm`);
+  }
+  return bits.join(" · ");
+}
+
+function paintRouterOverviewWifi(ow) {
+  const thisPc = !!(ow && ow.this_pc_on_wifi);
+  const ssidChip = $("#adapterSsidChip");
+  const showSsid = !!(ow && ow.ssid);
+  if (ssidChip) {
+    ssidChip.hidden = !showSsid;
+    ssidChip.dataset.tip = "router-ssid";
+    setChipLabel(ssidChip, "Router Wi-Fi");
+    if (showSsid && $("#adapterSsid")) $("#adapterSsid").textContent = ow.ssid;
+  }
+
+  const rssiNum = finiteOrNull(ow && ow.rssi);
+  const rssiChip = $("#adapterRssiChip");
+  const showRssi = thisPc && rssiNum != null;
+  if (rssiChip) {
+    rssiChip.hidden = !showRssi;
+    rssiChip.dataset.tip = "router-rssi";
+    setChipLabel(rssiChip, "This PC");
+    if (showRssi && $("#adapterRssi")) $("#adapterRssi").textContent = `${Math.round(rssiNum)} dBm`;
+  }
+
+  const pctNum = finiteOrNull(ow && ow.signal_pct);
+  const signalChip = $("#adapterSignalChip");
+  const showPct = thisPc && pctNum != null;
+  if (signalChip) {
+    signalChip.hidden = !showPct;
+    if (showPct) {
+      if ($("#adapterSignal")) $("#adapterSignal").textContent = `${Math.round(pctNum)}%`;
+      signalChip.dataset.tip = showRssi ? "router-signal" : "router-signal-nodbm";
+    }
+  }
+
+  const bandText = thisPc ? fmtHostWifiBand(ow && ow.band, null) : "";
+  const bandChip = $("#adapterBandChip");
+  if (bandChip) {
+    bandChip.hidden = !bandText;
+    bandChip.dataset.tip = "router-band";
+    if (bandText && $("#adapterBand")) $("#adapterBand").textContent = bandText;
+  }
+
+  const clientsChip = $("#adapterClientsChip");
+  const showClients = !thisPc && !!(ow && (ow.client_count > 0 || finiteOrNull(ow.weakest_rssi) != null));
+  if (clientsChip) {
+    clientsChip.hidden = !showClients;
+    clientsChip.dataset.tip = "router-clients";
+    if (showClients && $("#adapterClients")) $("#adapterClients").textContent = fmtRouterClients(ow);
+  }
+}
+
+function paintAdapterLine(s) {
+  const adapterEl = $("#adapterLine");
+  if (!adapterEl) return;
+  const a = s && s.adapter;
+  const viewConn = $("#viewConnectionsLink");
+  const hideWifiChips = () => {
+    for (const id of ["adapterSsidChip", "adapterRssiChip", "adapterSignalChip", "adapterBandChip", "adapterClientsChip"]) {
+      const el = $(`#${id}`);
+      if (el) el.hidden = true;
+    }
+    const ssidChip = $("#adapterSsidChip");
+    const rssiChip = $("#adapterRssiChip");
+    if (ssidChip) {
+      ssidChip.dataset.tip = "adapter-ssid";
+      setChipLabel(ssidChip, "SSID");
+    }
+    if (rssiChip) {
+      rssiChip.dataset.tip = "adapter-rssi";
+      setChipLabel(rssiChip, "RSSI");
+    }
+    const signalChip = $("#adapterSignalChip");
+    if (signalChip) signalChip.dataset.tip = "adapter-signal";
+    const bandChip = $("#adapterBandChip");
+    if (bandChip) bandChip.dataset.tip = "adapter-band";
+  };
+  if (!a || !a.name) {
+    adapterEl.hidden = true;
+    hideWifiChips();
+    if (viewConn) viewConn.hidden = true;
+    return;
+  }
+  adapterEl.hidden = false;
+  if (viewConn) viewConn.hidden = false;
+
+  const wifi = a.type === "wifi";
+  const kind = wifi ? "Wi‑Fi" : a.type === "ethernet" ? "Ethernet" : "Adapter";
+  const kindChip = $("#adapterKindChip");
+  if (kindChip) {
+    kindChip.dataset.tip = wifi ? "adapter-wifi" : a.type === "ethernet" ? "adapter-ethernet" : "adapter-kind";
+  }
+  if ($("#adapterKindLabel")) $("#adapterKindLabel").textContent = kind;
+  if ($("#adapterName")) $("#adapterName").textContent = a.name;
+
+  if (!wifi) {
+    const ow = s && s.overview_wifi;
+    const hasRouter =
+      ow &&
+      ow.source !== "host_nic" &&
+      (ow.ssid || ow.client_count || ow.rssi != null || ow.weakest_rssi != null);
+    if (hasRouter) {
+      paintRouterOverviewWifi(ow);
+      return;
+    }
+    hideWifiChips();
+    return;
+  }
+
+  const clientsChip = $("#adapterClientsChip");
+  if (clientsChip) clientsChip.hidden = true;
+
+  const ssidChip = $("#adapterSsidChip");
+  const showSsid = !!a.ssid;
+  if (ssidChip) {
+    ssidChip.hidden = !showSsid;
+    ssidChip.dataset.tip = "adapter-ssid";
+    setChipLabel(ssidChip, "SSID");
+    if (showSsid && $("#adapterSsid")) $("#adapterSsid").textContent = a.ssid;
+  }
+
+  const rssiNum = finiteOrNull(a.rssi);
+  const pctNum = finiteOrNull(a.signal);
+  const rssiChip = $("#adapterRssiChip");
+  const showRssi = rssiNum != null;
+  if (rssiChip) {
+    rssiChip.hidden = !showRssi;
+    rssiChip.dataset.tip = "adapter-rssi";
+    setChipLabel(rssiChip, "RSSI");
+    if (showRssi && $("#adapterRssi")) $("#adapterRssi").textContent = `${Math.round(rssiNum)} dBm`;
+  }
+
+  const signalChip = $("#adapterSignalChip");
+  const showPct = pctNum != null;
+  if (signalChip) {
+    signalChip.hidden = !showPct;
+    if (showPct) {
+      if ($("#adapterSignal")) $("#adapterSignal").textContent = `${Math.round(pctNum)}%`;
+      signalChip.dataset.tip = showRssi ? "adapter-signal" : "adapter-signal-nodbm";
+    }
+  }
+
+  const bandText = fmtHostWifiBand(a.band, a.channel);
+  const bandChip = $("#adapterBandChip");
+  if (bandChip) {
+    bandChip.hidden = !bandText;
+    bandChip.dataset.tip = "adapter-band";
+    if (bandText && $("#adapterBand")) $("#adapterBand").textContent = bandText;
+  }
+}
+
 function paintStatus(s) {
   if (!s) return;
   if (!paintLayerPills(s, "has-tip")) {
@@ -1686,22 +1938,8 @@ function paintStatus(s) {
 
   paintQuality(s.quality, s.degraded);
 
-  const adapterEl = $("#adapterLine");
-  if (adapterEl) {
-    const a = s.adapter;
-    if (a && a.name) {
-      const kind = a.type === "wifi" ? "Wi‑Fi" : a.type === "ethernet" ? "Ethernet" : "Adapter";
-      const sig = a.type === "wifi" && a.signal != null ? ` · ${a.signal}%` : "";
-      adapterEl.textContent = `${kind} · ${a.name}${sig}`;
-      adapterEl.hidden = false;
-      const viewConn = $("#viewConnectionsLink");
-      if (viewConn) viewConn.hidden = false;
-    } else {
-      adapterEl.hidden = true;
-      const viewConn = $("#viewConnectionsLink");
-      if (viewConn) viewConn.hidden = true;
-    }
-  }
+  paintAdapterLine(s);
+  scheduleHostWifiSpark(s);
 
   const title = s.status_title != null ? s.status_title : "All clear";
   const sub = s.status_sub != null ? s.status_sub : "LAN, WAN, DNS, and HTTP path OK";
@@ -2309,7 +2547,606 @@ function setConnView(view) {
   }
 }
 
-const DEVICES_COLS = 8;
+const DEVICES_COLS = 9;
+const WIFI_HOST_SRC = new Set(["host_nic"]);
+const WIFI_ROUTER_SRC = new Set(["asus", "asuswrt", "nighthawk", "netgear", "router"]);
+
+let lastLanDevices = [];
+let lastRouterHealth = null;
+let lastRouterWrites = { enabled: false, setClientBlocked: false, setGuestWifi: false };
+let selectedDeviceMac = "";
+let hostWifiSparkMac = "";
+let hostWifiSparkAt = 0;
+let hostWifiSparkSeq = 0;
+
+function macKey(mac) {
+  return String(mac || "").toUpperCase().replace(/[^0-9A-F]/g, "");
+}
+
+function normalizeMac(mac) {
+  const hex = macKey(mac);
+  if (hex.length !== 12) return String(mac || "").toUpperCase();
+  return hex.replace(/../g, (b) => `${b}:`).slice(0, -1);
+}
+
+function wifiBandLabel(band) {
+  if (band == null || band === "") return "";
+  const b = String(band).trim().toLowerCase();
+  if (/^(0|eth|ethernet|wired|lan|no)$/.test(b) || b === "iswl=0") return "Ethernet";
+  if (b === "2.4" || b === "2" || /2\.4/.test(b)) return "2.4 GHz";
+  if (b === "6" || /^6/.test(b)) return "6 GHz";
+  if (b === "5" || /^5/.test(b)) return "5 GHz";
+  return String(band);
+}
+
+function wifiCellText(d) {
+  const band = wifiBandLabel(d.wifi_band);
+  if (band === "Ethernet") return "Ethernet";
+  const rssi = d.wifi_rssi;
+  const pct = d.wifi_signal_pct;
+  let sig = "";
+  if (rssi != null && rssi !== "" && Number.isFinite(Number(rssi))) sig = `${Math.round(Number(rssi))} dBm`;
+  else if (pct != null && pct !== "" && Number.isFinite(Number(pct))) sig = `${Math.round(Number(pct))}%`;
+  if (band && sig) return `${band} · ${sig}`;
+  if (band) return band;
+  if (sig) return sig;
+  return "—";
+}
+
+function wifiCellTip(d) {
+  const bits = [wifiCellText(d)];
+  if (d.wifi_ssid) bits.push(`SSID ${d.wifi_ssid}`);
+  if (d.wifi_node_mac) bits.push(`AP ${d.wifi_node_mac}`);
+  if (d.last_wifi_at) bits.push(`RF ${fmtTs(d.last_wifi_at)}`);
+  bits.push("Click the row for 24h history.");
+  return bits.filter(Boolean).join(" · ");
+}
+
+function routerPollErrorCopy(rh) {
+  if (!rh) return "";
+  const err = String(rh.error || "");
+  if (!err) return "";
+  const vendor = String(rh.vendor || "").toLowerCase();
+  const low = err.toLowerCase();
+  const isNg =
+    vendor.includes("nighthawk") ||
+    vendor.includes("netgear") ||
+    /soap|nighthawk|netgear/.test(low);
+  const isAsus =
+    vendor.includes("asus") || vendor === "asuswrt" || /asus|nonce|https/.test(low);
+  if (isNg) {
+    if (/404/.test(err)) return "SOAP 404 — this method may be missing. Try port 80; ISP firmware may disable SOAP.";
+    if (/port\s*80|try port/.test(low)) return "Try port 80. ISP firmware may disable SOAP.";
+    if (/disabled|isp/.test(low)) return "ISP firmware may disable SOAP.";
+    return "Nighthawk SOAP failed. Try port 80; ISP firmware may disable SOAP.";
+  }
+  if (isAsus) {
+    if (/nonce/.test(low)) return "ASUS login nonce failed. Check username/password and HTTPS.";
+    if (/https|tls|cert/.test(low)) return "ASUS HTTPS error. Login/nonce may fail on some firmware.";
+    if (/login|auth|401|403/.test(low)) {
+      return "ASUS login failed. Check credentials; some firmware need HTTPS or reject the session nonce.";
+    }
+    return "ASUS login/nonce/HTTPS failed.";
+  }
+  return err;
+}
+
+function fmtMemPair(used, total) {
+  if (used == null && total == null) return "—";
+  const looksBytes = (total != null && Number(total) > 4096) || (used != null && Number(used) > 4096);
+  const f = (n) => (n == null || n === "" || !Number.isFinite(Number(n)) ? "—" : looksBytes ? fmtBytes(n) : String(Math.round(Number(n))));
+  if (used != null && total != null && Number(total) > 0) {
+    const pct = Math.round((Number(used) / Number(total)) * 100);
+    return `${f(used)} / ${f(total)} (${pct}%)`;
+  }
+  return used != null ? f(used) : f(total);
+}
+
+function metaChip(label, value, extraClass = "", tip = "") {
+  const cls = extraClass ? ` ${extraClass}` : "";
+  const tipClass = tip ? " has-tip" : "";
+  const tipAttr = tip ? ` tabindex="0" data-tip-text="${escapeHtml(tip)}"` : "";
+  return `<span class="meta-chip${tipClass}${cls}"${tipAttr}><span class="meta-label">${escapeHtml(label)}</span> ${escapeHtml(value)}</span>`;
+}
+
+function normalizeWifiHistory(res) {
+  if (!res) return [];
+  if (Array.isArray(res)) return res;
+  if (Array.isArray(res.samples)) return res.samples;
+  if (Array.isArray(res.history)) return res.history;
+  if (Array.isArray(res.rows)) return res.rows;
+  return [];
+}
+
+function sampleMetric(s) {
+  if (!s) return { y: null, unit: "" };
+  if (s.rssi != null && s.rssi !== "" && Number.isFinite(Number(s.rssi))) {
+    return { y: Number(s.rssi), unit: "dBm" };
+  }
+  if (s.signal_pct != null && s.signal_pct !== "" && Number.isFinite(Number(s.signal_pct))) {
+    return { y: Number(s.signal_pct), unit: "%" };
+  }
+  return { y: null, unit: "" };
+}
+
+function isRouterWifiSource(src) {
+  return WIFI_ROUTER_SRC.has(String(src || "").toLowerCase());
+}
+
+function isHostWifiSource(src) {
+  return WIFI_HOST_SRC.has(String(src || "").toLowerCase());
+}
+
+async function fetchLanWifiHistory(mac) {
+  const key = normalizeMac(mac);
+  if (!key) return [];
+  const toTs = Date.now() / 1000;
+  const fromTs = toTs - 86400;
+  const tryMac = async (m) => {
+    try {
+      if (window.idt && typeof window.idt.lanWifiHistory === "function") {
+        return normalizeWifiHistory(await window.idt.lanWifiHistory({ mac: m, fromTs, toTs }));
+      }
+      const q = new URLSearchParams({ mac: m, fromTs: String(fromTs), toTs: String(toTs) });
+      return normalizeWifiHistory(await api(`/api/lan/wifi/history?${q}`));
+    } catch {
+      return [];
+    }
+  };
+  let rows = await tryMac(key);
+  const raw = String(mac || "").toUpperCase();
+  if (!rows.length && raw && raw !== key) rows = await tryMac(raw);
+  return rows;
+}
+
+async function fetchRouterHealth(fromPayload) {
+  if (fromPayload && typeof fromPayload === "object") return fromPayload;
+  try {
+    if (window.idt && typeof window.idt.lanRouterHealth === "function") {
+      return await window.idt.lanRouterHealth();
+    }
+    return await api("/api/lan/router/health");
+  } catch {
+    return null;
+  }
+}
+
+function paintDevicesGateway(strip, data) {
+  if (!strip) return;
+  const chips = [];
+  if (data && data.gateway) chips.push(metaChip("Gateway", data.gateway));
+  const rh = lastRouterHealth && typeof lastRouterHealth === "object" ? lastRouterHealth : null;
+  const list = rh && Array.isArray(rh.targets) && rh.targets.length ? rh.targets : rh ? [rh] : [];
+  if (!list.length) {
+    strip.innerHTML = chips.join("") || `<span class="muted">No gateway detected</span>`;
+    return;
+  }
+  if (list.length > 1) {
+    for (const t of list) {
+      const name = t.model || t.vendor || t.host || t.id || "Router";
+      const errCopy = routerPollErrorCopy(t);
+      if (errCopy) {
+        chips.push(
+          `<span class="meta-chip has-tip" tabindex="0" data-tip-text="${escapeHtml(t.error || errCopy)}"><span class="meta-label">${escapeHtml(name)}</span> <span class="state-error">${escapeHtml(errCopy)}</span></span>`
+        );
+      } else {
+        const cpu =
+          t.cpu_pct != null && t.cpu_pct !== "" ? `${Math.round(Number(t.cpu_pct))}%` : "—";
+        chips.push(metaChip(name, cpu));
+      }
+    }
+    strip.innerHTML = chips.join("") || `<span class="muted">No gateway detected</span>`;
+    bindTooltips(strip);
+    return;
+  }
+  const one = { ...rh, ...list[0] };
+  const vendor = one.vendor ? String(one.vendor) : "";
+  const model = one.model ? String(one.model) : "";
+  const fw = one.firmware ? String(one.firmware) : "";
+  if (vendor) chips.push(metaChip("Vendor", vendor));
+  if (model) chips.push(metaChip("Model", model, "", fw ? `Firmware ${fw}` : ""));
+  const errCopy = routerPollErrorCopy(one);
+  if (!errCopy) {
+    const wan = one.wan_ok === true ? "up" : one.wan_ok === false ? "down" : "—";
+    const wanCls = one.wan_ok === true ? "state-ok" : one.wan_ok === false ? "state-error" : "";
+    const wanVal = one.wan_ip ? `${wan} ${one.wan_ip}` : wan;
+    chips.push(metaChip("WAN", wanVal, wanCls));
+    if (one.cpu_pct != null && one.cpu_pct !== "") {
+      chips.push(metaChip("CPU", `${Math.round(Number(one.cpu_pct))}%`));
+    } else {
+      chips.push(metaChip("CPU", "—"));
+    }
+    if (one.mem_used != null || one.mem_total != null) {
+      chips.push(metaChip("Mem", fmtMemPair(one.mem_used, one.mem_total)));
+    } else {
+      chips.push(metaChip("Mem", "—"));
+    }
+  } else {
+    chips.push(
+      `<span class="meta-chip has-tip" tabindex="0" data-tip-text="${escapeHtml(one.error)}"><span class="meta-label">Poll</span> <span class="state-error">${escapeHtml(errCopy)}</span></span>`
+    );
+  }
+  strip.innerHTML = chips.join("") || `<span class="muted">No gateway detected</span>`;
+  bindTooltips(strip);
+}
+
+function paintInlineSpark(svg, values) {
+  if (!svg) return;
+  const w = 120;
+  const h = 28;
+  const p = 2;
+  if (!values.length) {
+    svg.replaceChildren();
+    return;
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const n = values.length;
+  const pts = values
+    .map((v, i) => {
+      const x = p + (i / Math.max(n - 1, 1)) * (w - 2 * p);
+      const y = h - p - ((v - min) / span) * (h - 2 * p);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const ns = "http://www.w3.org/2000/svg";
+  const poly = document.createElementNS(ns, "polyline");
+  poly.setAttribute("fill", "none");
+  poly.setAttribute("stroke", "currentColor");
+  poly.setAttribute("stroke-width", "1.5");
+  poly.setAttribute("stroke-linejoin", "round");
+  poly.setAttribute("stroke-linecap", "round");
+  poly.setAttribute("points", pts);
+  svg.replaceChildren(poly);
+  if (n === 1) {
+    const [x, y] = pts.split(",");
+    const dot = document.createElementNS(ns, "circle");
+    dot.setAttribute("cx", x);
+    dot.setAttribute("cy", y);
+    dot.setAttribute("r", "2");
+    dot.setAttribute("fill", "currentColor");
+    svg.appendChild(dot);
+  }
+}
+
+function hideHostWifiSpark() {
+  const wrap = $("#hostWifiSparkWrap");
+  if (wrap) wrap.hidden = true;
+}
+
+function scheduleHostWifiSpark(s) {
+  const wrap = $("#hostWifiSparkWrap");
+  const a = s && s.adapter;
+  const mac = a && a.type === "wifi" ? a.mac : null;
+  if (!mac) {
+    hideHostWifiSpark();
+    hostWifiSparkMac = "";
+    return;
+  }
+  const now = Date.now();
+  if (normalizeMac(mac) === hostWifiSparkMac && now - hostWifiSparkAt < 30000) return;
+  hostWifiSparkMac = normalizeMac(mac);
+  hostWifiSparkAt = now;
+  const seq = ++hostWifiSparkSeq;
+  fetchLanWifiHistory(mac)
+    .then((rows) => {
+      if (seq !== hostWifiSparkSeq) return;
+      const host = rows.filter((r) => isHostWifiSource(r.source));
+      const vals = host
+        .map((r) => {
+          if (r.signal_pct != null && Number.isFinite(Number(r.signal_pct))) return Number(r.signal_pct);
+          if (r.rssi != null && Number.isFinite(Number(r.rssi))) return Number(r.rssi);
+          return null;
+        })
+        .filter((v) => v != null);
+      if (!vals.length) {
+        hideHostWifiSpark();
+        return;
+      }
+      if (wrap) wrap.hidden = false;
+      paintInlineSpark($("#hostWifiSpark"), vals);
+      const cap = $("#hostWifiSparkCap");
+      if (cap) cap.textContent = `${vals.length} host samples · 24h`;
+    })
+    .catch(() => {
+      if (seq !== hostWifiSparkSeq) return;
+      hideHostWifiSpark();
+    });
+}
+
+function deviceByMac(mac) {
+  const key = macKey(mac);
+  if (!key) return null;
+  return lastLanDevices.find((d) => macKey(d.mac) === key) || null;
+}
+
+function destroyDeviceWifiChart() {
+  if (!deviceWifiChart) return;
+  unwireChartTip(deviceWifiChart);
+  try {
+    deviceWifiChart.destroy();
+  } catch {
+    /* ignore */
+  }
+  deviceWifiChart = null;
+}
+
+function wifiSparkDatasets(samples) {
+  const times = [...new Set(samples.map((s) => Number(s.at)).filter((n) => Number.isFinite(n)))].sort((a, b) => a - b);
+  const hostBy = new Map();
+  const routerBy = new Map();
+  const hostUnit = { dBm: 0, "%": 0 };
+  const routerUnit = { dBm: 0, "%": 0 };
+  for (const s of samples) {
+    const at = Number(s.at);
+    if (!Number.isFinite(at)) continue;
+    const m = sampleMetric(s);
+    if (m.y == null) continue;
+    if (isHostWifiSource(s.source)) {
+      hostBy.set(at, { y: m.y, unit: m.unit, source: s.source });
+      if (hostUnit[m.unit] != null) hostUnit[m.unit] += 1;
+    } else if (isRouterWifiSource(s.source)) {
+      routerBy.set(at, { y: m.y, unit: m.unit, source: s.source });
+      if (routerUnit[m.unit] != null) routerUnit[m.unit] += 1;
+    }
+  }
+  const pickUnit = (counts) => (counts.dBm >= counts["%"] ? "dBm" : "%");
+  const hostU = pickUnit(hostUnit);
+  const routerU = pickUnit(routerUnit);
+  const mixed = hostBy.size && routerBy.size && hostU !== routerU;
+  const labels = times.map((t) =>
+    new Date(t * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+  );
+  const hostData = times.map((t) => {
+    const p = hostBy.get(t);
+    if (!p) return null;
+    if (mixed && p.unit !== hostU) return null;
+    return p.y;
+  });
+  const routerData = times.map((t) => {
+    const p = routerBy.get(t);
+    if (!p) return null;
+    if (mixed && p.unit !== routerU) return null;
+    return p.y;
+  });
+  const last = samples.length ? samples[samples.length - 1] : null;
+  return { labels, times, hostData, routerData, hostU, routerU, mixed, last, hostBy, routerBy };
+}
+
+function ensureDeviceWifiSpark(samples) {
+  const ctx = $("#deviceWifiSpark");
+  const empty = $("#deviceWifiSparkEmpty");
+  const cap = $("#deviceWifiSparkCaption");
+  if (!ctx) return;
+  const usable = (samples || []).filter((s) => sampleMetric(s).y != null);
+  const has = usable.length > 0;
+  if (empty) empty.hidden = has;
+  if (!has) {
+    destroyDeviceWifiChart();
+    if (cap) cap.textContent = "Last 24h signal — no samples.";
+    return;
+  }
+  const packed = wifiSparkDatasets(usable);
+  const datasets = [];
+  if (packed.hostData.some((v) => v != null)) {
+    datasets.push({
+      label: `Host NIC (${packed.hostU})`,
+      data: packed.hostData,
+      yAxisID: packed.mixed ? "yHost" : "y",
+      borderColor: chartTheme.domain.latency,
+      backgroundColor: "rgba(91, 159, 212, 0.12)",
+      fill: datasets.length === 0,
+      tension: 0.25,
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      pointHitRadius: 16,
+      spanGaps: true,
+    });
+  }
+  if (packed.routerData.some((v) => v != null)) {
+    datasets.push({
+      label: `Router (${packed.routerU})`,
+      data: packed.routerData,
+      yAxisID: packed.mixed ? "yRouter" : "y",
+      borderColor: chartTheme.domain.down,
+      backgroundColor: "rgba(62, 207, 142, 0.1)",
+      fill: false,
+      tension: 0.25,
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      pointHitRadius: 16,
+      spanGaps: true,
+    });
+  }
+  if (!datasets.length) {
+    destroyDeviceWifiChart();
+    if (empty) empty.hidden = false;
+    if (cap) cap.textContent = "Last 24h signal — no host/router series.";
+    return;
+  }
+  if (cap) {
+    const parts = ["Last 24h"];
+    if (packed.hostData.some((v) => v != null)) parts.push("host NIC");
+    if (packed.routerData.some((v) => v != null)) parts.push("router");
+    cap.textContent = packed.mixed
+      ? `${parts.join(" · ")} — mixed units, hover for source`
+      : `${parts.join(" vs ")}`;
+  }
+  const both = datasets.length > 1;
+  const scales = packed.mixed
+    ? {
+        x: chartScaleOpts().x,
+        yHost: {
+          ...chartScaleOpts().y,
+          position: "left",
+          beginAtZero: packed.hostU === "%",
+          ticks: { callback: (v) => `${v} ${packed.hostU}` },
+        },
+        yRouter: {
+          ...chartScaleOpts().y,
+          position: "right",
+          beginAtZero: packed.routerU === "%",
+          grid: { drawOnChartArea: false },
+          ticks: { callback: (v) => `${v} ${packed.routerU}` },
+        },
+      }
+    : {
+        ...chartScaleOpts(),
+        y: {
+          ...chartScaleOpts().y,
+          beginAtZero: packed.hostU === "%" || packed.routerU === "%",
+          ticks: { callback: (v) => `${v} ${packed.hostU || packed.routerU}` },
+        },
+      };
+  if (deviceWifiChart) {
+    deviceWifiChart.data.labels = packed.labels;
+    deviceWifiChart.data.datasets = datasets;
+    deviceWifiChart.options.plugins.legend.display = both;
+    deviceWifiChart.options.scales = scales;
+    deviceWifiChart.update("none");
+    resizeChartSoon(deviceWifiChart);
+    return;
+  }
+  deviceWifiChart = new Chart(ctx, {
+    type: "line",
+    data: { labels: packed.labels, datasets },
+    options: {
+      responsive: false,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: both, labels: { boxWidth: 10, color: chartTheme.color() } },
+        tooltip: { enabled: false },
+      },
+      scales,
+    },
+  });
+  wireChartTip(deviceWifiChart, (index, chart) => {
+    const title = chart.data.labels?.[index] ?? "";
+    const lines = [];
+    for (const ds of chart.data.datasets || []) {
+      const v = ds.data?.[index];
+      if (v == null || Number.isNaN(Number(v))) continue;
+      lines.push(`${ds.label}: ${v}`);
+    }
+    return { title, lines: lines.length ? lines : ["No sample"] };
+  });
+  resizeChartSoon(deviceWifiChart);
+}
+
+function drawerKv(k, v) {
+  if (v == null || String(v).trim() === "") return "";
+  return `<div class="topo-kv"><span class="topo-k">${escapeHtml(k)}</span><span class="topo-v">${escapeHtml(String(v))}</span></div>`;
+}
+
+function closeDeviceWifiDrawer() {
+  selectedDeviceMac = "";
+  const drawer = $("#deviceWifiDrawer");
+  if (drawer) drawer.hidden = true;
+  $("#devicesBody")?.querySelectorAll(".device-row.is-selected").forEach((tr) => tr.classList.remove("is-selected"));
+  destroyDeviceWifiChart();
+}
+
+async function openDeviceWifiDrawer(mac) {
+  const key = normalizeMac(mac);
+  if (!key) return;
+  if (selectedDeviceMac && macKey(selectedDeviceMac) === macKey(mac)) {
+    closeDeviceWifiDrawer();
+    return;
+  }
+  selectedDeviceMac = key;
+  const d = deviceByMac(mac) || { mac: key };
+  const drawer = $("#deviceWifiDrawer");
+  const title = $("#deviceWifiDrawerTitle");
+  const meta = $("#deviceWifiDrawerMeta");
+  const kvs = $("#deviceWifiDrawerKvs");
+  if (drawer) drawer.hidden = false;
+  if (title) {
+    title.textContent = d.alias || d.hostname || d.name || d.ip || key;
+  }
+  const alertBadge = $("#deviceWifiAlertingBadge");
+  if (alertBadge) alertBadge.hidden = !d.wifi_alerting;
+  $("#devicesBody")?.querySelectorAll(".device-row").forEach((tr) => {
+    tr.classList.toggle("is-selected", macKey(tr.getAttribute("data-mac")) === macKey(mac));
+  });
+  const tx = d.wifi_tx_mbps != null ? `${fmtMbps(d.wifi_tx_mbps)} Mbps` : "";
+  const rx = d.wifi_rx_mbps != null ? `${fmtMbps(d.wifi_rx_mbps)} Mbps` : "";
+  const rates = [tx && `TX ${tx}`, rx && `RX ${rx}`].filter(Boolean).join(" · ");
+  if (kvs) {
+    kvs.innerHTML = [
+      drawerKv("MAC", d.mac || key),
+      drawerKv("IP", d.ip),
+      drawerKv("Band", wifiBandLabel(d.wifi_band) || d.wifi_band),
+      drawerKv("RSSI", d.wifi_rssi != null ? `${Math.round(Number(d.wifi_rssi))} dBm` : ""),
+      drawerKv("Signal", d.wifi_signal_pct != null ? `${Math.round(Number(d.wifi_signal_pct))}%` : ""),
+      drawerKv("Rates", rates),
+      drawerKv("Node / AP MAC", d.wifi_node_mac),
+      drawerKv("SSID", d.wifi_ssid),
+      drawerKv("Last RF", d.last_wifi_at ? fmtTs(d.last_wifi_at) : ""),
+      drawerKv("Source", "…"),
+    ].join("");
+  }
+  if (meta) meta.textContent = d.ip ? `${d.ip}${d.mac ? ` · ${d.mac}` : ""}` : key;
+  const ping = $("#deviceWifiDrawerPing");
+  const trace = $("#deviceWifiDrawerTrace");
+  if (ping) ping.disabled = !d.ip;
+  if (trace) trace.disabled = !d.ip;
+  const samples = await fetchLanWifiHistory(d.mac || key);
+  if (macKey(selectedDeviceMac) !== macKey(mac)) return;
+  const last = samples.length ? samples[samples.length - 1] : null;
+  const src = last && last.source ? last.source : "";
+  if (kvs) {
+    const lastTx = last && last.tx_mbps != null ? `${fmtMbps(last.tx_mbps)} Mbps` : tx;
+    const lastRx = last && last.rx_mbps != null ? `${fmtMbps(last.rx_mbps)} Mbps` : rx;
+    const lastRates = [lastTx && `TX ${lastTx}`, lastRx && `RX ${lastRx}`].filter(Boolean).join(" · ");
+    kvs.innerHTML = [
+      drawerKv("MAC", d.mac || key),
+      drawerKv("IP", d.ip),
+      drawerKv("Band", wifiBandLabel(last?.band || d.wifi_band) || d.wifi_band),
+      drawerKv("RSSI", (last?.rssi ?? d.wifi_rssi) != null ? `${Math.round(Number(last?.rssi ?? d.wifi_rssi))} dBm` : ""),
+      drawerKv("Signal", (last?.signal_pct ?? d.wifi_signal_pct) != null ? `${Math.round(Number(last?.signal_pct ?? d.wifi_signal_pct))}%` : ""),
+      drawerKv("Rates", lastRates),
+      drawerKv("Node / AP MAC", last?.node_mac || d.wifi_node_mac),
+      drawerKv("SSID", last?.ssid || d.wifi_ssid),
+      drawerKv("Last RF", last?.at ? fmtTs(last.at) : d.last_wifi_at ? fmtTs(d.last_wifi_at) : ""),
+      drawerKv("Sample source", src || "no samples"),
+    ].join("");
+  }
+  ensureDeviceWifiSpark(samples);
+}
+
+function confirmRouterAction(message) {
+  return new Promise((resolve) => {
+    const dlg = $("#routerActionConfirm");
+    const text = $("#routerActionConfirmText");
+    const ok = $("#routerActionConfirmOk");
+    const cancel = $("#routerActionConfirmCancel");
+    if (!dlg || typeof dlg.showModal !== "function" || !text || !ok || !cancel) {
+      resolve(window.confirm(message));
+      return;
+    }
+    text.textContent = message;
+    const done = (v) => {
+      ok.removeEventListener("click", onOk);
+      cancel.removeEventListener("click", onCancel);
+      dlg.removeEventListener("cancel", onDlgCancel);
+      if (dlg.open) dlg.close();
+      resolve(v);
+    };
+    const onOk = () => done(true);
+    const onCancel = () => done(false);
+    const onDlgCancel = (ev) => {
+      ev.preventDefault();
+      done(false);
+    };
+    ok.addEventListener("click", onOk);
+    cancel.addEventListener("click", onCancel);
+    dlg.addEventListener("cancel", onDlgCancel);
+    dlg.showModal();
+  });
+}
 
 function paintDevicesDisabled(data, meta, tbody) {
   const banner = $("#devicesDisabledBanner");
@@ -2354,17 +3191,21 @@ function devicesRowHtml(d) {
   pills.push(d.online ? `<span class="pill pill-ok">online</span>` : `<span class="pill pill-unknown">offline</span>`);
   if (d.gateway) pills.push(`<span class="pill">gw</span>`);
   if (d.source === "active_scan") pills.push(`<span class="pill">active scan</span>`);
-  return `<tr data-mac="${mac}" data-ip="${ip}">
+  return `<tr class="device-row" tabindex="0" data-mac="${mac}" data-ip="${ip}">
     <td${tipCellAttr([d.online ? "Online" : "Offline", seen].filter(Boolean).join(" · "))}>${pills.join(" ")}</td>
     <td${tipCellAttr(d.ip ? `IP ${d.ip}` : "No IP")}>${ip}</td>
     <td${tipCellAttr(hostnameSourceTip(d))}>${host || "—"}</td>
     <td${tipCellAttr(d.mac ? `MAC ${d.mac}` : "No MAC")}>${mac}</td>
     <td${tipCellAttr(d.vendor ? `Vendor ${d.vendor}` : "Unknown vendor")}>${escapeHtml(d.vendor || "")}</td>
     <td${tipCellAttr(`Category ${cat} (OUI heuristic)`)}>${cat}${ports ? ` ${ports}` : ""}</td>
+    <td${tipCellAttr(wifiCellTip(d))}>${escapeHtml(wifiCellText(d))}</td>
     <td><input type="text" class="device-alias" data-mac="${mac}" value="${escapeHtml(d.alias || "")}" maxlength="120" aria-label="Alias" /></td>
     <td>
       <button type="button" class="btn btn-secondary device-wol" data-mac="${mac}">WOL</button>
       <button type="button" class="btn btn-secondary device-router" data-mac="${mac}">Notify router</button>
+      ${lastRouterWrites.setClientBlocked && mac
+        ? `<button type="button" class="btn btn-secondary device-block" data-mac="${mac}">Block</button><button type="button" class="btn btn-secondary device-allow" data-mac="${mac}">Allow</button>`
+        : ""}
       <button type="button" class="btn btn-secondary device-scan" data-ip="${ip}">Scan</button>
       <button type="button" class="btn btn-secondary device-filter" data-ip="${ip}">Connections</button>
       <button type="button" class="btn btn-secondary device-ping" data-ip="${ip}">Ping</button>
@@ -2384,17 +3225,29 @@ async function refreshDevicesPanel() {
       return;
     }
     const devices = data.devices || [];
-    if (strip) {
-      strip.innerHTML = data.gateway
-        ? `<span class="meta-chip"><span class="meta-label">Gateway</span> ${escapeHtml(data.gateway)}</span>`
-        : `<span class="muted">No gateway detected</span>`;
+    lastLanDevices = devices;
+    lastRouterHealth = data.router_health || null;
+    lastRouterWrites = data.router_writes || { enabled: false, setClientBlocked: false, setGuestWifi: false };
+    if (lastRouterHealth == null) {
+      lastRouterHealth = await fetchRouterHealth(null);
     }
+    paintDevicesGateway(strip, data);
     if (meta) {
       meta.textContent = data.warning || `${devices.length} devices · ${data.disclaimer || "passive neighbor cache"}`;
     }
     if (tbody) {
       tbody.innerHTML = devices.map(devicesRowHtml).join("") ||
         `<tr><td colspan="${DEVICES_COLS}" class="muted">No devices yet — click Refresh</td></tr>`;
+      if (selectedDeviceMac) {
+        const row = [...tbody.querySelectorAll(".device-row")].find(
+          (tr) => macKey(tr.getAttribute("data-mac")) === macKey(selectedDeviceMac)
+        );
+        if (row) {
+          row.classList.add("is-selected");
+        } else {
+          closeDeviceWifiDrawer();
+        }
+      }
       bindTooltips(tbody);
     }
   } catch (e) {
@@ -3062,6 +3915,11 @@ function setupConnectionsPanel() {
       });
     });
     devicesBody.addEventListener("click", async (e) => {
+      if (!e.target.closest("button, input, a")) {
+        const tr = e.target.closest("tr.device-row");
+        if (tr) openDeviceWifiDrawer(tr.getAttribute("data-mac"));
+        return;
+      }
       const wol = e.target.closest(".device-wol");
       if (wol) {
         const res = await api("/api/lan/wol", {
@@ -3080,6 +3938,30 @@ function setupConnectionsPanel() {
           body: JSON.stringify({ mac: router.getAttribute("data-mac") }),
         });
         alert(res.ok ? "Router webhook sent" : res.error || "Failed");
+        return;
+      }
+      const blockBtn = e.target.closest(".device-block, .device-allow");
+      if (blockBtn) {
+        const mac = normalizeMac(blockBtn.getAttribute("data-mac"));
+        const blocked = blockBtn.classList.contains("device-block");
+        const verb = blocked ? "Block" : "Allow";
+        const ok = await confirmRouterAction(`${verb} ${mac} on the router? Confirm includes MAC ${mac}.`);
+        if (!ok) return;
+        try {
+          const res = await api("/api/lan/router/action", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "setClientBlocked",
+              mac,
+              blocked,
+              confirm: mac,
+            }),
+          });
+          alert(res && res.ok ? `${verb} sent` : (res && res.error) || `${verb} failed`);
+        } catch (err) {
+          alert(err.message || `${verb} failed`);
+        }
         return;
       }
       const scanBtn = e.target.closest(".device-scan");
@@ -3143,6 +4025,74 @@ function setupConnectionsPanel() {
         } finally {
           trBtn.disabled = false;
         }
+        return;
+      }
+    });
+    devicesBody.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      if (e.target.closest("button, input")) return;
+      const tr = e.target.closest("tr.device-row");
+      if (!tr) return;
+      e.preventDefault();
+      openDeviceWifiDrawer(tr.getAttribute("data-mac"));
+    });
+  }
+  const drawerClose = $("#deviceWifiDrawerClose");
+  if (drawerClose) drawerClose.addEventListener("click", () => closeDeviceWifiDrawer());
+  const drawerPing = $("#deviceWifiDrawerPing");
+  if (drawerPing) {
+    drawerPing.addEventListener("click", async () => {
+      const d = deviceByMac(selectedDeviceMac);
+      const ip = d && d.ip;
+      if (!ip) return;
+      drawerPing.disabled = true;
+      const meta = $("#devicesMeta");
+      if (meta) meta.textContent = `Ping ${ip}…`;
+      try {
+        const res = await api("/api/lan/devices/ping", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ip }),
+        });
+        const msg = res.ok
+          ? `Ping ${res.ip}: ${res.latency_ms != null ? `${Math.round(res.latency_ms)} ms` : "ok"}`
+          : res.error || "Ping failed";
+        if (meta) meta.textContent = msg;
+        alert(msg);
+      } catch (err) {
+        alert(err.message || "Ping failed");
+      } finally {
+        drawerPing.disabled = !ip;
+      }
+    });
+  }
+  const drawerTrace = $("#deviceWifiDrawerTrace");
+  if (drawerTrace) {
+    drawerTrace.addEventListener("click", async () => {
+      const d = deviceByMac(selectedDeviceMac);
+      const ip = d && d.ip;
+      if (!ip) return;
+      drawerTrace.disabled = true;
+      const meta = $("#devicesMeta");
+      if (meta) meta.textContent = `Traceroute ${ip}…`;
+      try {
+        const res = await api("/api/lan/devices/traceroute", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ip }),
+        });
+        const hops = (res.hops || []).map((h) => {
+          if (h.timeout || !h.ip) return `${h.hop} *`;
+          const rtt = h.rtt_ms != null ? `${Math.round(h.rtt_ms)} ms` : "";
+          return `${h.hop} ${h.ip} ${rtt}`.trim();
+        });
+        const msg = hops.length ? hops.join("\n") : (res.error || "No hops");
+        if (meta) meta.textContent = hops.length ? `Traceroute ${res.ip || ip}: ${hops.length} hops` : (res.error || "Traceroute failed");
+        alert(msg);
+      } catch (err) {
+        alert(err.message || "Traceroute failed");
+      } finally {
+        drawerTrace.disabled = !ip;
       }
     });
   }
@@ -3896,6 +4846,194 @@ async function runSpeedTest() {
   }
 }
 
+const ROUTER_TARGETS_CAP = 4;
+const ROUTER_VENDORS = ["asuswrt", "nighthawk", "unifi", "omada"];
+
+function normalizeRouterVendor(v) {
+  const s = String(v || "").trim().toLowerCase();
+  return ROUTER_VENDORS.includes(s) ? s : "asuswrt";
+}
+
+function vendorWriteCaps(vendor) {
+  const v = normalizeRouterVendor(vendor);
+  if (v === "omada") return { setClientBlocked: true, setGuestWifi: false };
+  if (v === "asuswrt" || v === "nighthawk" || v === "unifi") {
+    return { setClientBlocked: true, setGuestWifi: true };
+  }
+  return { setClientBlocked: false, setGuestWifi: false };
+}
+
+function parseSettingsRouterTargets(s) {
+  let arr = [];
+  try {
+    const raw = s && s.router_targets_json;
+    arr = typeof raw === "string" ? JSON.parse(raw) : Array.isArray(raw) ? raw : [];
+  } catch {
+    arr = [];
+  }
+  if (!Array.isArray(arr) || !arr.length) {
+    return [
+      {
+        id: "default",
+        vendor: normalizeRouterVendor(s && s.router_vendor),
+        host: (s && s.router_host) || "",
+        user: (s && s.router_user) || "admin",
+        port: (s && s.router_port) || "",
+        https: !!(s && s.router_https),
+        enabled: true,
+      },
+    ];
+  }
+  return arr.slice(0, ROUTER_TARGETS_CAP);
+}
+
+function newRouterTargetId() {
+  return `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function routerTargetRowHtml(t) {
+  const id = escapeHtml(t.id || "default");
+  const vendor = normalizeRouterVendor(t.vendor);
+  const host = escapeHtml(t.host || "");
+  const user = escapeHtml(t.user || "admin");
+  const port = escapeHtml(t.port || "");
+  const https = t.https ? "checked" : "";
+  const enabled = t.enabled === false ? "" : "checked";
+  const sshUser = escapeHtml(t.ssh_user || "");
+  const sshKey = escapeHtml(t.ssh_key_path || "");
+  const sshIfaces = escapeHtml(t.ssh_ifaces || "");
+  const sshHidden = vendor === "asuswrt" ? "" : " hidden";
+  const keyHidden = vendor === "unifi" ? "" : " hidden";
+  const vendorOpts = [
+    ["asuswrt", "ASUS / Merlin / AiMesh"],
+    ["nighthawk", "Netgear Nighthawk / Orbi"],
+    ["unifi", "UniFi"],
+    ["omada", "TP-Link Omada"],
+  ]
+    .map(([val, label]) => `<option value="${val}"${vendor === val ? " selected" : ""}>${label}</option>`)
+    .join("");
+  return `<div class="router-target" data-target-id="${id}" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(11rem,1fr));gap:0.85rem 1.1rem;border:1px solid var(--border);border-radius:var(--radius);padding:0.75rem;">
+    <label>Vendor
+      <select data-field="vendor">
+        ${vendorOpts}
+      </select>
+    </label>
+    <label>Host
+      <input type="text" data-field="host" maxlength="253" placeholder="blank = detected gateway" autocomplete="off" value="${host}" />
+    </label>
+    <label class="check">
+      <input type="checkbox" data-field="https" ${https} />
+      <span class="check-text">HTTPS</span>
+    </label>
+    <label>Username
+      <input type="text" data-field="user" maxlength="64" placeholder="admin" autocomplete="off" value="${user}" />
+    </label>
+    <label>Password
+      <input type="password" data-field="password" maxlength="256" autocomplete="off" placeholder="unchanged if blank" />
+    </label>
+    <label class="unifi-apikey"${keyHidden}>API key (UniFi)
+      <input type="password" data-field="api_key" maxlength="256" autocomplete="off" placeholder="unchanged if blank" />
+    </label>
+    <label>Port (blank = vendor default)
+      <input type="text" data-field="port" maxlength="5" placeholder="auto" inputmode="numeric" autocomplete="off" value="${port}" />
+    </label>
+    <label class="check">
+      <input type="checkbox" data-field="enabled" ${enabled} />
+      <span class="check-text">Enabled</span>
+    </label>
+    <div class="asus-ssh"${sshHidden} style="grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fill,minmax(11rem,1fr));gap:0.85rem 1.1rem;">
+      <p class="field-hint" style="grid-column:1/-1">Merlin airtime via OpenSSH key (no password). Blank ifaces = eth6,eth5,wl1,wl0.</p>
+      <label>SSH user
+        <input type="text" data-field="ssh_user" maxlength="64" placeholder="blank = HTTP username" autocomplete="off" value="${sshUser}" />
+      </label>
+      <label class="wide">SSH key path
+        <input type="text" data-field="ssh_key_path" maxlength="512" placeholder="C:\\Users\\you\\.ssh\\id_ed25519" autocomplete="off" value="${sshKey}" />
+      </label>
+      <label>SSH ifaces
+        <input type="text" data-field="ssh_ifaces" maxlength="128" placeholder="eth6,eth5,wl1,wl0" autocomplete="off" value="${sshIfaces}" />
+      </label>
+    </div>
+    <div class="settings-actions">
+      <button type="button" class="btn btn-secondary router-target-test">Test</button>
+      <button type="button" class="btn btn-secondary router-target-remove">Remove</button>
+      <span class="muted router-target-test-msg" aria-live="polite"></span>
+    </div>
+  </div>`;
+}
+
+function syncRouterTargetAddBtn() {
+  const list = $("#routerTargetsList");
+  const addBtn = $("#routerTargetAddBtn");
+  if (!addBtn || !list) return;
+  addBtn.disabled = list.querySelectorAll("[data-target-id]").length >= ROUTER_TARGETS_CAP;
+}
+
+function renderRouterTargets(s) {
+  const list = $("#routerTargetsList");
+  if (!list) return;
+  const targets = parseSettingsRouterTargets(s || {});
+  list.innerHTML = targets.map(routerTargetRowHtml).join("");
+  syncRouterTargetAddBtn();
+  syncRouterWriteUi();
+}
+
+function syncRouterWriteUi() {
+  const form = $("#settingsForm");
+  const writesOn = !!(form && form.router_writes_enabled && form.router_writes_enabled.checked);
+  const { targets } = collectRouterTargetsFromForm();
+  let guest = false;
+  for (const t of targets) {
+    if (t.enabled === false) continue;
+    if (vendorWriteCaps(t.vendor).setGuestWifi) guest = true;
+  }
+  const box = $("#routerGuestWifi");
+  if (box) box.hidden = !(writesOn && guest);
+}
+
+function collectRouterTargetsFromForm() {
+  const list = $("#routerTargetsList");
+  const targets = [];
+  const secrets = {};
+  if (!list) return { targets, secrets };
+  for (const row of list.querySelectorAll("[data-target-id]")) {
+    if (targets.length >= ROUTER_TARGETS_CAP) break;
+    const id = String(row.getAttribute("data-target-id") || "").trim();
+    if (!id) continue;
+    const vendorEl = row.querySelector("[data-field=vendor]");
+    const hostEl = row.querySelector("[data-field=host]");
+    const userEl = row.querySelector("[data-field=user]");
+    const portEl = row.querySelector("[data-field=port]");
+    const httpsEl = row.querySelector("[data-field=https]");
+    const enabledEl = row.querySelector("[data-field=enabled]");
+    const passEl = row.querySelector("[data-field=password]");
+    const vendor = normalizeRouterVendor(vendorEl && vendorEl.value);
+    const rowObj = {
+      id,
+      vendor,
+      host: hostEl ? hostEl.value.trim() : "",
+      user: userEl ? userEl.value.trim() || "admin" : "admin",
+      port: portEl ? portEl.value.trim() : "",
+      https: !!(httpsEl && httpsEl.checked),
+      enabled: enabledEl ? !!enabledEl.checked : true,
+    };
+    if (vendor === "asuswrt") {
+      const sshUserEl = row.querySelector("[data-field=ssh_user]");
+      const sshKeyEl = row.querySelector("[data-field=ssh_key_path]");
+      const sshIfacesEl = row.querySelector("[data-field=ssh_ifaces]");
+      const ssh_user = sshUserEl ? sshUserEl.value.trim() : "";
+      const ssh_key_path = sshKeyEl ? sshKeyEl.value.trim() : "";
+      const ssh_ifaces = sshIfacesEl ? sshIfacesEl.value.trim() : "";
+      if (ssh_user) rowObj.ssh_user = ssh_user;
+      if (ssh_key_path) rowObj.ssh_key_path = ssh_key_path;
+      if (ssh_ifaces) rowObj.ssh_ifaces = ssh_ifaces;
+    }
+    targets.push(rowObj);
+    const keyEl = row.querySelector("[data-field=api_key]");
+    secrets[id] = { password: passEl ? passEl.value.trim() : "", api_key: keyEl ? keyEl.value.trim() : "" };
+  }
+  return { targets, secrets };
+}
+
 async function loadSettings() {
   const form = $("#settingsForm");
   if (!form) return;
@@ -3957,6 +5095,8 @@ async function loadSettings() {
     "sniffer_enabled",
     "sniffer_always_on",
     "lan_active_discovery",
+    "router_poll_enabled",
+    "router_writes_enabled",
     "router_webhook_auto_new",
     "influx_enabled",
     "es_enabled",
@@ -3997,6 +5137,7 @@ async function loadSettings() {
   }
   const numKeys = [
     "speedtest_interval_min",
+    "router_interval_s",
     "degradation_loss_pct",
     "degradation_latency_ms",
     "degradation_jitter_ms",
@@ -4013,7 +5154,17 @@ async function loadSettings() {
   if (form.lan_discovery_interval_min) {
     form.lan_discovery_interval_min.value = s.lan_discovery_interval_min ?? 15;
   }
+  if (form.router_interval_s) {
+    form.router_interval_s.value = s.router_interval_s ?? 30;
+  }
+  renderRouterTargets(s);
+  syncRouterWriteUi();
+  for (const id of ["routerGuest24", "routerGuest5", "routerGuest6"]) {
+    const el = $(`#${id}`);
+    if (el) el.checked = false;
+  }
   applyUsageCapsAlertsToForm(form, s);
+  applyWifiAlertsToForm(form, s);
   form.wan_targets.value = s.wan_targets || "";
   form.dns_resolver.value = s.dns_resolver || "";
   form.http_url.value = s.http_url || "";
@@ -4130,6 +5281,52 @@ function buildUsageCapsAlertsFromForm(form) {
   };
 }
 
+function applyWifiAlertsToForm(form, s) {
+  let cfg = {};
+  try {
+    const raw = s && s.wifi_alerts_json;
+    cfg = typeof raw === "string" ? JSON.parse(raw || "{}") : raw && typeof raw === "object" ? raw : {};
+  } catch {
+    cfg = {};
+  }
+  if (form.wifi_alerts_enabled) form.wifi_alerts_enabled.checked = !!cfg.enabled;
+  if (form.wifi_alerts_rssi_dbm) {
+    form.wifi_alerts_rssi_dbm.value = cfg.rssi_dbm != null && cfg.rssi_dbm !== "" ? String(cfg.rssi_dbm) : "";
+  }
+  if (form.wifi_alerts_signal_pct) {
+    form.wifi_alerts_signal_pct.value =
+      cfg.signal_pct != null && cfg.signal_pct !== "" ? String(cfg.signal_pct) : "";
+  }
+  if (form.wifi_alerts_debounce_n) {
+    form.wifi_alerts_debounce_n.value = cfg.debounce_n != null ? String(cfg.debounce_n) : "3";
+  }
+  if (form.wifi_alerts_macs) {
+    form.wifi_alerts_macs.value = Array.isArray(cfg.macs) ? cfg.macs.join(", ") : "";
+  }
+}
+
+function buildWifiAlertsFromForm(form) {
+  const macsRaw = form.wifi_alerts_macs ? String(form.wifi_alerts_macs.value || "") : "";
+  const macs = macsRaw
+    .split(/[\s,]+/)
+    .map((m) => m.trim())
+    .filter(Boolean);
+  const rssiEl = form.wifi_alerts_rssi_dbm;
+  const pctEl = form.wifi_alerts_signal_pct;
+  const nEl = form.wifi_alerts_debounce_n;
+  const rssi = rssiEl && rssiEl.value !== "" ? Number(rssiEl.value) : null;
+  const pct = pctEl && pctEl.value !== "" ? Number(pctEl.value) : null;
+  let debounce_n = nEl && nEl.value !== "" ? Number(nEl.value) : 3;
+  if (!Number.isFinite(debounce_n)) debounce_n = 3;
+  return {
+    enabled: !!(form.wifi_alerts_enabled && form.wifi_alerts_enabled.checked),
+    rssi_dbm: Number.isFinite(rssi) ? rssi : null,
+    signal_pct: Number.isFinite(pct) ? pct : null,
+    debounce_n,
+    macs,
+  };
+}
+
 function setupForms() {
   $("#historyFilters").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -4233,10 +5430,116 @@ function setupForms() {
       }
     });
   }
+  const routerTargetsList = $("#routerTargetsList");
+  if (routerTargetsList) {
+    routerTargetsList.addEventListener("change", (ev) => {
+      const sel = ev.target.closest("[data-field=vendor]");
+      if (!sel) return;
+      const row = sel.closest("[data-target-id]");
+      const ssh = row && row.querySelector(".asus-ssh");
+      if (ssh) ssh.hidden = sel.value !== "asuswrt";
+      const key = row && row.querySelector(".unifi-apikey");
+      if (key) key.hidden = sel.value !== "unifi";
+      syncRouterWriteUi();
+    });
+    routerTargetsList.addEventListener("click", async (ev) => {
+      const testBtn = ev.target.closest(".router-target-test");
+      const removeBtn = ev.target.closest(".router-target-remove");
+      const row = ev.target.closest("[data-target-id]");
+      if (removeBtn && row) {
+        const list = $("#routerTargetsList");
+        if (list && list.querySelectorAll("[data-target-id]").length <= 1) return;
+        row.remove();
+        syncRouterTargetAddBtn();
+        syncRouterWriteUi();
+        return;
+      }
+      if (!testBtn || !row) return;
+      const msg = row.querySelector(".router-target-test-msg");
+      const id = row.getAttribute("data-target-id");
+      testBtn.disabled = true;
+      try {
+        const fn = window.idt && window.idt.lanRouterTest;
+        const res =
+          typeof fn === "function" ? await fn(id) : { ok: false, error: "not implemented" };
+        if (msg) {
+          msg.textContent = res && res.ok ? "Connected" : (res && res.error) || "not implemented";
+          msg.className = res && res.ok ? "muted state-ok router-target-test-msg" : "muted state-error router-target-test-msg";
+        }
+      } catch (err) {
+        if (msg) {
+          msg.textContent = err.message || "not implemented";
+          msg.className = "muted state-error router-target-test-msg";
+        }
+      } finally {
+        testBtn.disabled = false;
+      }
+    });
+  }
+  const routerAddBtn = $("#routerTargetAddBtn");
+  if (routerAddBtn) {
+    routerAddBtn.addEventListener("click", () => {
+      const list = $("#routerTargetsList");
+      if (!list || list.querySelectorAll("[data-target-id]").length >= ROUTER_TARGETS_CAP) return;
+      list.insertAdjacentHTML(
+        "beforeend",
+        routerTargetRowHtml({
+          id: newRouterTargetId(),
+          vendor: "asuswrt",
+          host: "",
+          user: "admin",
+          port: "",
+          https: false,
+          enabled: true,
+        })
+      );
+      syncRouterTargetAddBtn();
+      syncRouterWriteUi();
+    });
+  }
+  const writesEl = document.querySelector('[name="router_writes_enabled"]');
+  if (writesEl) writesEl.addEventListener("change", () => syncRouterWriteUi());
+  const guestBox = $("#routerGuestWifi");
+  if (guestBox) {
+    guestBox.addEventListener("change", async (ev) => {
+      const el = ev.target.closest("[data-band]");
+      if (!el || el.type !== "checkbox") return;
+      const band = el.getAttribute("data-band");
+      const enabled = el.checked;
+      const ok = await confirmRouterAction(
+        `Turn guest ${band} GHz ${enabled ? "on" : "off"}? Confirm includes band ${band}.`
+      );
+      if (!ok) {
+        el.checked = !enabled;
+        return;
+      }
+      try {
+        const res = await api("/api/lan/router/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "setGuestWifi",
+            band,
+            enabled,
+            confirm: band,
+          }),
+        });
+        if (!res || !res.ok) {
+          el.checked = !enabled;
+          alert((res && res.error) || "Guest SSID change failed");
+        }
+      } catch (err) {
+        el.checked = !enabled;
+        alert(err.message || "Guest SSID change failed");
+      }
+    });
+  }
   $("#settingsForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const form = e.target;
     const usageJson = buildUsageCapsAlertsFromForm(form);
+    const wifiAlerts = buildWifiAlertsFromForm(form);
+    const routerTargets = collectRouterTargetsFromForm();
     const body = {
       poll_interval_s: Number(form.poll_interval_s.value),
       debounce_fail_count: Number(form.debounce_fail_count.value),
@@ -4286,6 +5589,19 @@ function setupForms() {
       lan_discovery_interval_min: form.lan_discovery_interval_min
         ? Number(form.lan_discovery_interval_min.value)
         : 15,
+      router_poll_enabled: !!(form.router_poll_enabled && form.router_poll_enabled.checked),
+      router_writes_enabled: !!(form.router_writes_enabled && form.router_writes_enabled.checked),
+      router_targets_json: JSON.stringify(routerTargets.targets),
+      router_secrets_json: JSON.stringify(routerTargets.secrets),
+      router_vendor: routerTargets.targets[0] ? routerTargets.targets[0].vendor : "asuswrt",
+      router_host: routerTargets.targets[0] ? routerTargets.targets[0].host : "",
+      router_https: !!(routerTargets.targets[0] && routerTargets.targets[0].https),
+      router_user: routerTargets.targets[0] ? routerTargets.targets[0].user : "admin",
+      router_password: (routerTargets.targets[0] && routerTargets.secrets[routerTargets.targets[0].id]
+        ? routerTargets.secrets[routerTargets.targets[0].id].password
+        : "") || "",
+      router_interval_s: form.router_interval_s ? Number(form.router_interval_s.value) : 30,
+      router_port: routerTargets.targets[0] ? routerTargets.targets[0].port : "",
       notify_webhooks_json: form.notify_webhooks_json
         ? form.notify_webhooks_json.value.trim() || "[]"
         : "[]",
@@ -4310,6 +5626,7 @@ function setupForms() {
       http_api_token: form.http_api_token ? form.http_api_token.value.trim() : "",
       usage_caps_json: usageJson.usage_caps_json,
       usage_alerts_json: usageJson.usage_alerts_json,
+      wifi_alerts_json: wifiAlerts,
       wan_targets: form.wan_targets.value.trim(),
       dns_resolver: form.dns_resolver.value.trim(),
       http_url: form.http_url.value.trim(),

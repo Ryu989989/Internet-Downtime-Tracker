@@ -31,14 +31,17 @@ Cross-platform **Electron** tray app that monitors **LAN** (router/gateway), **W
 | **Connections** — live TCP/UDP by process + adapter RX/TX Mbps | None (works without admin) | Snapshot while the app runs. Reverse-DNS (`connections_resolve_dns`) default **off**. **Not** per-app bytes; not billing-grade. |
 | **Usage** — per-app download/upload rates, hourly/daily rollups, CSV export, ignore list | Elevated `.NET` ETW helper still required (UAC opt-in) | **Windows-only**. Electron stays unelevated. Named-pipe bridge. Local DB tables `usage_*`. |
 | **Control** — usage alerts, data caps, Firewall block/unblock by exe | Master toggle **off** + elevated helper | **Windows-only**. Windows Firewall only. No WinDivert/throttle. |
+| **Router poll** — ASUSWRT, Nighthawk/Orbi, UniFi, Omada | Opt-in; unofficial | Cap **4** enabled targets. Per-client RF + router CPU/WAN — **not** a complete RF map. Dual-vendor clients merge **by MAC** (latest RF on `lan_devices`; history keeps both sources). Host NIC series (SSID/BSSID/band/channel/signal, `netsh`/`iw`) **always** recorded when this PC is on Wi-Fi. ASUS: nonce login + `appGet.cgi`. Nighthawk/Orbi: SOAP `/soap/server_sa/` — port **5000** then **80** unless set; missing methods **404** (skip). UniFi: local OS API key (`X-API-KEY`) or cookie fallback; RFC1918/`.local`. Omada: controller HTTPS (often `:8043`). Merlin/ASUS SSH **chanim** is key-only OpenSSH (`BatchMode=yes`); no password SSH. ISP-locked/app-only firmware may disable SOAP. |
+| **Wi-Fi RSSI alerts** — `wifi_weak` toast + notify | Opt-in `wifi_alerts_json` | Debounced weak streak (dBm else %). Empty `macs` = all Wi-Fi clients + this PC `host_nic`. Quiet hours honored. **Not** an outage type. |
+| **Router writes** — block/allow + guest SSID on/off | Master toggle **off** + confirm | `setClientBlocked` / `setGuestWifi` only. **No** firmware or reboot. Omada: block/allow only (guest skipped). Audit `router_actions`. Private host required. |
 | **Topology** — SNMP sysName/IF-MIB + LLDP when present | SNMP community; Settings off by default | Seeds = gateway + Devices/Settings IPs. Cancel on leave. |
 | **Sniffer** — metadata flow open/close ring buffer | Settings gate; always-on optional | Payloads off by default. Not full packet capture / Npcap. |
 | **Scan** — top ports + offline CVE advisories; gated subnet discovery | User-triggered; still private/known-device only | CVE labeled advisory/stale. Discovery ≥5 min; probe suppress while running. |
-| **Notifications** — outage/new-device/scan/monitor + quiet hours | None | Generic HTTPS webhooks plus Discord, Slack, Telegram, ntfy, and SMTP email. Secret tokens are never logged. |
+| **Notifications** — outage/new-device/scan/monitor/`wifi_weak` + quiet hours | None | Generic HTTPS webhooks plus Discord, Slack, Telegram, ntfy, and SMTP email. Secret tokens are never logged. |
 | **Custom monitors** — user-defined TCP/HTTP/PING targets | None | Per-target history in `monitor_checks`; independent intervals and notifications. |
 | **Router webhook** — manual/auto quarantine-ish POST | Opt-in URL | Generic payload; no Omada/OPNsense plugin marketplace. |
 | **Influx / ES push** | Opt-in tokens | Outbound only. |
-| **Prometheus `/metrics` + HTTP API** | Opt-in | **127.0.0.1 only**; API requires token. No embedded Grafana/Docker. |
+| **Prometheus `/metrics` + HTTP API** | Opt-in | **127.0.0.1 only**; scrape `http://127.0.0.1:9108/metrics`. Import [`grafana/idt-router-poll.json`](grafana/idt-router-poll.json) (Prometheus datasource) for router CPU/WAN, Wi-Fi RSSI (online, max 50), chanim idle. API requires token. No embedded Grafana/Docker. |
 
 Build the helper (once) before enabling Usage:
 

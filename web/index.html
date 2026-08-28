@@ -58,7 +58,36 @@
             <div class="status-kicker">Live connectivity</div>
             <div class="status-title" id="statusTitle">Checking…</div>
             <div class="status-sub muted" id="statusSub"></div>
-            <div class="adapter-line muted" id="adapterLine" hidden></div>
+            <div class="adapter-line" id="adapterLine" hidden>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-kind" id="adapterKindChip">
+                <span class="meta-label" id="adapterKindLabel">Adapter</span>
+                <span id="adapterName">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-ssid" id="adapterSsidChip" hidden>
+                <span class="meta-label">SSID</span>
+                <span id="adapterSsid">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-rssi" id="adapterRssiChip" hidden>
+                <span class="meta-label">RSSI</span>
+                <span id="adapterRssi">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-signal" id="adapterSignalChip" hidden>
+                <span class="meta-label">Signal</span>
+                <span id="adapterSignal">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-band" id="adapterBandChip" hidden>
+                <span class="meta-label">Band</span>
+                <span id="adapterBand">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="router-clients" id="adapterClientsChip" hidden>
+                <span class="meta-label">Clients</span>
+                <span id="adapterClients">-</span>
+              </div>
+            </div>
+            <div class="host-wifi-spark muted" id="hostWifiSparkWrap" hidden>
+              <svg id="hostWifiSpark" width="120" height="28" viewBox="0 0 120 28" aria-hidden="true"></svg>
+              <span id="hostWifiSparkCap"></span>
+            </div>
             <button type="button" class="text-link adapter-link" data-goto-tab="connections" id="viewConnectionsLink" hidden>View connections</button>
           </div>
           <div class="status-hero-meta">
@@ -420,6 +449,7 @@
                 <th scope="col" class="has-tip" tabindex="0" data-tip="dev-mac">MAC</th>
                 <th scope="col" class="has-tip" tabindex="0" data-tip="dev-vendor">Vendor</th>
                 <th scope="col" class="has-tip" tabindex="0" data-tip="dev-cat">Category</th>
+                <th scope="col" class="has-tip" tabindex="0" data-tip="dev-wifi">Wi-Fi</th>
                 <th scope="col" class="has-tip" tabindex="0" data-tip="dev-alias">Alias</th>
                 <th scope="col" class="has-tip" tabindex="0" data-tip="dev-actions">Actions</th>
               </tr>
@@ -427,6 +457,26 @@
             <tbody id="devicesBody"></tbody>
           </table>
         </div>
+        <aside id="deviceWifiDrawer" class="table-wrap device-wifi-drawer" hidden>
+          <div class="device-wifi-drawer-head">
+            <h2 id="deviceWifiDrawerTitle">Device Wi-Fi</h2>
+            <span id="deviceWifiAlertingBadge" class="pill pill-amber" hidden>alerting</span>
+            <button type="button" class="btn btn-secondary" id="deviceWifiDrawerClose">Close</button>
+          </div>
+          <p class="muted" id="deviceWifiDrawerMeta"></p>
+          <div class="topo-detail" id="deviceWifiDrawerKvs"></div>
+          <p class="chart-caption muted" id="deviceWifiSparkCaption">Last 24h signal (host NIC vs router)</p>
+          <div class="chart-wrap">
+            <div class="chart-box chart-box-sm" id="deviceWifiSparkBox">
+              <canvas id="deviceWifiSpark" aria-label="Wi-Fi signal last 24 hours"></canvas>
+            </div>
+            <p class="muted" id="deviceWifiSparkEmpty" hidden>No Wi-Fi samples in the last 24 hours.</p>
+          </div>
+          <div class="filters conn-toolbar">
+            <button type="button" class="btn btn-secondary" id="deviceWifiDrawerPing">Ping</button>
+            <button type="button" class="btn btn-secondary" id="deviceWifiDrawerTrace">Traceroute</button>
+          </div>
+        </aside>
       </div>
 
       <div id="connectionsView" hidden>
@@ -834,6 +884,58 @@
           </label>
         </fieldset>
         <fieldset>
+          <legend>Router poll</legend>
+          <label class="check has-tip" data-tip="set-router-poll">
+            <input type="checkbox" name="router_poll_enabled" />
+            <span class="check-text">Poll router for client Wi-Fi / health</span>
+          </label>
+          <p class="field-hint">LAN API (ASUS JSON, Nighthawk SOAP, UniFi, Omada). Off by default. Host must be a private IP. Up to 4 targets; clients merge by MAC.</p>
+          <label class="check has-tip" data-tip="set-router-writes">
+            <input type="checkbox" name="router_writes_enabled" />
+            <span class="check-text">Allow router writes (block/allow + guest SSID)</span>
+          </label>
+          <p class="field-hint">Off by default. Block/allow clients and guest 2.4/5/6 on/off only — never reboot or firmware. Each action needs a confirm. Private IP only.</p>
+          <div id="routerGuestWifi" hidden>
+            <p class="field-hint">Guest SSID enable only (not rename/password). Confirm dialog includes the band.</p>
+            <label class="check">
+              <input type="checkbox" id="routerGuest24" data-band="2.4" />
+              <span class="check-text">Guest 2.4 GHz</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="routerGuest5" data-band="5" />
+              <span class="check-text">Guest 5 GHz</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="routerGuest6" data-band="6" />
+              <span class="check-text">Guest 6 GHz</span>
+            </label>
+          </div>
+          <div id="routerTargetsList" style="grid-column:1/-1;display:flex;flex-direction:column;gap:0.75rem;"></div>
+          <div class="settings-actions">
+            <button type="button" class="btn btn-secondary" id="routerTargetAddBtn">Add target</button>
+          </div>
+          <label>Poll interval (seconds, 15–300)
+            <input type="number" name="router_interval_s" min="15" max="300" step="1" />
+          </label>
+          <label class="check">
+            <input type="checkbox" name="wifi_alerts_enabled" />
+            <span class="check-text">Wi-Fi RSSI alerts</span>
+          </label>
+          <p class="field-hint">Not an outage. N consecutive weaker samples → <code>wifi_weak</code> notify + toast. Empty MAC list = all Wi-Fi clients and this PC. Quiet hours apply.</p>
+          <label>RSSI threshold (dBm)
+            <input type="number" name="wifi_alerts_rssi_dbm" min="-120" max="0" step="1" placeholder="-70" />
+          </label>
+          <label>Signal threshold (%)
+            <input type="number" name="wifi_alerts_signal_pct" min="0" max="100" step="1" placeholder="40" />
+          </label>
+          <label>Debounce (consecutive samples)
+            <input type="number" name="wifi_alerts_debounce_n" min="1" max="20" step="1" />
+          </label>
+          <label class="wide">MAC allowlist (comma-separated; blank = all)
+            <input type="text" name="wifi_alerts_macs" maxlength="2000" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off" />
+          </label>
+        </fieldset>
+        <fieldset>
           <legend>Sniffer &amp; Discovery</legend>
           <label class="check has-tip" data-tip="set-sniffer">
             <input type="checkbox" name="sniffer_enabled" />
@@ -1027,5 +1129,12 @@
       <p class="hint">Dashboard runs inside the app (no localhost port). DNS/HTTP checks run only when LAN+WAN are up, and are skipped while paused or during a speed test.</p>
     </section>
   </main>
+  <dialog id="routerActionConfirm" class="confirm-dialog">
+    <p id="routerActionConfirmText"></p>
+    <div class="settings-actions">
+      <button type="button" class="btn btn-secondary" id="routerActionConfirmCancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="routerActionConfirmOk">Confirm</button>
+    </div>
+  </dialog>
 </body>
 </html>

@@ -3,6 +3,7 @@
 /**
  * Multi-channel notifications: Discord/Slack/ntfy/Telegram/email + generic HTTPS webhooks,
  * plus quiet-hours digest. No secrets in logs. SSRF guards on URLs.
+ * Event strings are opaque (outage_open/close, new_device, wifi_weak, digest, …).
  */
 
 const https = require("https");

@@ -430,50 +430,281 @@ function checkHttp({
   });
 }
 
-async function getActiveAdapterUnix() {
-  let name = null;
-  let type = null;
+function emptyAdapter(extra) {
+  return {
+    name: null,
+    type: null,
+    description: null,
+    signal: null,
+    ssid: null,
+    bssid: null,
+    band: null,
+    channel: null,
+    rssi: null,
+    tx_mbps: null,
+    rx_mbps: null,
+    mac: null,
+    ...extra,
+  };
+}
+
+function normalizeMac(raw) {
+  if (raw == null) return null;
+  const hex = String(raw).toLowerCase().replace(/[^0-9a-f]/g, "");
+  if (hex.length !== 12) return null;
+  return hex.match(/../g).join(":");
+}
+
+function firstNumber(raw) {
+  if (raw == null || raw === "") return null;
+  const m = String(raw).match(/-?\d+(?:\.\d+)?/);
+  if (!m) return null;
+  const n = Number(m[0]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function cleanSsid(raw) {
+  if (raw == null) return null;
+  const t = String(raw).trim().replace(/^"|"$/g, "");
+  if (!t || /^(off\/any|n\/a|none)$/i.test(t)) return null;
+  return t;
+}
+
+function mhzFromFreq(rawGhz, rawMhz) {
+  if (rawMhz != null && rawMhz !== "") {
+    const n = Number(rawMhz);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (rawGhz == null || rawGhz === "") return null;
+  const n = Number(rawGhz);
+  return Number.isFinite(n) ? Math.round(n * 1000) : null;
+}
+
+function bandFromMhz(mhz) {
+  if (mhz == null) return null;
+  if (mhz >= 2400 && mhz < 2500) return "2.4";
+  if (mhz >= 4900 && mhz < 5925) return "5";
+  if (mhz >= 5925 && mhz < 7200) return "6";
+  return null;
+}
+
+function channelFromMhz(mhz) {
+  if (mhz == null) return null;
+  if (mhz >= 2400 && mhz < 2500) {
+    if (Math.round(mhz) === 2484) return 14;
+    const ch = Math.round((mhz - 2412) / 5) + 1;
+    return ch >= 1 && ch <= 13 ? ch : null;
+  }
+  if (mhz >= 4900 && mhz < 5925) {
+    const ch = Math.round((mhz - 5000) / 5);
+    return ch > 0 ? ch : null;
+  }
+  if (mhz >= 5925 && mhz < 7200) {
+    const ch = Math.round((mhz - 5955) / 5) + 1;
+    return ch > 0 ? ch : null;
+  }
+  return null;
+}
+
+function bandFromNetsh(channel, radioType, bandField) {
+  const labeled = String(bandField || "");
+  if (/6\s*ghz/i.test(labeled)) return "6";
+  if (/5\s*ghz/i.test(labeled)) return "5";
+  if (/2\.?4\s*ghz/i.test(labeled)) return "2.4";
+  const radio = String(radioType || "");
+  if (/6\s*ghz|6e/i.test(radio)) return "6";
+  if (channel == null) return null;
+  if (channel >= 1 && channel <= 14) return "2.4";
+  if (channel >= 32) return "5";
+  return null;
+}
+
+function colonFields(text) {
+  const map = {};
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const i = line.indexOf(":");
+    if (i <= 0) continue;
+    const key = line.slice(0, i).trim().toLowerCase();
+    if (key) map[key] = line.slice(i + 1).trim();
+  }
+  return map;
+}
+
+function fillWifiGaps(target, extra) {
+  if (!extra) return target;
+  for (const key of ["ssid", "bssid", "band", "channel", "rssi", "signal", "tx_mbps", "rx_mbps", "mac"]) {
+    if (target[key] == null && extra[key] != null) target[key] = extra[key];
+  }
+  return target;
+}
+
+function parseNetshWlanInterfaces(text) {
+  const parts = String(text || "")
+    .split(/(?=^\s*Name\s*:)/m)
+    .filter((p) => /\bName\s*:/i.test(p));
+  let block = parts[0] || text || "";
+  for (const p of parts) {
+    if (/^\s*State\s*:\s*connected\b/im.test(p)) {
+      block = p;
+      break;
+    }
+  }
+  const f = colonFields(block);
+  const channel = firstNumber(f.channel);
+  const signal = firstNumber(f.signal);
+  const rateRx = firstNumber(f["receive rate (mbps)"] != null ? f["receive rate (mbps)"] : f["receive rate"]);
+  const rateTx = firstNumber(f["transmit rate (mbps)"] != null ? f["transmit rate (mbps)"] : f["transmit rate"]);
+  return {
+    ssid: cleanSsid(f.ssid),
+    bssid: normalizeMac(f.bssid),
+    band: bandFromNetsh(channel, f["radio type"], f.band),
+    channel: channel != null ? Math.round(channel) : null,
+    signal: signal != null ? Math.round(signal) : null,
+    rssi: null,
+    rx_mbps: rateRx,
+    tx_mbps: rateTx,
+    mac: normalizeMac(f["physical address"]),
+  };
+}
+
+function parseIwconfigBlock(block) {
+  const text = String(block || "");
+  const ssidM = text.match(/ESSID:"([^"]*)"/i) || text.match(/ESSID:(\S+)/i);
+  const apM = text.match(/Access Point:\s*([0-9A-Fa-f]{2}(?:[:.-][0-9A-Fa-f]{2}){5})/i);
+  const ghzM = text.match(/Frequency:([\d.]+)\s*GHz/i);
+  const mhzM = text.match(/Frequency:([\d.]+)\s*MHz/i);
+  const chM = text.match(/Channel[=:](\d+)/i);
+  const rateM = text.match(/Bit Rate[=:]([\d.]+)/i);
+  const rssiM = text.match(/Signal level[=:](-?\d+(?:\.\d+)?)\s*dBm/i);
+  const quality = text.match(/Link Quality[=:](\d+)\/(\d+)/i);
+  const mhz = mhzFromFreq(ghzM && ghzM[1], mhzM && mhzM[1]);
+  const rate = rateM ? Number(rateM[1]) : null;
   let signal = null;
+  if (quality) signal = Math.round((Number(quality[1]) / Number(quality[2])) * 100);
+  return {
+    ssid: cleanSsid(ssidM && ssidM[1]),
+    bssid: apM ? normalizeMac(apM[1]) : null,
+    band: bandFromMhz(mhz),
+    channel: chM ? Number(chM[1]) : channelFromMhz(mhz),
+    rssi: rssiM ? Number(rssiM[1]) : null,
+    signal,
+    tx_mbps: Number.isFinite(rate) ? rate : null,
+    rx_mbps: Number.isFinite(rate) ? rate : null,
+    mac: null,
+  };
+}
+
+function parseIwLink(text) {
+  const s = String(text || "");
+  if (!s.trim() || /^not connected\.?$/im.test(s.trim())) return null;
+  const ssidM = s.match(/^\s*SSID:\s*(.+)$/m);
+  const bssidM = s.match(/Connected to\s+([0-9A-Fa-f:.-]+)/i);
+  const freqM = s.match(/^\s*freq:\s*(\d+)/m);
+  const rssiM = s.match(/^\s*signal:\s*(-?\d+(?:\.\d+)?)\s*dBm/m);
+  const rxM = s.match(/^\s*rx bitrate:\s*([\d.]+)/m);
+  const txM = s.match(/^\s*tx bitrate:\s*([\d.]+)/m);
+  const mhz = freqM ? Number(freqM[1]) : null;
+  const rx = rxM ? Number(rxM[1]) : null;
+  const tx = txM ? Number(txM[1]) : null;
+  return {
+    ssid: cleanSsid(ssidM && ssidM[1]),
+    bssid: bssidM ? normalizeMac(bssidM[1]) : null,
+    band: bandFromMhz(mhz),
+    channel: channelFromMhz(mhz),
+    rssi: rssiM ? Number(rssiM[1]) : null,
+    signal: null,
+    tx_mbps: Number.isFinite(tx) ? tx : null,
+    rx_mbps: Number.isFinite(rx) ? rx : null,
+    mac: null,
+  };
+}
+
+function parseIwInfo(text) {
+  const s = String(text || "");
+  if (!s.trim()) return null;
+  const ssidM = s.match(/^\s*ssid\s+(.+)$/m);
+  const macM = s.match(/^\s*addr\s+([0-9A-Fa-f:.-]+)/m);
+  const chM = s.match(/channel\s+(\d+)\s*\((\d+)\s*MHz\)/i);
+  const mhz = chM ? Number(chM[2]) : null;
+  return {
+    ssid: cleanSsid(ssidM && ssidM[1]),
+    bssid: null,
+    band: bandFromMhz(mhz),
+    channel: chM ? Number(chM[1]) : null,
+    rssi: null,
+    signal: null,
+    tx_mbps: null,
+    rx_mbps: null,
+    mac: macM ? normalizeMac(macM[1]) : null,
+  };
+}
+
+function parseMacFromIpLink(text) {
+  const m = String(text || "").match(/link\/ether\s+([0-9A-Fa-f:.-]{11,})/i);
+  return m ? normalizeMac(m[1]) : null;
+}
+
+function looksWifiName(name) {
+  return /^(wl|wlan|ath|wifi)/i.test(String(name || ""));
+}
+
+function wlanTextFromPs(obj) {
+  const v = obj && (obj.wlan != null ? obj.wlan : obj.Wlan);
+  if (v == null) return "";
+  return Array.isArray(v) ? v.join("\n") : String(v);
+}
+
+async function getActiveAdapterUnix() {
+  const adapter = emptyAdapter();
   try {
     const out = await runCmd("ip", ["route", "get", "1.1.1.1"]);
     const m = out.match(/dev\s+(\S+)/);
-    if (m) name = m[1];
+    if (m) adapter.name = m[1];
   } catch {
     /* ignore */
   }
-  if (!name) {
+  if (!adapter.name) {
     try {
       const out = await runCmd("route", ["-n", "get", "default"]);
       const m = out.match(/interface:\s*(\S+)/i);
-      if (m) name = m[1];
+      if (m) adapter.name = m[1];
     } catch {
       /* ignore */
     }
   }
-  if (name) {
+  if (adapter.name) {
+    let wifi = null;
     try {
       const iw = await runCmd("iwconfig");
-      const block = iw.split(/\n(?=\S)/).find((b) => b.includes(name));
+      const block = iw.split(/\n(?=\S)/).find((b) => b.includes(adapter.name));
       if (block) {
-        const quality = block.match(/Link Quality[=:](\d+)\/(\d+)/i);
-        if (quality) {
-          signal = Math.round((Number(quality[1]) / Number(quality[2])) * 100);
-        }
-        type = "wifi";
+        wifi = parseIwconfigBlock(block);
+        adapter.type = "wifi";
       }
     } catch {
       /* ignore */
     }
-    if (!type) {
+    if (adapter.type === "wifi" || looksWifiName(adapter.name)) {
       try {
-        const link = await runCmd("ip", ["link", "show", name]);
-        type = /wl/i.test(link) ? "wifi" : "ethernet";
+        fillWifiGaps(wifi || (wifi = {}), parseIwLink(await runCmd("iw", ["dev", adapter.name, "link"])));
+        fillWifiGaps(wifi, parseIwInfo(await runCmd("iw", ["dev", adapter.name, "info"])));
       } catch {
         /* ignore */
       }
     }
+    if (wifi) fillWifiGaps(adapter, wifi);
+    if (adapter.type !== "wifi" && wifi && (wifi.ssid || wifi.bssid || wifi.rssi != null || wifi.signal != null)) {
+      adapter.type = "wifi";
+    }
+    try {
+      const link = await runCmd("ip", ["link", "show", adapter.name]);
+      if (!adapter.mac) adapter.mac = parseMacFromIpLink(link);
+      if (!adapter.type) adapter.type = /wl/i.test(link) ? "wifi" : "ethernet";
+    } catch {
+      /* ignore */
+    }
   }
-  return { name, type, signal };
+  return adapter;
 }
 
 /**
@@ -488,12 +719,11 @@ async function getActiveAdapter() {
       "$a = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.HardwareInterface } |",
       "  Sort-Object -Property InterfaceMetric | Select-Object -First 1;",
       "if (-not $a) { '{}'; exit 0 }",
-      "$sig = $null;",
+      "$wlan = '';",
       "if ($a.MediaType -match 'Native 802.11|Wireless') {",
-      "  $w = netsh wlan show interfaces 2>$null | Select-String 'Signal\\s*:\\s*(\\d+)%';",
-      "  if ($w) { $sig = [int]$w.Matches[0].Groups[1].Value }",
+      "  $wlan = (netsh wlan show interfaces 2>$null | Out-String)",
       "}",
-      "@{ name = $a.Name; type = $a.InterfaceDescription; media = [string]$a.MediaType; signal = $sig } | ConvertTo-Json -Compress",
+      "@{ name = $a.Name; type = $a.InterfaceDescription; media = [string]$a.MediaType; mac = [string]$a.MacAddress; wlan = $wlan } | ConvertTo-Json -Compress",
     ].join(" ");
     const out = await runCmd(
       "powershell",
@@ -501,20 +731,36 @@ async function getActiveAdapter() {
       8000
     );
     const json = out.trim();
-    if (!json || json === "{}") return { name: null, type: null, signal: null };
+    if (!json || json === "{}") return emptyAdapter();
     const obj = JSON.parse(json);
-    const media = String(obj.media || "");
-    const kind = /802\.11|Wireless|Wi-?Fi/i.test(media) || /wi-?fi/i.test(String(obj.type || ""))
+    const media = String(obj.media || obj.Media || "");
+    const desc = obj.type || obj.Type || null;
+    const kind = /802\.11|Wireless|Wi-?Fi/i.test(media) || /wi-?fi/i.test(String(desc || ""))
       ? "wifi"
       : "ethernet";
-    return {
-      name: obj.name || null,
+    const parsed = parseNetshWlanInterfaces(wlanTextFromPs(obj));
+    const signal =
+      parsed.signal != null
+        ? parsed.signal
+        : obj.signal != null
+          ? Number(obj.signal)
+          : null;
+    return emptyAdapter({
+      name: obj.name || obj.Name || null,
       type: kind,
-      description: obj.type || null,
-      signal: obj.signal != null ? Number(obj.signal) : null,
-    };
+      description: desc,
+      signal: Number.isFinite(signal) ? signal : null,
+      ssid: parsed.ssid,
+      bssid: parsed.bssid,
+      band: parsed.band,
+      channel: parsed.channel,
+      rssi: parsed.rssi,
+      tx_mbps: parsed.tx_mbps,
+      rx_mbps: parsed.rx_mbps,
+      mac: normalizeMac(obj.mac || obj.Mac || obj.MacAddress) || parsed.mac,
+    });
   } catch {
-    return { name: null, type: null, signal: null };
+    return emptyAdapter();
   }
 }
 

@@ -54,11 +54,18 @@ describe("new settings clamp and round-trip", async () => {
   });
 
   it("preserves secrets when the form sends redacted empty values", () => {
-    db.updateSettings({ email_smtp_pass: "secret-pass" });
-    db.updateSettings({ email_smtp_host: "smtp.example.com", email_smtp_pass: "" });
+    db.updateSettings({ email_smtp_pass: "secret-pass", router_password: "router-secret" });
+    db.updateSettings({
+      email_smtp_host: "smtp.example.com",
+      email_smtp_pass: "",
+      router_password: "",
+      router_host: "192.168.1.1",
+    });
     const s = db.getSettings();
     assert.equal(s.email_smtp_pass, "secret-pass");
+    assert.equal(s.router_password, "router-secret");
     assert.equal(s.email_smtp_host, "smtp.example.com");
+    assert.equal(s.router_host, "192.168.1.1");
   });
 
   it("round-trips new settings and redacts secrets in public view", () => {
@@ -169,5 +176,130 @@ describe("new settings clamp and round-trip", async () => {
     assert.equal(speedOff.speed, false);
     db.updateSettings({ widget_modules_json: "nope" });
     assert.equal(db.getSettings().widget_modules_json, DEFAULT_SETTINGS.widget_modules_json);
+  });
+
+  it("round-trips router poll settings and redacts router_password", () => {
+    assert.equal(DEFAULT_SETTINGS.router_poll_enabled, false);
+    assert.equal(DEFAULT_SETTINGS.router_vendor, "asuswrt");
+    assert.equal(DEFAULT_SETTINGS.router_user, "admin");
+    assert.equal(DEFAULT_SETTINGS.router_interval_s, 30);
+    assert.equal(DEFAULT_SETTINGS.router_port, "");
+    assert.equal(normalizeSettingValue("router_interval_s", 10), 15);
+    assert.equal(normalizeSettingValue("router_interval_s", 400), 300);
+    assert.equal(normalizeSettingValue("router_vendor", "NOPE"), null);
+    assert.equal(normalizeSettingValue("router_user", ""), "admin");
+    assert.equal(normalizeSettingValue("router_port", ""), "");
+    db.updateSettings({
+      router_poll_enabled: true,
+      router_vendor: "nighthawk",
+      router_host: "192.168.1.1",
+      router_https: true,
+      router_user: "admin",
+      router_password: "wifi-secret",
+      router_interval_s: 10,
+      router_port: "5000",
+    });
+    const s = db.getSettings();
+    assert.equal(s.router_poll_enabled, true);
+    assert.equal(s.router_vendor, "nighthawk");
+    assert.equal(s.router_host, "192.168.1.1");
+    assert.equal(s.router_https, true);
+    assert.equal(s.router_password, "wifi-secret");
+    assert.equal(s.router_interval_s, 15);
+    assert.equal(s.router_port, "5000");
+    assert.equal(db.getSettingsPublic().router_password, "");
+    db.updateSettings({ router_vendor: "nope", router_password: "", router_port: "" });
+    const s2 = db.getSettings();
+    assert.equal(s2.router_vendor, "nighthawk");
+    assert.equal(s2.router_password, "wifi-secret");
+    assert.equal(s2.router_port, "");
+  });
+
+  it("upsertLanDevice persists wifi fields without wiping alias", () => {
+    db.upsertLanDevice({
+      mac: "aa:bb:cc:dd:ee:ff",
+      ip: "192.168.1.10",
+      alias: "TV",
+      notes: "den",
+      online: true,
+    });
+    db.upsertLanDevice({
+      mac: "aa:bb:cc:dd:ee:ff",
+      ip: "192.168.1.10",
+      online: true,
+      wifi_rssi: -62,
+      wifi_signal_pct: 70,
+      wifi_band: "5g",
+      wifi_tx_mbps: 866,
+      wifi_rx_mbps: 400,
+      wifi_node_mac: "11:22:33:44:55:66",
+      wifi_ssid: "Home",
+      last_wifi_at: 1700000000,
+    });
+    const row = db.getLanDevice("AA:BB:CC:DD:EE:FF");
+    assert.equal(row.alias, "TV");
+    assert.equal(row.notes, "den");
+    assert.equal(row.wifi_rssi, -62);
+    assert.equal(row.wifi_signal_pct, 70);
+    assert.equal(row.wifi_band, "5g");
+    assert.equal(row.wifi_ssid, "Home");
+    db.upsertLanDevice({ mac: "aa:bb:cc:dd:ee:ff", ip: "192.168.1.11", online: true });
+    const row2 = db.getLanDevice("AA:BB:CC:DD:EE:FF");
+    assert.equal(row2.alias, "TV");
+    assert.equal(row2.ip, "192.168.1.11");
+    assert.equal(row2.wifi_rssi, -62);
+    assert.equal(row2.wifi_ssid, "Home");
+  });
+
+  it("migrates empty router_targets_json from legacy fields into id=default", () => {
+    db.updateSettings({
+      router_targets_json: "[]",
+      router_vendor: "nighthawk",
+      router_host: "192.168.1.1",
+      router_user: "admin",
+      router_https: true,
+      router_port: "5000",
+      router_password: "legacy-secret",
+    });
+    const s = db.getSettings();
+    const targets = JSON.parse(s.router_targets_json);
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0].id, "default");
+    assert.equal(targets[0].vendor, "nighthawk");
+    assert.equal(targets[0].host, "192.168.1.1");
+    assert.equal(targets[0].https, true);
+    assert.equal(targets[0].port, "5000");
+    assert.equal(targets[0].enabled, true);
+    assert.equal(JSON.parse(s.router_secrets_json).default.password, "legacy-secret");
+    assert.equal(s.router_vendor, "nighthawk");
+    const pub = db.getSettingsPublic();
+    assert.equal(pub.router_secrets_json, "");
+    assert.equal(pub.router_password, "");
+  });
+
+  it("does not wipe router_secrets_json when the form sends empty passwords", () => {
+    db.updateSettings({
+      router_targets_json: JSON.stringify([
+        { id: "a", vendor: "asuswrt", host: "192.168.1.1", user: "admin", port: "", https: false, enabled: true },
+      ]),
+      router_secrets_json: JSON.stringify({ a: { password: "keep-me", api_key: "key-1" } }),
+    });
+    db.updateSettings({
+      router_targets_json: JSON.stringify([
+        { id: "a", vendor: "asuswrt", host: "192.168.1.3", user: "admin", port: "", https: false, enabled: true },
+      ]),
+      router_secrets_json: JSON.stringify({ a: { password: "", api_key: "" } }),
+    });
+    let secrets = JSON.parse(db.getSettings().router_secrets_json);
+    assert.equal(secrets.a.password, "keep-me");
+    assert.equal(secrets.a.api_key, "key-1");
+    assert.equal(JSON.parse(db.getSettings().router_targets_json)[0].host, "192.168.1.3");
+    db.updateSettings({ router_secrets_json: "{}" });
+    secrets = JSON.parse(db.getSettings().router_secrets_json);
+    assert.equal(secrets.a.password, "keep-me");
+    db.updateSettings({ router_secrets_json: "" });
+    secrets = JSON.parse(db.getSettings().router_secrets_json);
+    assert.equal(secrets.a.password, "keep-me");
+    assert.equal(db.getSettingsPublic().router_secrets_json, "");
   });
 });

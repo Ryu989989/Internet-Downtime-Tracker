@@ -38,6 +38,28 @@ describe("UI hardening", () => {
     }
   });
 
+  it("Overview adapter chips use honest wifi tip ids", () => {
+    const html = fs.readFileSync(path.join(repoRoot, "web", "index.html"), "utf8");
+    for (const id of ["adapterLine", "adapterSsidChip", "adapterRssiChip", "adapterSignalChip", "adapterBandChip", "adapterClientsChip"]) {
+      assert.match(html, new RegExp(`id="${id}"`));
+    }
+    for (const tip of ["adapter-ssid", "adapter-rssi", "adapter-signal", "adapter-band", "adapter-kind", "router-clients"]) {
+      assert.match(html, new RegExp(`data-tip="${tip}"`));
+    }
+    const js = fs.readFileSync(path.join(repoRoot, "web", "app.js"), "utf8");
+    assert.match(js, /"adapter-signal-nodbm"/);
+    assert.match(js, /never estimated from %/);
+    assert.match(js, /"adapter-ethernet"/);
+    assert.match(js, /"router-ssid"/);
+    assert.match(js, /"router-rssi"/);
+    assert.match(js, /"router-clients"/);
+    assert.match(js, /overview_wifi/);
+    const paint = js.slice(js.indexOf("function paintAdapterLine"), js.indexOf("function paintStatus"));
+    assert.ok(paint.includes("finiteOrNull(a.rssi)"));
+    assert.ok(paint.includes("overview_wifi"));
+    assert.ok(!/rssiToPct/.test(paint));
+  });
+
   it("widget.html is loadFile-safe (no remote script)", () => {
     const html = fs.readFileSync(path.join(repoRoot, "web", "widget.html"), "utf8");
     assert.doesNotMatch(html, /<script[^>]+src=["']https?:/i);

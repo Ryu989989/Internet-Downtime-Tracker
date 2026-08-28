@@ -16,6 +16,24 @@ const QUALITY_EVERY_N = 6;
 const QUALITY_TARGET = "1.1.1.1";
 const OUTAGE_TYPES = ["lan", "wan", "dns", "http"];
 
+function liveAdapterSnapshot(adapter) {
+  if (!adapter) return null;
+  return {
+    name: adapter.name || null,
+    type: adapter.type || null,
+    signal: adapter.signal != null ? adapter.signal : null,
+    ssid: adapter.ssid || null,
+    bssid: adapter.bssid || null,
+    band: adapter.band || null,
+    channel: adapter.channel != null ? adapter.channel : null,
+    rssi: adapter.rssi != null ? adapter.rssi : null,
+    tx_mbps: adapter.tx_mbps != null ? adapter.tx_mbps : null,
+    rx_mbps: adapter.rx_mbps != null ? adapter.rx_mbps : null,
+    mac: adapter.mac || null,
+    description: adapter.description || null,
+  };
+}
+
 function buildIncidentSnapshot(state, type) {
   const adapter = state.adapter
     ? {
@@ -253,7 +271,7 @@ class Monitor {
       gateway: this.state.gateway,
       latency_ms: this.state.latency_ms,
       lan_method: this.state.lan_method,
-      adapter: this.state.adapter,
+      adapter: liveAdapterSnapshot(this.state.adapter),
       paused: this.state.paused,
       probe_suppressed: !!this.state.probe_suppressed,
       last_probe_at: this.state.last_probe_at,
@@ -666,6 +684,7 @@ module.exports = {
   Monitor,
   OUTAGE_TYPES,
   buildIncidentSnapshot,
+  liveAdapterSnapshot,
   buildAutoOutageNote,
   QUALITY_EVERY_N,
   isMonitorStale,

@@ -87,14 +87,31 @@ describe("cross-platform parser and command builders", () => {
     Object.defineProperty(process, "platform", { value: "linux", writable: true, configurable: true });
     setRunCmdForTest((cmd, args) => {
       if (cmd === "ip" && args[0] === "route" && args[1] === "get") return "1.1.1.1 via 192.168.1.1 dev wlan0 src 192.168.1.2 uid 0";
-      if (cmd === "iwconfig") return "wlan0  IEEE 802.11  ESSID:\"home\"  \n          Link Quality=70/70  Signal level=-30 dBm";
-      if (cmd === "ip" && args[0] === "link") return "wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP>";
+      if (cmd === "iwconfig") {
+        return [
+          'wlan0     IEEE 802.11  ESSID:"home"',
+          "          Mode:Managed  Frequency:5.18 GHz  Access Point: AA:BB:CC:DD:EE:FF",
+          "          Bit Rate=866.7 Mb/s   Tx-Power=22 dBm",
+          "          Link Quality=70/70  Signal level=-30 dBm",
+        ].join("\n");
+      }
+      if (cmd === "ip" && args[0] === "link") {
+        return "wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP>\n    link/ether 11:22:33:44:55:66 brd ff:ff:ff:ff:ff:ff";
+      }
       return "";
     });
     const adapter = await getActiveAdapter();
     assert.equal(adapter.name, "wlan0");
     assert.equal(adapter.type, "wifi");
     assert.equal(adapter.signal, 100);
+    assert.equal(adapter.ssid, "home");
+    assert.equal(adapter.bssid, "aa:bb:cc:dd:ee:ff");
+    assert.equal(adapter.band, "5");
+    assert.equal(adapter.channel, 36);
+    assert.equal(adapter.rssi, -30);
+    assert.equal(adapter.tx_mbps, 866.7);
+    assert.equal(adapter.rx_mbps, 866.7);
+    assert.equal(adapter.mac, "11:22:33:44:55:66");
   });
 
   it("getActiveAdapter falls back to ip link when iwconfig absent", async () => {
@@ -108,6 +125,100 @@ describe("cross-platform parser and command builders", () => {
     const adapter = await getActiveAdapter();
     assert.equal(adapter.name, "eth0");
     assert.equal(adapter.type, "ethernet");
+    assert.equal(adapter.ssid, null);
+    assert.equal(adapter.bssid, null);
+    assert.equal(adapter.band, null);
+    assert.equal(adapter.channel, null);
+    assert.equal(adapter.rssi, null);
+    assert.equal(adapter.signal, null);
+    assert.equal(adapter.tx_mbps, null);
+    assert.equal(adapter.rx_mbps, null);
+    assert.equal(adapter.mac, null);
+  });
+
+  it("getActiveAdapter parses Linux iw link when iwconfig absent", async () => {
+    Object.defineProperty(process, "platform", { value: "linux", writable: true, configurable: true });
+    setRunCmdForTest((cmd, args) => {
+      if (cmd === "ip" && args[0] === "route" && args[1] === "get") return "1.1.1.1 via 192.168.1.1 dev wlan0 src 192.168.1.2 uid 0";
+      if (cmd === "iwconfig") throw new Error("not found");
+      if (cmd === "iw" && args && args[0] === "dev" && args[2] === "link") {
+        return [
+          "Connected to aa:bb:cc:dd:ee:ff (on wlan0)",
+          "	SSID: cafe",
+          "	freq: 2412",
+          "	signal: -50 dBm",
+          "	rx bitrate: 72.2 MBit/s",
+          "	tx bitrate: 72.2 MBit/s",
+        ].join("\n");
+      }
+      if (cmd === "iw" && args && args[0] === "dev" && args[2] === "info") {
+        return [
+          "Interface wlan0",
+          "	addr 11:22:33:44:55:66",
+          "	ssid cafe",
+          "	channel 1 (2412 MHz), width: 20 MHz",
+        ].join("\n");
+      }
+      if (cmd === "ip" && args[0] === "link") {
+        return "wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP>\n    link/ether 11:22:33:44:55:66 brd ff:ff:ff:ff:ff:ff";
+      }
+      return "";
+    });
+    const adapter = await getActiveAdapter();
+    assert.equal(adapter.name, "wlan0");
+    assert.equal(adapter.type, "wifi");
+    assert.equal(adapter.ssid, "cafe");
+    assert.equal(adapter.bssid, "aa:bb:cc:dd:ee:ff");
+    assert.equal(adapter.band, "2.4");
+    assert.equal(adapter.channel, 1);
+    assert.equal(adapter.rssi, -50);
+    assert.equal(adapter.tx_mbps, 72.2);
+    assert.equal(adapter.rx_mbps, 72.2);
+    assert.equal(adapter.mac, "11:22:33:44:55:66");
+  });
+
+  it("getActiveAdapter parses Windows netsh wlan interfaces", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", writable: true, configurable: true });
+    const wlan = [
+      "There is 1 interface on the system:",
+      "",
+      "    Name                   : Wi-Fi",
+      "    Description            : Intel(R) Wi-Fi 6 AX201",
+      "    Physical address       : 00:11:22:33:44:55",
+      "    State                  : connected",
+      "    SSID                   : home",
+      "    BSSID                  : aa:bb:cc:dd:ee:ff",
+      "    Radio type             : 802.11ax",
+      "    Band                   : 5 GHz",
+      "    Channel                : 44",
+      "    Receive rate (Mbps)    : 1201",
+      "    Transmit rate (Mbps)   : 1201",
+      "    Signal                 : 85%",
+    ].join("\n");
+    setRunCmdForTest((cmd) => {
+      if (cmd === "powershell") {
+        return JSON.stringify({
+          name: "Wi-Fi",
+          type: "Intel(R) Wi-Fi 6 AX201",
+          media: "Native 802.11",
+          mac: "00-11-22-33-44-55",
+          wlan,
+        });
+      }
+      return "";
+    });
+    const adapter = await getActiveAdapter();
+    assert.equal(adapter.name, "Wi-Fi");
+    assert.equal(adapter.type, "wifi");
+    assert.equal(adapter.signal, 85);
+    assert.equal(adapter.ssid, "home");
+    assert.equal(adapter.bssid, "aa:bb:cc:dd:ee:ff");
+    assert.equal(adapter.band, "5");
+    assert.equal(adapter.channel, 44);
+    assert.equal(adapter.rssi, null);
+    assert.equal(adapter.tx_mbps, 1201);
+    assert.equal(adapter.rx_mbps, 1201);
+    assert.equal(adapter.mac, "00:11:22:33:44:55");
   });
 
   it("dataDir uses platform-appropriate paths", () => {

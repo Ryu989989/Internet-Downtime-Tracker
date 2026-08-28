@@ -7,7 +7,7 @@ const os = require("os");
 const path = require("path");
 
 const { TrackerDb } = require("../db");
-const { Monitor } = require("../monitor");
+const { Monitor, buildIncidentSnapshot } = require("../monitor");
 
 function makeResult(lan, wan, dns = true, http = true) {
   return {
@@ -276,6 +276,32 @@ describe("monitor probe suppress / cool-down", async () => {
     assert.ok(snap.at_open);
     assert.ok(snap.at_close);
     assert.equal(snap.at_close.wan_ok, true);
+  });
+
+  it("live snapshot includes wifi radio fields; incident snapshot stays slim", () => {
+    monitor.state.adapter = {
+      name: "Wi-Fi",
+      type: "wifi",
+      signal: 85,
+      ssid: "Home",
+      bssid: "aa:bb:cc:dd:ee:ff",
+      band: "5",
+      channel: 36,
+      rssi: -52,
+      mac: "11:22:33:44:55:66",
+    };
+    const live = monitor.snapshot();
+    assert.equal(live.adapter.ssid, "Home");
+    assert.equal(live.adapter.rssi, -52);
+    assert.equal(live.adapter.band, "5");
+    assert.equal(live.adapter.channel, 36);
+    assert.equal(live.adapter.signal, 85);
+    assert.equal(live.adapter.mac, "11:22:33:44:55:66");
+    const incident = buildIncidentSnapshot(monitor.state, "wan");
+    assert.deepEqual(Object.keys(incident.adapter).sort(), ["name", "signal", "type"]);
+    assert.equal(incident.adapter.name, "Wi-Fi");
+    assert.equal(incident.adapter.type, "wifi");
+    assert.equal(incident.adapter.signal, 85);
   });
 
   it("snapshot reports monitor_stale when probes age out", () => {

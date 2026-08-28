@@ -82,6 +82,13 @@ function postBody(urlStr, body, headers = {}, timeoutMs = 8000) {
   });
 }
 
+function promLabel(v) {
+  return String(v == null ? "" : v)
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n");
+}
+
 function renderPrometheus(m) {
   const lines = [
     "# HELP idt_devices_online Online LAN devices",
@@ -93,7 +100,54 @@ function renderPrometheus(m) {
     "# HELP idt_outages_total Closed+open outages observed (counter approx)",
     "# TYPE idt_outages_total counter",
     `idt_outages_total ${Number(m.outages_total) || 0}`,
+    "# HELP idt_router_cpu_pct Router CPU percent",
+    "# TYPE idt_router_cpu_pct gauge",
+    "# HELP idt_router_mem_ratio Router memory used/total",
+    "# TYPE idt_router_mem_ratio gauge",
+    "# HELP idt_router_wan_ok Router WAN up (1) or down (0)",
+    "# TYPE idt_router_wan_ok gauge",
+    "# HELP idt_wifi_rssi Wi-Fi RSSI dBm (online clients, max 50)",
+    "# TYPE idt_wifi_rssi gauge",
+    "# HELP idt_wifi_signal_pct Wi-Fi signal percent (online clients, max 50)",
+    "# TYPE idt_wifi_signal_pct gauge",
+    "# HELP idt_wifi_chanim_idle_pct Broadcom radio idle percent (Merlin SSH chanim)",
+    "# TYPE idt_wifi_chanim_idle_pct gauge",
   ];
+  const routers = Array.isArray(m.router_targets) ? m.router_targets : [];
+  for (const r of routers) {
+    if (!r) continue;
+    const labels = `vendor="${promLabel(r.vendor)}",host="${promLabel(r.host)}"`;
+    const cpu = Number(r.cpu_pct);
+    if (Number.isFinite(cpu)) lines.push(`idt_router_cpu_pct{${labels}} ${cpu}`);
+    const used = Number(r.mem_used);
+    const total = Number(r.mem_total);
+    if (Number.isFinite(used) && Number.isFinite(total) && total > 0) {
+      lines.push(`idt_router_mem_ratio{${labels}} ${used / total}`);
+    }
+    if (r.wan_ok != null && r.wan_ok !== "") {
+      lines.push(`idt_router_wan_ok{${labels}} ${r.wan_ok ? 1 : 0}`);
+    }
+  }
+  const wifi = Array.isArray(m.wifi) ? m.wifi.slice(0, 50) : [];
+  for (const w of wifi) {
+    if (!w) continue;
+    const labels = `mac="${promLabel(w.mac)}",source="${promLabel(w.source)}",band="${promLabel(w.band)}"`;
+    const rssi = Number(w.rssi);
+    if (Number.isFinite(rssi)) lines.push(`idt_wifi_rssi{${labels}} ${rssi}`);
+    const pct = Number(w.signal_pct);
+    if (Number.isFinite(pct)) lines.push(`idt_wifi_signal_pct{${labels}} ${pct}`);
+  }
+  for (const r of routers) {
+    if (!r || !Array.isArray(r.chanim)) continue;
+    const host = promLabel(r.host);
+    for (const c of r.chanim) {
+      if (!c) continue;
+      const idle = Number(c.idle);
+      if (!Number.isFinite(idle)) continue;
+      const radio = promLabel(c.radio || c.iface || "");
+      lines.push(`idt_wifi_chanim_idle_pct{radio="${radio}",host="${host}"} ${idle}`);
+    }
+  }
   return lines.join("\n") + "\n";
 }
 

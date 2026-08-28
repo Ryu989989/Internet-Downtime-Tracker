@@ -183,6 +183,12 @@ function decorateSnapshot(snap) {
   }
   out.last_speed = lastSpeedPayload();
   if (monitor) out.state_color = stateColor(monitor.state);
+  try {
+    out.host_adapter = lanBridge.getHostAdapter();
+    out.overview_wifi = lanBridge.overviewWifiPayload(snap.adapter);
+  } catch {
+    /* fail closed — Overview stays on host NIC */
+  }
   return out;
 }
 
@@ -1088,6 +1094,10 @@ function registerIpc() {
   safeHandle("api:lan:scan", async (_e, body = {}) => lanBridge.scanDevice(body));
   safeHandle("api:lan:discovery", async () => lanBridge.runSubnetDiscovery());
   safeHandle("api:lan:router-notify", async (_e, body = {}) => lanBridge.notifyRouter(body));
+  safeHandle("api:lan:router:test", async (_e, targetId) => lanBridge.testRouterConnection(targetId));
+  safeHandle("api:lan:router:action", async (_e, body = {}) => lanBridge.routerAction(body || {}));
+  safeHandle("api:lan:wifi:history", async (_e, body = {}) => lanBridge.listWifiHistory(body || {}));
+  safeHandle("api:lan:router:health", async () => lanBridge.getRouterHealth());
 }
 
 function boot() {

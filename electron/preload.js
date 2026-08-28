@@ -48,6 +48,10 @@ contextBridge.exposeInMainWorld("idt", {
   lanScan: (body) => ipcRenderer.invoke("api:lan:scan", body || {}),
   lanDiscovery: () => ipcRenderer.invoke("api:lan:discovery"),
   lanRouterNotify: (body) => ipcRenderer.invoke("api:lan:router-notify", body || {}),
+  lanRouterTest: (targetId) => ipcRenderer.invoke("api:lan:router:test", targetId ?? null),
+  lanRouterAction: (body) => ipcRenderer.invoke("api:lan:router:action", body || {}),
+  lanWifiHistory: (params) => ipcRenderer.invoke("api:lan:wifi:history", params || {}),
+  lanRouterHealth: () => ipcRenderer.invoke("api:lan:router:health"),
   onStatusUpdate: (cb) => {
     const handler = (_event, data) => {
       try {

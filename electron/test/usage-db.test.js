@@ -85,6 +85,12 @@ describe("usage db rollup", () => {
     const outageId = db.openOutage("wan", oldTs);
     db.insertProbe(false, false, 1, oldTs);
     db.insertProbe(true, true, 1, Date.now() / 1000);
+    const oldAt = Date.now() / 1000 - 20 * 86400;
+    const freshAt = Date.now() / 1000;
+    db.insertWifiSample({ mac: "aa:bb:cc:dd:ee:ff", source: "host_nic", at: oldAt, rssi: -70 });
+    db.insertWifiSample({ mac: "aa:bb:cc:dd:ee:ff", source: "asus", at: freshAt, rssi: -50 });
+    db.insertRouterHealthSample({ at: oldAt, cpu_pct: 10, vendor: "asuswrt" });
+    db.insertRouterHealthSample({ at: freshAt, cpu_pct: 20, vendor: "asuswrt" });
     db.pruneProbes();
     assert.equal(
       db._get("SELECT COUNT(*) AS c FROM probes WHERE timestamp < ?", [
@@ -94,9 +100,15 @@ describe("usage db rollup", () => {
     );
     assert.ok(db._get("SELECT * FROM outages WHERE id=?", [outageId]));
     assert.equal(db._get("SELECT COUNT(*) AS c FROM probes").c, 1);
+    assert.equal(db._get("SELECT COUNT(*) AS c FROM wifi_samples").c, 1);
+    assert.equal(db._get("SELECT COUNT(*) AS c FROM router_health_samples").c, 1);
+    assert.equal(db.getLatestRouterHealth().cpu_pct, 20);
+    assert.equal(db.listWifiHistory({ mac: "aa:bb:cc:dd:ee:ff" }).length, 1);
     const src = fs.readFileSync(path.join(__dirname, "..", "db.js"), "utf8");
     const fn = src.match(/pruneProbes\([\s\S]*?\n  \}/)[0];
     assert.match(fn, /DELETE FROM probes/);
+    assert.match(fn, /DELETE FROM wifi_samples/);
+    assert.match(fn, /DELETE FROM router_health_samples/);
     assert.doesNotMatch(fn, /DELETE FROM outages/);
   });
 
