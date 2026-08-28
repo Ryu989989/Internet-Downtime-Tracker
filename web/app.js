@@ -228,6 +228,18 @@ Object.assign(LAYER_TIPS, {
     name: "Assoc",
     meaning: "802.11 association state from the OS (connected/disconnected). Independent of LAN/WAN probes.",
   },
+  "adapter-radio": {
+    name: "Radio",
+    meaning: "PHY/radio type from this PC’s association (for example 802.11ax). Not a site survey.",
+  },
+  "adapter-auth": {
+    name: "Auth",
+    meaning: "Authentication suite reported by the OS for this association (for example WPA2-Personal).",
+  },
+  "adapter-cipher": {
+    name: "Cipher",
+    meaning: "Pairwise cipher reported by the OS for this association. Not the Wi-Fi password.",
+  },
   "wifi-verdict": {
     name: "Drop",
     meaning:
@@ -1781,11 +1793,6 @@ function fmtHostWifiBand(band, channel) {
   return [ghz, chBit].filter(Boolean).join(" · ");
 }
 
-function setChipLabel(chip, text) {
-  const lab = chip && chip.querySelector(".meta-label");
-  if (lab && text) lab.textContent = text;
-}
-
 function fmtRouterClients(ow) {
   const n = Number(ow && ow.client_count) || 0;
   const bits = [String(n)];
@@ -1801,207 +1808,136 @@ function fmtRouterClients(ow) {
   return bits.join(" · ");
 }
 
+function setChipDash(id, text) {
+  const el = $(id.startsWith("#") ? id : `#${id}`);
+  if (el) el.textContent = text == null || text === "" ? "-" : String(text);
+}
+
 function paintRouterOverviewWifi(ow) {
-  const thisPc = !!(ow && ow.this_pc_on_wifi);
-  const ssidChip = $("#adapterSsidChip");
-  const showSsid = !!(ow && ow.ssid);
-  if (ssidChip) {
-    ssidChip.hidden = !showSsid;
-    ssidChip.dataset.tip = "router-ssid";
-    setChipLabel(ssidChip, "Router Wi-Fi");
-    if (showSsid && $("#adapterSsid")) $("#adapterSsid").textContent = ow.ssid;
-  }
+  const block = $("#wifiOverviewRouter");
+  const has =
+    ow &&
+    (ow.ssid ||
+      ow.client_count ||
+      finiteOrNull(ow.rssi) != null ||
+      finiteOrNull(ow.signal_pct) != null ||
+      finiteOrNull(ow.weakest_rssi) != null ||
+      finiteOrNull(ow.median_rssi) != null);
+  if (block) block.hidden = !has;
+  if (!has) return;
 
-  const rssiNum = finiteOrNull(ow && ow.rssi);
-  const rssiChip = $("#adapterRssiChip");
-  const showRssi = thisPc && rssiNum != null;
-  if (rssiChip) {
-    rssiChip.hidden = !showRssi;
-    rssiChip.dataset.tip = "router-rssi";
-    setChipLabel(rssiChip, "This PC");
-    if (showRssi && $("#adapterRssi")) $("#adapterRssi").textContent = `${Math.round(rssiNum)} dBm`;
-  }
+  const thisPc = !!ow.this_pc_on_wifi;
+  setChipDash("wifiRouterSsid", ow.ssid);
+  const rssiNum = finiteOrNull(ow.rssi);
+  const rssiChip = $("#wifiRouterRssiChip");
+  if (rssiChip) rssiChip.hidden = !(thisPc && rssiNum != null);
+  setChipDash("wifiRouterRssi", thisPc && rssiNum != null ? `${Math.round(rssiNum)} dBm` : "-");
 
-  const pctNum = finiteOrNull(ow && ow.signal_pct);
-  const signalChip = $("#adapterSignalChip");
-  const showPct = thisPc && pctNum != null;
+  const pctNum = finiteOrNull(ow.signal_pct);
+  const signalChip = $("#wifiRouterSignalChip");
   if (signalChip) {
-    signalChip.hidden = !showPct;
-    if (showPct) {
-      if ($("#adapterSignal")) $("#adapterSignal").textContent = `${Math.round(pctNum)}%`;
-      signalChip.dataset.tip = showRssi ? "router-signal" : "router-signal-nodbm";
-    }
+    signalChip.hidden = !(thisPc && pctNum != null);
+    signalChip.dataset.tip = rssiNum != null ? "router-signal" : "router-signal-nodbm";
   }
+  setChipDash("wifiRouterSignal", thisPc && pctNum != null ? `${Math.round(pctNum)}%` : "-");
 
-  const bandText = thisPc ? fmtHostWifiBand(ow && ow.band, null) : "";
-  const bandChip = $("#adapterBandChip");
-  if (bandChip) {
-    bandChip.hidden = !bandText;
-    bandChip.dataset.tip = "router-band";
-    if (bandText && $("#adapterBand")) $("#adapterBand").textContent = bandText;
-  }
+  const bandText = thisPc ? fmtHostWifiBand(ow.band, null) : "";
+  const bandChip = $("#wifiRouterBandChip");
+  if (bandChip) bandChip.hidden = !bandText;
+  setChipDash("wifiRouterBand", bandText);
 
   const clientsChip = $("#adapterClientsChip");
-  const showClients = !thisPc && !!(ow && (ow.client_count > 0 || finiteOrNull(ow.weakest_rssi) != null));
-  if (clientsChip) {
-    clientsChip.hidden = !showClients;
-    clientsChip.dataset.tip = "router-clients";
-    if (showClients && $("#adapterClients")) $("#adapterClients").textContent = fmtRouterClients(ow);
-  }
+  const showClients = !!(ow.client_count > 0 || finiteOrNull(ow.weakest_rssi) != null);
+  if (clientsChip) clientsChip.hidden = !showClients;
+  setChipDash("adapterClients", showClients ? fmtRouterClients(ow) : "-");
 }
 
-function paintAdapterLine(s) {
-  const adapterEl = $("#adapterLine");
-  if (!adapterEl) return;
-  const a = s && s.adapter;
-  const viewConn = $("#viewConnectionsLink");
-  const hideWifiChips = () => {
-    for (const id of [
-      "adapterSsidChip",
-      "adapterRssiChip",
-      "adapterSignalChip",
-      "adapterBandChip",
-      "adapterClientsChip",
-      "adapterBssidChip",
-      "adapterRateChip",
-      "adapterStateChip",
-    ]) {
-      const el = $(`#${id}`);
-      if (el) el.hidden = true;
-    }
-    const ssidChip = $("#adapterSsidChip");
-    const rssiChip = $("#adapterRssiChip");
-    if (ssidChip) {
-      ssidChip.dataset.tip = "adapter-ssid";
-      setChipLabel(ssidChip, "SSID");
-    }
-    if (rssiChip) {
-      rssiChip.dataset.tip = "adapter-rssi";
-      setChipLabel(rssiChip, "RSSI");
-    }
-    const signalChip = $("#adapterSignalChip");
-    if (signalChip) signalChip.dataset.tip = "adapter-signal";
-    const bandChip = $("#adapterBandChip");
-    if (bandChip) bandChip.dataset.tip = "adapter-band";
-  };
-  if (!a || !a.name) {
-    adapterEl.hidden = true;
-    hideWifiChips();
-    if (viewConn) viewConn.hidden = true;
-    return;
-  }
-  adapterEl.hidden = false;
-  if (viewConn) viewConn.hidden = false;
-
-  const wifi = a.type === "wifi";
-  const kind = wifi ? "Wi‑Fi" : a.type === "ethernet" ? "Ethernet" : "Adapter";
-  const kindChip = $("#adapterKindChip");
-  if (kindChip) {
-    kindChip.dataset.tip = wifi ? "adapter-wifi" : a.type === "ethernet" ? "adapter-ethernet" : "adapter-kind";
-  }
-  if ($("#adapterKindLabel")) $("#adapterKindLabel").textContent = kind;
-  if ($("#adapterName")) $("#adapterName").textContent = a.name;
-
-  if (!wifi) {
-    const ow = s && s.overview_wifi;
-    const hasRouter =
-      ow &&
-      ow.source !== "host_nic" &&
-      (ow.ssid || ow.client_count || ow.rssi != null || ow.weakest_rssi != null);
-    if (hasRouter) {
-      paintRouterOverviewWifi(ow);
-      paintHostAssocChips(null);
-      return;
-    }
-    hideWifiChips();
-    return;
-  }
-
-  const clientsChip = $("#adapterClientsChip");
-  if (clientsChip) clientsChip.hidden = true;
-
-  const ssidChip = $("#adapterSsidChip");
-  const showSsid = !!a.ssid;
-  if (ssidChip) {
-    ssidChip.hidden = !showSsid;
-    ssidChip.dataset.tip = "adapter-ssid";
-    setChipLabel(ssidChip, "SSID");
-    if (showSsid && $("#adapterSsid")) $("#adapterSsid").textContent = a.ssid;
-  }
-
-  const rssiNum = finiteOrNull(a.rssi);
-  const pctNum = finiteOrNull(a.signal);
-  const rssiChip = $("#adapterRssiChip");
-  const showRssi = rssiNum != null;
-  if (rssiChip) {
-    rssiChip.hidden = !showRssi;
-    rssiChip.dataset.tip = "adapter-rssi";
-    setChipLabel(rssiChip, "RSSI");
-    if (showRssi && $("#adapterRssi")) $("#adapterRssi").textContent = `${Math.round(rssiNum)} dBm`;
-  }
-
+function paintHostRadio(a) {
+  const wifi = !!(a && a.type === "wifi");
+  const ssid = wifi && a.ssid ? a.ssid : "";
+  setChipDash("adapterSsid", ssid);
+  setChipDash("adapterBssid", wifi && a.bssid ? a.bssid : "");
+  setChipDash("adapterState", wifi && a.state ? a.state : "");
+  setChipDash("adapterBand", wifi ? fmtHostWifiBand(a.band, a.channel) : "");
+  const rssiNum = wifi ? finiteOrNull(a.rssi) : null;
+  const pctNum = wifi ? finiteOrNull(a.signal) : null;
+  setChipDash("adapterRssi", rssiNum != null ? `${Math.round(rssiNum)} dBm` : "");
+  setChipDash("adapterSignal", pctNum != null ? `${Math.round(pctNum)}%` : "");
   const signalChip = $("#adapterSignalChip");
-  const showPct = pctNum != null;
-  if (signalChip) {
-    signalChip.hidden = !showPct;
-    if (showPct) {
-      if ($("#adapterSignal")) $("#adapterSignal").textContent = `${Math.round(pctNum)}%`;
-      signalChip.dataset.tip = showRssi ? "adapter-signal" : "adapter-signal-nodbm";
-    }
-  }
-
-  const bandText = fmtHostWifiBand(a.band, a.channel);
-  const bandChip = $("#adapterBandChip");
-  if (bandChip) {
-    bandChip.hidden = !bandText;
-    bandChip.dataset.tip = "adapter-band";
-    if (bandText && $("#adapterBand")) $("#adapterBand").textContent = bandText;
-  }
-  paintHostAssocChips(a);
-}
-
-function paintHostAssocChips(a) {
-  const bssidChip = $("#adapterBssidChip");
-  const bssid = a && a.bssid;
-  if (bssidChip) {
-    bssidChip.hidden = !bssid;
-    if (bssid && $("#adapterBssid")) $("#adapterBssid").textContent = String(bssid);
-  }
-  const tx = finiteOrNull(a && a.tx_mbps);
-  const rx = finiteOrNull(a && a.rx_mbps);
+  if (signalChip) signalChip.dataset.tip = rssiNum != null ? "adapter-signal" : "adapter-signal-nodbm";
+  const tx = wifi ? finiteOrNull(a.tx_mbps) : null;
+  const rx = wifi ? finiteOrNull(a.rx_mbps) : null;
   const rateText =
     tx != null || rx != null
       ? `${tx != null ? Math.round(tx) : "-"} / ${rx != null ? Math.round(rx) : "-"} Mbps`
       : "";
-  const rateChip = $("#adapterRateChip");
-  if (rateChip) {
-    rateChip.hidden = !rateText;
-    if (rateText && $("#adapterRate")) $("#adapterRate").textContent = rateText;
+  setChipDash("adapterRate", rateText);
+  setChipDash("adapterRadio", wifi && a.radio_type ? a.radio_type : "");
+  setChipDash("adapterAuth", wifi && a.auth ? a.auth : "");
+  setChipDash("adapterCipher", wifi && a.cipher ? a.cipher : "");
+  return wifi && !!(ssid || a.bssid || a.state || rssiNum != null || pctNum != null);
+}
+
+function paintAdapterLine(s) {
+  const adapterEl = $("#adapterLine");
+  const a = s && s.adapter;
+  const viewConn = $("#viewConnectionsLink");
+  if (!a || !a.name) {
+    if (adapterEl) adapterEl.hidden = true;
+    if (viewConn) viewConn.hidden = true;
+  } else {
+    if (adapterEl) adapterEl.hidden = false;
+    if (viewConn) viewConn.hidden = false;
+    const wifi = a.type === "wifi";
+    const kind = wifi ? "Wi‑Fi" : a.type === "ethernet" ? "Ethernet" : "Adapter";
+    const kindChip = $("#adapterKindChip");
+    if (kindChip) {
+      kindChip.dataset.tip = wifi ? "adapter-wifi" : a.type === "ethernet" ? "adapter-ethernet" : "adapter-kind";
+    }
+    if ($("#adapterKindLabel")) $("#adapterKindLabel").textContent = kind;
+    if ($("#adapterName")) $("#adapterName").textContent = a.name;
   }
-  const st = a && a.state ? String(a.state) : "";
-  const stateChip = $("#adapterStateChip");
-  if (stateChip) {
-    stateChip.hidden = !st;
-    if (st && $("#adapterState")) $("#adapterState").textContent = st;
+  paintWifiOverview(s);
+}
+
+function paintWifiOverview(s) {
+  const a = s && s.adapter;
+  const wifi = !!(a && a.type === "wifi");
+  const ow = s && s.overview_wifi;
+  const hasHost = paintHostRadio(wifi ? a : null);
+  paintRouterOverviewWifi(ow);
+  const meta = $("#wifiOverviewMeta");
+  if (meta) {
+    meta.textContent = wifi
+      ? a.ssid
+        ? `Associated · ${a.ssid}`
+        : "Wi-Fi adapter · no SSID yet"
+      : a && a.type === "ethernet"
+        ? "This PC is on Ethernet"
+        : "Waiting for adapter";
   }
+  const empty = $("#wifiOverviewEmpty");
+  const routerOn = $("#wifiOverviewRouter") && !$("#wifiOverviewRouter").hidden;
+  if (empty) empty.hidden = !!(hasHost || routerOn);
 }
 
 function paintWifiVerdict(s) {
   const chip = $("#wifiVerdictChip");
   if (!chip) return;
   const v = s && s.wifi_verdict;
-  const code = v && v.code ? String(v.code) : "";
-  const openLan = Array.isArray(s && s.open_outages) && s.open_outages.some((o) => o && o.type === "lan");
-  const show = !!(code && (code !== "unknown" || openLan));
-  chip.hidden = !show;
+  const code = v && v.code ? String(v.code) : "unknown";
+  const label = (v && v.label) || "Unknown";
+  const evidence = Array.isArray(v && v.evidence) && v.evidence.length
+    ? v.evidence.join(" ")
+    : "ISP-up is unproven without router poll or other devices staying online.";
+  chip.hidden = false;
   chip.classList.remove("code-this_pc_wifi", "code-isp", "code-sleep", "code-unknown");
-  if (show) {
-    chip.classList.add(`code-${code}`);
-    const evidence = Array.isArray(v.evidence) ? v.evidence.join(" ") : "";
-    chip.title = evidence;
-    chip.dataset.tipText = evidence || LAYER_TIPS["wifi-verdict"].meaning;
-    if ($("#wifiVerdict")) $("#wifiVerdict").textContent = v.label || code;
-  }
+  chip.classList.add(`code-${code}`);
+  chip.title = evidence;
+  chip.dataset.tipText = evidence || LAYER_TIPS["wifi-verdict"].meaning;
+  if ($("#wifiVerdict")) $("#wifiVerdict").textContent = label;
+  const evEl = $("#wifiVerdictEvidence");
+  if (evEl) evEl.textContent = evidence;
 }
 
 function paintStatus(s) {

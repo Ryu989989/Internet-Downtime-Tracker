@@ -50,7 +50,13 @@ describe("UI hardening", () => {
       "adapterBssidChip",
       "adapterRateChip",
       "adapterStateChip",
+      "adapterRadioChip",
+      "adapterAuthChip",
+      "adapterCipherChip",
       "wifiVerdictChip",
+      "wifiOverview",
+      "wifiOverviewEmpty",
+      "wifiVerdictEvidence",
     ]) {
       assert.match(html, new RegExp(`id="${id}"`));
     }
@@ -64,7 +70,11 @@ describe("UI hardening", () => {
       "adapter-bssid",
       "adapter-rate",
       "adapter-state",
+      "adapter-radio",
+      "adapter-auth",
+      "adapter-cipher",
       "wifi-verdict",
+      "router-ssid",
     ]) {
       assert.match(html, new RegExp(`data-tip="${tip}"`));
     }
@@ -76,15 +86,20 @@ describe("UI hardening", () => {
     assert.match(js, /"router-rssi"/);
     assert.match(js, /"router-clients"/);
     assert.match(js, /"adapter-bssid"/);
+    assert.match(js, /"adapter-radio"/);
     assert.match(js, /"wifi-verdict"/);
     assert.match(js, /overview_wifi/);
     assert.match(js, /wifi_verdict/);
     assert.match(js, /wifiVerdictBadgeHtml/);
     assert.match(js, /wifi-verdict-badge/);
     assert.match(js, /unproven without router poll/);
-    const paint = js.slice(js.indexOf("function paintAdapterLine"), js.indexOf("function paintStatus"));
+    assert.match(js, /function paintWifiOverview/);
+    assert.match(html, /id="wifiOverview"/);
+    assert.match(html, /This PC Wi-Fi/);
+    assert.match(html, /never estimated from %/);
+    const paint = js.slice(js.indexOf("function paintRouterOverviewWifi"), js.indexOf("function paintStatus"));
     assert.ok(paint.includes("finiteOrNull(a.rssi)"));
-    assert.ok(paint.includes("overview_wifi"));
+    assert.ok(paint.includes("paintWifiOverview"));
     assert.ok(!/rssiToPct/.test(paint));
     assert.match(js, /WIFI_ROUTER_SRC = new Set\(\[[^\]]*unifi/);
     assert.match(js, /WIFI_ROUTER_SRC = new Set\(\[[^\]]*omada/);

@@ -639,6 +639,59 @@ main {
   font-size: 0.8rem;
 }
 
+.wifi-overview {
+  margin-bottom: var(--content-gap);
+  padding: 0.85rem 1.15rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+
+.wifi-overview-lead,
+#wifiOverviewEmpty,
+.wifi-verdict-evidence {
+  margin: 0 0 0.75rem;
+  max-width: 46rem;
+}
+
+#wifiOverviewEmpty[hidden] {
+  display: none;
+}
+
+.wifi-overview-grid {
+  display: grid;
+  gap: 0.85rem 1.25rem;
+}
+
+.wifi-kicker {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.4rem;
+}
+
+.wifi-overview-block .adapter-line {
+  margin-top: 0;
+}
+
+.wifi-verdict-evidence {
+  margin: 0.45rem 0 0;
+}
+
+.wifi-overview-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+@media (min-width: 900px) {
+  .wifi-overview-grid {
+    grid-template-columns: minmax(0, 1.5fr) minmax(12rem, 0.7fr) minmax(12rem, 0.8fr);
+  }
+}
+
 .wifi-verdict-badge {
   appearance: none;
   border: 1px solid var(--border);
