@@ -40,10 +40,42 @@ describe("UI hardening", () => {
 
   it("Overview adapter chips use honest wifi tip ids", () => {
     const html = fs.readFileSync(path.join(repoRoot, "web", "index.html"), "utf8");
-    for (const id of ["adapterLine", "adapterSsidChip", "adapterRssiChip", "adapterSignalChip", "adapterBandChip", "adapterClientsChip"]) {
+    for (const id of [
+      "adapterLine",
+      "adapterSsidChip",
+      "adapterRssiChip",
+      "adapterSignalChip",
+      "adapterBandChip",
+      "adapterClientsChip",
+      "adapterBssidChip",
+      "adapterRateChip",
+      "adapterStateChip",
+      "adapterRadioChip",
+      "adapterAuthChip",
+      "adapterCipherChip",
+      "wifiVerdictChip",
+      "wifiOverview",
+      "wifiOverviewEmpty",
+      "wifiVerdictEvidence",
+    ]) {
       assert.match(html, new RegExp(`id="${id}"`));
     }
-    for (const tip of ["adapter-ssid", "adapter-rssi", "adapter-signal", "adapter-band", "adapter-kind", "router-clients"]) {
+    for (const tip of [
+      "adapter-ssid",
+      "adapter-rssi",
+      "adapter-signal",
+      "adapter-band",
+      "adapter-kind",
+      "router-clients",
+      "adapter-bssid",
+      "adapter-rate",
+      "adapter-state",
+      "adapter-radio",
+      "adapter-auth",
+      "adapter-cipher",
+      "wifi-verdict",
+      "router-ssid",
+    ]) {
       assert.match(html, new RegExp(`data-tip="${tip}"`));
     }
     const js = fs.readFileSync(path.join(repoRoot, "web", "app.js"), "utf8");
@@ -53,11 +85,36 @@ describe("UI hardening", () => {
     assert.match(js, /"router-ssid"/);
     assert.match(js, /"router-rssi"/);
     assert.match(js, /"router-clients"/);
+    assert.match(js, /"adapter-bssid"/);
+    assert.match(js, /"adapter-radio"/);
+    assert.match(js, /"wifi-verdict"/);
     assert.match(js, /overview_wifi/);
-    const paint = js.slice(js.indexOf("function paintAdapterLine"), js.indexOf("function paintStatus"));
+    assert.match(js, /wifi_verdict/);
+    assert.match(js, /wifiVerdictBadgeHtml/);
+    assert.match(js, /wifi-verdict-badge/);
+    assert.match(js, /unproven without router poll/);
+    assert.match(js, /function paintWifiOverview/);
+    assert.match(html, /id="wifiOverview"/);
+    assert.match(html, /This PC Wi-Fi/);
+    assert.match(html, /never estimated from %/);
+    const paint = js.slice(js.indexOf("function paintRouterOverviewWifi"), js.indexOf("function paintStatus"));
     assert.ok(paint.includes("finiteOrNull(a.rssi)"));
-    assert.ok(paint.includes("overview_wifi"));
+    assert.ok(paint.includes("paintWifiOverview"));
     assert.ok(!/rssiToPct/.test(paint));
+    assert.match(js, /WIFI_ROUTER_SRC = new Set\(\[[^\]]*unifi/);
+    assert.match(js, /WIFI_ROUTER_SRC = new Set\(\[[^\]]*omada/);
+  });
+
+  it("Scan tab nearby BSS is a snapshot disclaimer, not a survey", () => {
+    const html = fs.readFileSync(path.join(repoRoot, "web", "index.html"), "utf8");
+    assert.match(html, /id="nearbyWifiRun"/);
+    assert.match(html, /not a site survey/);
+    const js = fs.readFileSync(path.join(repoRoot, "web", "app.js"), "utf8");
+    assert.match(js, /\/api\/lan\/wifi\/nearby/);
+    assert.match(js, /escapeHtml\(r\.ssid/);
+    assert.match(js, /escapeHtml\(r\.bssid/);
+    assert.match(js, /nearbyWifiRun[\s\S]{0,200}disabled/);
+    assert.doesNotMatch(js, /rssiToPct/);
   });
 
   it("widget.html is loadFile-safe (no remote script)", () => {

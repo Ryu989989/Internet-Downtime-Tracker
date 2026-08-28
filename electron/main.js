@@ -23,6 +23,7 @@ const { createSpeedtestScheduler } = require("./speedtest-scheduler");
 const { traceroutePublic } = require("./traceroute");
 const notifyChannels = require("./notify-webhooks");
 const widget = require("./widget");
+const wifiNearby = require("./wifi-nearby");
 const { statusHeadline, layerLatencyLine } = require("./status-copy");
 
 /** Exports always land under downloads/temp — ignore renderer-supplied paths. */
@@ -186,6 +187,9 @@ function decorateSnapshot(snap) {
   try {
     out.host_adapter = lanBridge.getHostAdapter();
     out.overview_wifi = lanBridge.overviewWifiPayload(snap.adapter);
+    if (typeof lanBridge.liveWifiVerdict === "function") {
+      out.wifi_verdict = lanBridge.liveWifiVerdict();
+    }
   } catch {
     /* fail closed — Overview stays on host NIC */
   }
@@ -538,6 +542,19 @@ function maybeNotifyOutage(event) {
   );
   lanBridge
     .onOutageEvent(event.action === "open" ? "outage_open" : "outage_close", event)
+    .then(() => {
+      if (event.id == null || !db || typeof db.mergeOutageSnapshot !== "function") return;
+      try {
+        const row = db._get("SELECT * FROM outages WHERE id=?", [event.id]);
+        const v =
+          typeof lanBridge.wifiVerdictForOutage === "function"
+            ? lanBridge.wifiVerdictForOutage(row || event)
+            : null;
+        if (v) db.mergeOutageSnapshot(event.id, { wifi_verdict: v });
+      } catch {
+        /* fail closed */
+      }
+    })
     .catch(() => {});
 }
 
@@ -867,7 +884,26 @@ function registerIpc() {
       orderBy: params.sort || "started_at",
       orderDir: params.dir || "DESC",
     });
-    return { outages: rows, count: rows.length };
+    const outages = rows.map((row) => {
+      let verdict = null;
+      if (row && row.snapshot_json) {
+        try {
+          const snap = JSON.parse(row.snapshot_json);
+          if (snap && snap.wifi_verdict) verdict = snap.wifi_verdict;
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!verdict && row && row.type === "lan" && row.ended_at == null && typeof lanBridge.wifiVerdictForOutage === "function") {
+        try {
+          verdict = lanBridge.wifiVerdictForOutage(row);
+        } catch {
+          verdict = null;
+        }
+      }
+      return verdict ? { ...row, wifi_verdict: verdict } : row;
+    });
+    return { outages, count: outages.length };
   });
   safeHandle("api:outages:notes", (_e, body = {}) => {
     const row = db.updateOutageNotes(body.id, body.notes);
@@ -913,12 +949,15 @@ function registerIpc() {
     await shell.openPath(dest);
     return { path: dest };
   });
-  safeHandle("api:system-logs:get", (_e, params = {}) =>
-    systemLogs.getOrScan({ ...(params || {}), refresh: false })
-  );
-  safeHandle("api:system-logs:scan", (_e, params = {}) =>
-    systemLogs.getOrScan({ ...(params || {}), refresh: true })
-  );
+  function systemLogsForUi(params, refresh) {
+    return Promise.resolve(systemLogs.getOrScan({ ...(params || {}), refresh })).then((data) => {
+      if (!data || typeof data !== "object") return data;
+      const { events: _events, ...rest } = data;
+      return rest;
+    });
+  }
+  safeHandle("api:system-logs:get", (_e, params = {}) => systemLogsForUi(params, false));
+  safeHandle("api:system-logs:scan", (_e, params = {}) => systemLogsForUi(params, true));
 
   const userData = () => app.getPath("userData");
   safeHandle("api:speedtest:status", () => speedtest.getStatus(userData()));
@@ -1097,6 +1136,7 @@ function registerIpc() {
   safeHandle("api:lan:router:test", async (_e, targetId) => lanBridge.testRouterConnection(targetId));
   safeHandle("api:lan:router:action", async (_e, body = {}) => lanBridge.routerAction(body || {}));
   safeHandle("api:lan:wifi:history", async (_e, body = {}) => lanBridge.listWifiHistory(body || {}));
+  safeHandle("api:lan:wifi:nearby", async () => wifiNearby.scanNearby());
   safeHandle("api:lan:router:health", async () => lanBridge.getRouterHealth());
 }
 

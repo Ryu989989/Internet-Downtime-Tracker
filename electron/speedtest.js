@@ -56,26 +56,32 @@ function verifyOfficialZip(filePath, expectedSha256 = OFFICIAL_WIN64_SHA256) {
  * SPEEDTEST_CLI / PATH / bundled: basename must be speedtest(.exe) and path
  * must resolve under an allowlisted directory.
  */
+function pathApi() {
+  // process.platform, not the host path module — tests stub win32 on POSIX.
+  return process.platform === "win32" ? path.win32 : path.posix;
+}
+
 function isTrustedCliPath(cliPath, userDataDir) {
   if (!cliPath || typeof cliPath !== "string") return false;
+  const p = pathApi();
   let resolved;
   try {
-    resolved = path.resolve(cliPath);
+    resolved = p.resolve(cliPath);
   } catch {
     return false;
   }
-  const base = path.basename(resolved).toLowerCase();
+  const base = p.basename(resolved).toLowerCase();
   if (base !== "speedtest.exe" && base !== "speedtest") return false;
 
   const isWin = process.platform === "win32";
   const allowedRoots = [];
   if (userDataDir) {
-    allowedRoots.push(path.resolve(userDataDir, "speedtest"));
+    allowedRoots.push(p.resolve(userDataDir, "speedtest"));
   }
   if (isWin) {
     allowedRoots.push(
-      path.join(process.env.ProgramFiles || "C:\\Program Files", "Speedtest CLI"),
-      path.join(
+      p.join(process.env.ProgramFiles || "C:\\Program Files", "Speedtest CLI"),
+      p.join(
         process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)",
         "Speedtest CLI"
       )
@@ -86,19 +92,19 @@ function isTrustedCliPath(cliPath, userDataDir) {
       "/usr/bin",
       "/opt/homebrew/bin",
       "/opt/local/bin",
-      path.join(require("os").homedir(), ".local", "bin")
+      p.join(require("os").homedir(), ".local", "bin")
     );
   }
 
-  const sep = path.sep;
-  const target = path.resolve(resolved).toLowerCase();
+  const sep = p.sep;
+  const target = p.resolve(resolved).toLowerCase();
   return allowedRoots.some((root) => {
-    const r = path.resolve(root).toLowerCase();
+    const r = p.resolve(root).toLowerCase();
     if (target === r) return true;
     if (!target.startsWith(`${r}${sep}`)) return false;
     // Disallow directory traversal past the allowed root.
-    const relative = path.relative(r, target);
-    return relative && !relative.startsWith("..") && !path.isAbsolute(relative);
+    const relative = p.relative(r, target);
+    return relative && !relative.startsWith("..") && !p.isAbsolute(relative);
   });
 }
 

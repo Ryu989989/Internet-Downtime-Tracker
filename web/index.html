@@ -63,30 +63,6 @@
                 <span class="meta-label" id="adapterKindLabel">Adapter</span>
                 <span id="adapterName">-</span>
               </div>
-              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-ssid" id="adapterSsidChip" hidden>
-                <span class="meta-label">SSID</span>
-                <span id="adapterSsid">-</span>
-              </div>
-              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-rssi" id="adapterRssiChip" hidden>
-                <span class="meta-label">RSSI</span>
-                <span id="adapterRssi">-</span>
-              </div>
-              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-signal" id="adapterSignalChip" hidden>
-                <span class="meta-label">Signal</span>
-                <span id="adapterSignal">-</span>
-              </div>
-              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-band" id="adapterBandChip" hidden>
-                <span class="meta-label">Band</span>
-                <span id="adapterBand">-</span>
-              </div>
-              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="router-clients" id="adapterClientsChip" hidden>
-                <span class="meta-label">Clients</span>
-                <span id="adapterClients">-</span>
-              </div>
-            </div>
-            <div class="host-wifi-spark muted" id="hostWifiSparkWrap" hidden>
-              <svg id="hostWifiSpark" width="120" height="28" viewBox="0 0 120 28" aria-hidden="true"></svg>
-              <span id="hostWifiSparkCap"></span>
             </div>
             <button type="button" class="text-link adapter-link" data-goto-tab="connections" id="viewConnectionsLink" hidden>View connections</button>
           </div>
@@ -151,6 +127,109 @@
               <button type="button" class="text-link" data-goto-tab="speed">open Speed tab</button>
             </p>
           </div>
+        </div>
+      </div>
+
+      <div class="wifi-overview" id="wifiOverview">
+        <div class="section-head">
+          <h2>This PC Wi-Fi</h2>
+          <span class="muted" id="wifiOverviewMeta"></span>
+        </div>
+        <p class="muted wifi-overview-lead">
+          Host radio samples about every 30s. Not an outage type. dBm only when the OS prints it — never estimated from %.
+        </p>
+        <p class="muted" id="wifiOverviewEmpty">
+          No Wi-Fi association on this PC. Ethernet and LAN/WAN probes still run. Optional router poll can still show AP clients.
+        </p>
+        <div class="wifi-overview-grid">
+          <div class="wifi-overview-block">
+            <div class="wifi-kicker">This radio</div>
+            <div class="adapter-line" id="wifiHostLine">
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-ssid" id="adapterSsidChip">
+                <span class="meta-label">SSID</span>
+                <span id="adapterSsid">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-bssid" id="adapterBssidChip">
+                <span class="meta-label">BSSID</span>
+                <span id="adapterBssid">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-state" id="adapterStateChip">
+                <span class="meta-label">Assoc</span>
+                <span id="adapterState">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-band" id="adapterBandChip">
+                <span class="meta-label">Band</span>
+                <span id="adapterBand">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-rssi" id="adapterRssiChip">
+                <span class="meta-label">RSSI</span>
+                <span id="adapterRssi">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-signal" id="adapterSignalChip">
+                <span class="meta-label">Signal</span>
+                <span id="adapterSignal">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-rate" id="adapterRateChip">
+                <span class="meta-label">Rate</span>
+                <span id="adapterRate">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-radio" id="adapterRadioChip">
+                <span class="meta-label">Radio</span>
+                <span id="adapterRadio">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-auth" id="adapterAuthChip">
+                <span class="meta-label">Auth</span>
+                <span id="adapterAuth">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-cipher" id="adapterCipherChip">
+                <span class="meta-label">Cipher</span>
+                <span id="adapterCipher">-</span>
+              </div>
+            </div>
+            <div class="host-wifi-spark muted" id="hostWifiSparkWrap" hidden>
+              <svg id="hostWifiSpark" width="160" height="28" viewBox="0 0 160 28" aria-hidden="true"></svg>
+              <span id="hostWifiSparkCap"></span>
+            </div>
+          </div>
+          <div class="wifi-overview-block">
+            <div class="wifi-kicker">Drop</div>
+            <div class="meta-chip has-tip pressable" tabindex="0" data-tip="wifi-verdict" id="wifiVerdictChip">
+              <span class="meta-label">Drop</span>
+              <span id="wifiVerdict">-</span>
+            </div>
+            <p class="muted wifi-verdict-evidence" id="wifiVerdictEvidence">
+              ISP-up is unproven without router poll or other devices staying online.
+            </p>
+          </div>
+          <div class="wifi-overview-block" id="wifiOverviewRouter" hidden>
+            <div class="wifi-kicker">Router view</div>
+            <div class="adapter-line" id="wifiRouterLine">
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="router-ssid" id="wifiRouterSsidChip">
+                <span class="meta-label">SSID</span>
+                <span id="wifiRouterSsid">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="router-rssi" id="wifiRouterRssiChip">
+                <span class="meta-label">This PC</span>
+                <span id="wifiRouterRssi">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="router-signal" id="wifiRouterSignalChip">
+                <span class="meta-label">Signal</span>
+                <span id="wifiRouterSignal">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="router-band" id="wifiRouterBandChip">
+                <span class="meta-label">Band</span>
+                <span id="wifiRouterBand">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="router-clients" id="adapterClientsChip">
+                <span class="meta-label">Clients</span>
+                <span id="adapterClients">-</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="wifi-overview-links">
+          <button type="button" class="text-link" data-goto-tab="system-logs">System logs</button>
+          <button type="button" class="text-link" data-goto-tab="connections">Network / nearby snapshot</button>
         </div>
       </div>
 
@@ -385,7 +464,8 @@
       <p class="disclaimer">
         OS-inferred connectivity gaps from Windows Event Logs. These are not the same as live probe History.
         Only periods the OS logged are visible. Pure ISP outages may be missed if the NIC stayed up;
-        local Wi‑Fi drops may appear as downtime. Sleep, hibernate, or shutdown gaps may show up or be missing.
+        local Wi‑Fi drops may appear as downtime. Sleep overlaps are labeled sleep, not Wi-Fi faults;
+        sleep, hibernate, or shutdown gaps may still be missing from the OS log.
       </p>
       <form id="systemLogsFilters" class="filters">
         <label>From <input type="datetime-local" name="from" /></label>
@@ -644,6 +724,27 @@
               <th class="has-tip" tabindex="0" data-tip="scan-cve">CVE</th>
             </tr></thead>
             <tbody id="scanBody"></tbody>
+          </table>
+        </div>
+        <p class="muted" id="nearbyWifiLead">
+          Nearby BSS is a point-in-time snapshot when you click — not a site survey, not a heatmap.
+          Hidden SSIDs may be missing. Not on the monitor tick.
+        </p>
+        <div class="filters conn-toolbar">
+          <button type="button" class="btn btn-secondary" id="nearbyWifiRun">Scan nearby Wi-Fi</button>
+          <span class="muted" id="nearbyWifiMeta" aria-live="polite"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="sr-only">Nearby Wi-Fi BSS snapshot</caption>
+            <thead><tr>
+              <th class="has-tip" tabindex="0" data-tip="nearby-ssid">SSID</th>
+              <th class="has-tip" tabindex="0" data-tip="nearby-bssid">BSSID</th>
+              <th class="has-tip" tabindex="0" data-tip="nearby-ch">Channel</th>
+              <th class="has-tip" tabindex="0" data-tip="nearby-signal">Signal</th>
+              <th class="has-tip" tabindex="0" data-tip="nearby-sec">Security</th>
+            </tr></thead>
+            <tbody id="nearbyWifiBody"></tbody>
           </table>
         </div>
       </div>

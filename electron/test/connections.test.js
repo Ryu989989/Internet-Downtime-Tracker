@@ -249,6 +249,12 @@ describe("enrichment", () => {
   });
 
   it("joins Win32_Service by pid from one cached CIM query", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", {
+      value: "win32",
+      writable: true,
+      configurable: true,
+    });
     let svcCalls = 0;
     let snapCalls = 0;
     setRunPowerShellForTest(async (script) => {
@@ -283,13 +289,21 @@ describe("enrichment", () => {
         code: 0,
       };
     });
-    const a = await snapshot();
-    const b = await snapshot();
-    assert.equal(svcCalls, 1);
-    assert.equal(snapCalls, 2);
-    assert.equal(a.connections[0].serviceName, "Dnscache, Dhcp");
-    assert.equal(b.connections[0].serviceName, "Dnscache, Dhcp");
-    assert.match(buildServiceScript(), /Get-CimInstance[\s\S]*Win32_Service/);
+    try {
+      const a = await snapshot();
+      const b = await snapshot();
+      assert.equal(svcCalls, 1);
+      assert.equal(snapCalls, 2);
+      assert.equal(a.connections[0].serviceName, "Dnscache, Dhcp");
+      assert.equal(b.connections[0].serviceName, "Dnscache, Dhcp");
+      assert.match(buildServiceScript(), /Get-CimInstance[\s\S]*Win32_Service/);
+    } finally {
+      Object.defineProperty(process, "platform", {
+        value: originalPlatform,
+        writable: true,
+        configurable: true,
+      });
+    }
   });
 
   it("marks new / dropped / state-changed for one cycle", async () => {

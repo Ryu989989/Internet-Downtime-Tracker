@@ -16,6 +16,7 @@ describe("LAN IPC allowlist + isolation", () => {
     assert.match(preload, /lanDevicesPing:/);
     assert.match(preload, /lanDevicesTraceroute:/);
     assert.match(preload, /lanScan:/);
+    assert.match(preload, /lanWifiNearby:/);
     assert.match(preload, /lanSnifferStart:/);
     assert.match(preload, /lanTopology:/);
     assert.doesNotMatch(preload, /require\("child_process"\)/);
@@ -27,6 +28,7 @@ describe("LAN IPC allowlist + isolation", () => {
     assert.match(main, /safeHandle\("api:lan:devices:ping"/);
     assert.match(main, /safeHandle\("api:lan:devices:traceroute"/);
     assert.match(main, /safeHandle\("api:lan:scan"/);
+    assert.match(main, /safeHandle\("api:lan:wifi:nearby"/);
     assert.match(main, /safeHandle\("api:lan:sniffer:start"/);
     assert.match(main, /safeHandle\("api:lan:topology"/);
     assert.match(main, /tracerouteDevice/);
@@ -38,6 +40,14 @@ describe("LAN IPC allowlist + isolation", () => {
     assert.doesNotMatch(monitor, /api:lan:devices:traceroute/);
     assert.doesNotMatch(monitor, /\bcheckHttp\b/);
     assert.doesNotMatch(monitor, /https\.request/);
+    assert.doesNotMatch(monitor, /Get-WinEvent/);
+    assert.doesNotMatch(monitor, /system-logs/);
+    assert.doesNotMatch(monitor, /wifi-chronicle/);
+    assert.doesNotMatch(monitor, /wifi-nearby/);
+    assert.doesNotMatch(monitor, /iw scan/);
+    assert.doesNotMatch(monitor, /show networks/);
+    assert.doesNotMatch(monitor, /wlanreport/);
+    assert.doesNotMatch(monitor, /lan-bridge/);
     for (const mod of [
       "lan-devices",
       "lan-bridge",
@@ -54,6 +64,30 @@ describe("LAN IPC allowlist + isolation", () => {
     assert.doesNotMatch(monitor, /snmp-topology/);
     assert.doesNotMatch(monitor, /packet-sniffer/);
     assert.doesNotMatch(monitor, /port-scan/);
+  });
+
+  it("History live-computes wifi verdict only for open LAN rows; nearby stays off lan-bridge", () => {
+    const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
+    const outages = main.slice(
+      main.indexOf('safeHandle("api:outages"'),
+      main.indexOf('safeHandle("api:outages:notes"')
+    );
+    assert.match(outages, /ended_at == null/);
+    assert.match(outages, /wifiVerdictForOutage/);
+    assert.match(main, /liveWifiVerdict/);
+    assert.match(main, /mergeOutageSnapshot/);
+    const bridge = fs.readFileSync(path.join(root, "lan-bridge.js"), "utf8");
+    assert.doesNotMatch(bridge, /wifi-nearby/);
+    assert.doesNotMatch(bridge, /scanNearby/);
+    assert.doesNotMatch(bridge, /iw scan/);
+    assert.doesNotMatch(bridge, /show networks/);
+    const tick = bridge.slice(
+      bridge.indexOf("function startHostNicPoll"),
+      bridge.indexOf("function getHostNicPollStatus")
+    );
+    assert.match(tick, /persistHostNic/);
+    assert.match(tick, /checkWifiAlerts/);
+    assert.match(tick, /hostNicAlertSamples/);
   });
 
   it("Prometheus listens on 127.0.0.1 only", async () => {

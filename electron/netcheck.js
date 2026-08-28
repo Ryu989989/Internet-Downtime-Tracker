@@ -444,6 +444,10 @@ function emptyAdapter(extra) {
     tx_mbps: null,
     rx_mbps: null,
     mac: null,
+    state: null,
+    radio_type: null,
+    auth: null,
+    cipher: null,
     ...extra,
   };
 }
@@ -532,10 +536,60 @@ function colonFields(text) {
 
 function fillWifiGaps(target, extra) {
   if (!extra) return target;
-  for (const key of ["ssid", "bssid", "band", "channel", "rssi", "signal", "tx_mbps", "rx_mbps", "mac"]) {
+  for (const key of [
+    "ssid",
+    "bssid",
+    "band",
+    "channel",
+    "rssi",
+    "signal",
+    "tx_mbps",
+    "rx_mbps",
+    "mac",
+    "state",
+    "radio_type",
+    "auth",
+    "cipher",
+  ]) {
     if (target[key] == null && extra[key] != null) target[key] = extra[key];
   }
   return target;
+}
+
+function cleanAdapterField(raw) {
+  if (raw == null) return null;
+  const t = String(raw).trim();
+  return t ? t : null;
+}
+
+function parseWlanState(raw) {
+  const s = String(raw || "").trim().toLowerCase();
+  if (/\bdisconnected\b/.test(s)) return "disconnected";
+  if (/\bconnected\b/.test(s)) return "connected";
+  return null;
+}
+
+/** RSSI only from an explicit dBm token. Never convert Signal percent to dBm. */
+function parseExplicitDbm(fields, block) {
+  const rssiRaw = fields && fields.rssi;
+  if (rssiRaw != null && String(rssiRaw).trim() !== "") {
+    const rssiStr = String(rssiRaw);
+    if (!/%/.test(rssiStr)) {
+      const n = firstNumber(rssiStr);
+      if (n != null && (/\bdBm\b/i.test(rssiStr) || n < 0)) return n;
+    }
+  }
+  const signalRaw = fields && fields.signal != null ? String(fields.signal) : "";
+  if (/\bdBm\b/i.test(signalRaw)) {
+    const n = firstNumber(signalRaw);
+    if (n != null) return n;
+  }
+  const m = String(block || "").match(/Signal level\s*[=:]\s*(-?\d+(?:\.\d+)?)\s*dBm/i);
+  if (m) {
+    const n = Number(m[1]);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 function parseNetshWlanInterfaces(text) {
@@ -551,7 +605,9 @@ function parseNetshWlanInterfaces(text) {
   }
   const f = colonFields(block);
   const channel = firstNumber(f.channel);
-  const signal = firstNumber(f.signal);
+  const signalRaw = f.signal != null ? String(f.signal) : "";
+  const signalIsDbm = /\bdBm\b/i.test(signalRaw);
+  const signal = signalIsDbm ? null : firstNumber(f.signal);
   const rateRx = firstNumber(f["receive rate (mbps)"] != null ? f["receive rate (mbps)"] : f["receive rate"]);
   const rateTx = firstNumber(f["transmit rate (mbps)"] != null ? f["transmit rate (mbps)"] : f["transmit rate"]);
   return {
@@ -560,10 +616,14 @@ function parseNetshWlanInterfaces(text) {
     band: bandFromNetsh(channel, f["radio type"], f.band),
     channel: channel != null ? Math.round(channel) : null,
     signal: signal != null ? Math.round(signal) : null,
-    rssi: null,
+    rssi: parseExplicitDbm(f, block),
     rx_mbps: rateRx,
     tx_mbps: rateTx,
     mac: normalizeMac(f["physical address"]),
+    state: parseWlanState(f.state),
+    radio_type: cleanAdapterField(f["radio type"]),
+    auth: cleanAdapterField(f.authentication),
+    cipher: cleanAdapterField(f.cipher),
   };
 }
 
@@ -758,6 +818,10 @@ async function getActiveAdapter() {
       tx_mbps: parsed.tx_mbps,
       rx_mbps: parsed.rx_mbps,
       mac: normalizeMac(obj.mac || obj.Mac || obj.MacAddress) || parsed.mac,
+      state: parsed.state,
+      radio_type: parsed.radio_type,
+      auth: parsed.auth,
+      cipher: parsed.cipher,
     });
   } catch {
     return emptyAdapter();
@@ -850,6 +914,9 @@ module.exports = {
   isBlockedProbeHost,
   isBlockedHttpUrl,
   getActiveAdapter,
+  parseNetshWlanInterfaces,
+  emptyAdapter,
+  fillWifiGaps,
   probe,
   setRunCmdForTest,
   resetRunCmdForTest,

@@ -299,6 +299,9 @@ describe("Connections/Usage IPC surface (preload allowlist)", () => {
     assert.doesNotMatch(monitor, /api:lan:devices:traceroute/);
     assert.doesNotMatch(monitor, /\bcheckHttp\b/);
     assert.doesNotMatch(monitor, /https\.request/);
+    assert.doesNotMatch(monitor, /Get-WinEvent/);
+    assert.doesNotMatch(monitor, /wifi-chronicle/);
+    assert.doesNotMatch(monitor, /wifi-nearby/);
     for (const mod of [
       "lan-devices",
       "lan-bridge",

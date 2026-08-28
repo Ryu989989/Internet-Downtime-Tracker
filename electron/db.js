@@ -1249,6 +1249,20 @@ class TrackerDb {
       );
       CREATE INDEX IF NOT EXISTS idx_wifi_samples_mac_at ON wifi_samples(mac, at);
 
+      CREATE TABLE IF NOT EXISTS wifi_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at REAL NOT NULL,
+        kind TEXT NOT NULL,
+        ssid TEXT,
+        bssid_from TEXT,
+        bssid_to TEXT,
+        reason_code TEXT,
+        reason_text TEXT,
+        event_id INTEGER,
+        source TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_wifi_events_at ON wifi_events(at);
+
       CREATE TABLE IF NOT EXISTS router_health_samples (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         at REAL NOT NULL,
@@ -1748,6 +1762,7 @@ class TrackerDb {
     const cutoff = Date.now() / 1000 - days * 86400;
     this._run("DELETE FROM probes WHERE timestamp < ?", [cutoff]);
     this._run("DELETE FROM wifi_samples WHERE at < ?", [cutoff]);
+    this._run("DELETE FROM wifi_events WHERE at < ?", [cutoff]);
     this._run("DELETE FROM router_health_samples WHERE at < ?", [cutoff]);
     this._run("DELETE FROM router_actions WHERE at < ?", [cutoff]);
     this._persistImmediate();
@@ -2312,6 +2327,64 @@ class TrackerDb {
     return this._get(
       "SELECT * FROM lan_scan_results WHERE target_ip = ? ORDER BY started_at DESC LIMIT 1",
       [target]
+    );
+  }
+
+  insertWifiEvent(row = {}) {
+    const kind = String(row.kind || "").trim();
+    if (!kind) return null;
+    const numOrNull = (v) => {
+      if (v == null || v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const at = numOrNull(row.at) != null ? numOrNull(row.at) : Date.now() / 1000;
+    const source = row.source != null && String(row.source).trim() !== "" ? String(row.source).slice(0, 32) : null;
+    const eventId = numOrNull(row.event_id) != null ? Math.trunc(numOrNull(row.event_id)) : null;
+    const dup = this._get(
+      `SELECT id FROM wifi_events
+       WHERE kind = ? AND source IS ? AND event_id IS ?
+         AND at >= ? AND at <= ?
+       LIMIT 1`,
+      [kind, source, eventId, at - 1, at + 1]
+    );
+    if (dup) return null;
+    this._run(
+      `INSERT INTO wifi_events (at, kind, ssid, bssid_from, bssid_to, reason_code, reason_text, event_id, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        at,
+        kind.slice(0, 32),
+        row.ssid != null ? String(row.ssid).slice(0, 64) : null,
+        row.bssid_from != null ? String(row.bssid_from).toUpperCase().slice(0, 32) : null,
+        row.bssid_to != null ? String(row.bssid_to).toUpperCase().slice(0, 32) : null,
+        row.reason_code != null ? String(row.reason_code).slice(0, 64) : null,
+        row.reason_text != null ? String(row.reason_text).slice(0, 800) : null,
+        eventId,
+        source,
+      ]
+    );
+    this._persist();
+    return this._get("SELECT * FROM wifi_events ORDER BY id DESC LIMIT 1");
+  }
+
+  listWifiEvents({ fromTs = null, toTs = null, limit = 500 } = {}) {
+    const clauses = [];
+    const params = [];
+    if (fromTs != null) {
+      clauses.push("at >= ?");
+      params.push(Number(fromTs));
+    }
+    if (toTs != null) {
+      clauses.push("at <= ?");
+      params.push(Number(toTs));
+    }
+    const lim = Math.max(1, Math.min(5000, Math.trunc(Number(limit)) || 500));
+    params.push(lim);
+    const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+    return this._all(
+      `SELECT * FROM wifi_events${where} ORDER BY at ASC LIMIT ?`,
+      params
     );
   }
 

@@ -7,7 +7,7 @@ const os = require("os");
 const path = require("path");
 
 const { TrackerDb } = require("../db");
-const { Monitor, buildIncidentSnapshot } = require("../monitor");
+const { Monitor, buildIncidentSnapshot, adapterRefreshEveryN, QUALITY_EVERY_N, OUTAGE_TYPES } = require("../monitor");
 
 function makeResult(lan, wan, dns = true, http = true) {
   return {
@@ -278,7 +278,7 @@ describe("monitor probe suppress / cool-down", async () => {
     assert.equal(snap.at_close.wan_ok, true);
   });
 
-  it("live snapshot includes wifi radio fields; incident snapshot stays slim", () => {
+  it("live snapshot includes wifi radio fields; incident snapshot uses liveAdapterSnapshot", () => {
     monitor.state.adapter = {
       name: "Wi-Fi",
       type: "wifi",
@@ -288,7 +288,11 @@ describe("monitor probe suppress / cool-down", async () => {
       band: "5",
       channel: 36,
       rssi: -52,
+      tx_mbps: 1200,
+      rx_mbps: 800,
       mac: "11:22:33:44:55:66",
+      description: "Intel Wi-Fi 6",
+      state: "connected",
     };
     const live = monitor.snapshot();
     assert.equal(live.adapter.ssid, "Home");
@@ -298,10 +302,21 @@ describe("monitor probe suppress / cool-down", async () => {
     assert.equal(live.adapter.signal, 85);
     assert.equal(live.adapter.mac, "11:22:33:44:55:66");
     const incident = buildIncidentSnapshot(monitor.state, "wan");
-    assert.deepEqual(Object.keys(incident.adapter).sort(), ["name", "signal", "type"]);
     assert.equal(incident.adapter.name, "Wi-Fi");
     assert.equal(incident.adapter.type, "wifi");
     assert.equal(incident.adapter.signal, 85);
+    assert.equal(incident.adapter.ssid, "Home");
+    assert.equal(incident.adapter.bssid, "aa:bb:cc:dd:ee:ff");
+    assert.equal(incident.adapter.band, "5");
+    assert.equal(incident.adapter.channel, 36);
+    assert.equal(incident.adapter.rssi, -52);
+    assert.equal(incident.adapter.tx_mbps, 1200);
+    assert.equal(incident.adapter.rx_mbps, 800);
+    assert.equal(incident.adapter.mac, "11:22:33:44:55:66");
+    assert.equal(incident.adapter.description, "Intel Wi-Fi 6");
+    assert.equal(adapterRefreshEveryN({ type: "wifi" }), QUALITY_EVERY_N);
+    assert.equal(adapterRefreshEveryN({ type: "ethernet" }), 30);
+    assert.equal(adapterRefreshEveryN(null), 30);
   });
 
   it("snapshot reports monitor_stale when probes age out", () => {
@@ -389,5 +404,13 @@ describe("monitor pause mid-probe", async () => {
     assert.ok(m.state.open_wan_id != null);
     assert.equal(n, 3);
     m.stop();
+  });
+});
+
+describe("outage domains", () => {
+  it("does not include wifi as an outage type", () => {
+    assert.deepEqual([...OUTAGE_TYPES], ["lan", "wan", "dns", "http"]);
+    const src = fs.readFileSync(path.join(__dirname, "..", "monitor.js"), "utf8");
+    assert.doesNotMatch(src, /openOutage\(\s*["']wifi["']/);
   });
 });

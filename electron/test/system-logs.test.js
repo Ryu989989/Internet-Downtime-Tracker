@@ -10,6 +10,10 @@ const {
   scanWindowsLogs,
   setRunPowerShellForTest,
   resetRunPowerShellForTest,
+  QUERY_SPECS,
+  clearCache,
+  getCached,
+  MAX_EVENTS,
 } = require("../system-logs");
 
 describe("classifyEvent", () => {
@@ -19,6 +23,36 @@ describe("classifyEvent", () => {
     assert.equal(classifyEvent(10000), "connect");
     assert.equal(classifyEvent(8001), "connect");
     assert.equal(classifyEvent(9999), null);
+  });
+
+  it("maps expanded WLAN, fail, sleep, and Kernel-Power ids", () => {
+    assert.equal(classifyEvent(8000), "connect");
+    assert.equal(classifyEvent(8002), "connect");
+    assert.equal(classifyEvent(11000), "connect");
+    assert.equal(classifyEvent(11001), "connect");
+    assert.equal(classifyEvent(11005), "connect");
+    assert.equal(classifyEvent(107), "connect");
+    assert.equal(classifyEvent(11004), "disconnect");
+    assert.equal(classifyEvent(11002), "fail");
+    assert.equal(classifyEvent(11006), "fail");
+    assert.equal(classifyEvent(42), "sleep");
+  });
+});
+
+describe("QUERY_SPECS", () => {
+  it("includes expanded WLAN ids and Kernel-Power 42/107", () => {
+    const wlan = QUERY_SPECS.find((s) => s.label === "WLAN");
+    assert.ok(wlan);
+    for (const id of [8000, 8001, 8002, 8003, 11000, 11001, 11002, 11004, 11005, 11006, 12013]) {
+      assert.ok(wlan.ids.includes(id), `missing WLAN id ${id}`);
+    }
+    const kp = QUERY_SPECS.find((s) => s.label === "Kernel-Power");
+    assert.ok(kp);
+    assert.equal(kp.log, "System");
+    assert.deepEqual(kp.ids, [42, 107]);
+    assert.ok(kp.providers.includes("Microsoft-Windows-Kernel-Power"));
+    assert.ok(QUERY_SPECS.some((s) => s.label === "NetworkProfile"));
+    assert.ok(QUERY_SPECS.some((s) => s.label === "System/NIC"));
   });
 });
 
@@ -80,6 +114,28 @@ describe("eventsToGaps", () => {
     assert.equal(gaps[0].started_at, 10);
     assert.equal(gaps[0].ended_at, 50);
   });
+
+  it("ignores fail events so they do not open or close gaps", () => {
+    const gaps = eventsToGaps(
+      [
+        { time: 10, kind: "fail", source: "WLAN", reason: "auth failed" },
+        { time: 20, kind: "connect", source: "WLAN", reason: "up" },
+      ],
+      { nowSec: 100 }
+    );
+    assert.equal(gaps.length, 0);
+  });
+
+  it("does not treat Kernel-Power sleep as a Wi-Fi disconnect gap", () => {
+    const gaps = eventsToGaps(
+      [
+        { time: 10, kind: "sleep", source: "Kernel-Power", reason: "sleep" },
+        { time: 50, kind: "connect", source: "Kernel-Power", reason: "resume" },
+      ],
+      { nowSec: 100 }
+    );
+    assert.equal(gaps.length, 0);
+  });
 });
 
 describe("normalizeRawEvents", () => {
@@ -104,6 +160,23 @@ describe("normalizeRawEvents", () => {
     assert.equal(events[0].kind, "disconnect");
     assert.equal(events[1].kind, "connect");
     assert.ok(events[0].time > 0);
+  });
+
+  it("keeps EventData through normalizeRawEvents", () => {
+    const eventData = { Reason: "3", SSID: "HomeNet", BSSId: "aa:bb:cc:dd:ee:ff" };
+    const events = normalizeRawEvents([
+      {
+        TimeCreated: "2026-07-31T15:00:00.000Z",
+        Id: 8003,
+        ProviderName: "Microsoft-Windows-WLAN-AutoConfig",
+        Message: "disconnected",
+        _sourceLabel: "WLAN",
+        EventData: eventData,
+      },
+    ]);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].kind, "disconnect");
+    assert.deepEqual(events[0].eventData, eventData);
   });
 });
 
@@ -135,5 +208,73 @@ describe("scanWindowsLogs non-Windows gate", () => {
     assert.equal(result.count, 0);
     assert.equal(result.event_count, 0);
     assert.ok(result.warnings.some((w) => /Windows/i.test(w)));
+  });
+});
+
+describe("scanWindowsLogs EventData script and events array", () => {
+  afterEach(() => {
+    resetRunPowerShellForTest();
+  });
+
+  it("clips messages at 800 not 200", async () => {
+    let captured = "";
+    setRunPowerShellForTest(async (script) => {
+      captured = script;
+      return { stdout: "[]", stderr: "" };
+    });
+    await scanWindowsLogs({ from: 1, to: 2 });
+    assert.match(captured, /\$msg\.Length -gt 800/);
+    assert.doesNotMatch(captured, /\$msg\.Length -gt 200/);
+    assert.match(captured, /EventData/);
+  });
+
+  it("returns a normalized events array", async () => {
+    setRunPowerShellForTest(async () => ({
+      stdout: JSON.stringify([
+        {
+          TimeCreated: "2026-07-31T15:00:00.000Z",
+          Id: 8003,
+          ProviderName: "Microsoft-Windows-WLAN-AutoConfig",
+          Message: "disconnected",
+          _sourceLabel: "WLAN",
+          EventData: { Reason: "3", SSID: "HomeNet" },
+        },
+      ]),
+      stderr: "",
+    }));
+    const result = await scanWindowsLogs({ from: 1, to: 1_800_000_000 });
+    assert.ok(Array.isArray(result.events));
+    assert.equal(result.events.length, 1);
+    assert.equal(result.events[0].kind, "disconnect");
+    assert.deepEqual(result.events[0].eventData, { Reason: "3", SSID: "HomeNet" });
+  });
+
+  it("skipCache leaves the UI cache in place; events are capped", async () => {
+    assert.equal(MAX_EVENTS, 500);
+    clearCache();
+    let n = 0;
+    setRunPowerShellForTest(async () => {
+      n += 1;
+      return {
+        stdout: JSON.stringify([
+          {
+            TimeCreated: "2026-07-31T15:00:00.000Z",
+            Id: 8003,
+            ProviderName: "Microsoft-Windows-WLAN-AutoConfig",
+            Message: n === 1 ? "first-scan" : "second-scan",
+            _sourceLabel: "WLAN",
+            EventData: { Reason: "3" },
+          },
+        ]),
+        stderr: "",
+      };
+    });
+    await scanWindowsLogs({ from: 1, to: 1_800_000_000 });
+    await scanWindowsLogs({ from: 100, to: 200, skipCache: true });
+    const hit = getCached({ from: 1, to: 1_800_000_000 });
+    assert.ok(hit);
+    assert.ok(hit.cached);
+    assert.match(String(hit.events[0].reason), /first-scan/);
+    clearCache();
   });
 });

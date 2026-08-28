@@ -189,4 +189,37 @@ describe("RSSI alert quiet hours", () => {
     assert.ok(row);
     assert.equal(row.wifi_alerting, true);
   });
+
+  it("host-nic alert samples do not increment leftover router client streaks", async () => {
+    db.updateSettings({
+      wifi_alerts_json: {
+        enabled: true,
+        rssi_dbm: -70,
+        signal_pct: null,
+        debounce_n: 2,
+        macs: [],
+      },
+    });
+    await lanBridge.pollRouterOnce();
+    assert.equal(pendingDigestCount(), 0);
+    const hostSample = {
+      mac: "11:22:33:44:55:66",
+      rssi: -40,
+      signal_pct: 90,
+      source: "host_nic",
+    };
+    const t0 = Date.now() / 1000;
+    await lanBridge.checkWifiAlerts(t0 + 10, [hostSample]);
+    await lanBridge.checkWifiAlerts(t0 + 20, [hostSample]);
+    assert.equal(pendingDigestCount(), 0);
+
+    await lanBridge.applyIntegrationSettings(
+      { router_poll_enabled: true },
+      { ...db.getSettings(), router_poll_enabled: false }
+    );
+    lanBridge.stopHostNicPoll();
+    await lanBridge.checkWifiAlerts(t0 + 30);
+    await lanBridge.checkWifiAlerts(t0 + 40);
+    assert.equal(pendingDigestCount(), 0);
+  });
 });
