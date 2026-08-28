@@ -211,7 +211,7 @@ function runCmd(cmd, args, timeoutMs) {
       }
     });
     child.stderr.on("data", (c) => {
-      stderr += c.toString("utf8");
+      if (stderr.length < 2_000_000) stderr += c.toString("utf8");
     });
     child.on("error", (err) => {
       if (settled) return;
@@ -232,7 +232,9 @@ function runCmd(cmd, args, timeoutMs) {
   });
 }
 
-async function scanNearby() {
+let nearbyInFlight = null;
+
+async function scanNearbyOnce() {
   const scanned_at = Date.now() / 1000;
   const base = { scanned_at, disclaimer: DISCLAIMER, networks: [], ok: false, warning: null };
   try {
@@ -248,6 +250,7 @@ async function scanNearby() {
     } catch {
       /* ignore */
     }
+    if (iface && !/^[A-Za-z0-9._:-]{1,16}$/.test(iface)) iface = null;
     const args = iface ? ["dev", iface, "scan"] : ["scan"];
     const text = await runCmd("iw", args, 25_000);
     return { ...base, ok: true, networks: parseIwScan(text) };
@@ -259,6 +262,14 @@ async function scanNearby() {
       warning: msg || "Nearby BSS scan failed (may need privileges).",
     };
   }
+}
+
+function scanNearby() {
+  if (nearbyInFlight) return nearbyInFlight;
+  nearbyInFlight = scanNearbyOnce().finally(() => {
+    nearbyInFlight = null;
+  });
+  return nearbyInFlight;
 }
 
 module.exports = {

@@ -297,6 +297,39 @@ describe("router poller / IPC", () => {
     }
   );
 
+  it("LAN outage ingest debounces; WAN open does not; live verdict uses chronicle", async () => {
+    const started = Date.now() / 1000;
+    await lanBridge.onOutageEvent("outage_open", { type: "lan", started_at: started, id: 1 });
+    const skipped = await lanBridge.ingestWlanChronicle();
+    assert.equal(skipped.skipped, true);
+
+    lanBridge.resetRouterPollForTest();
+    lanBridge.init({ db, monitor: null });
+    lanBridge.setRouterPollForTest({
+      createAdapter: () => fakeAdapter(),
+      getActiveAdapter: async () => ({ mac: "aa-bb-cc-11-22-33" }),
+      getDefaultGateway: async () => "192.168.1.1",
+    });
+    db.updateSettings({ router_poll_enabled: true, router_host: "192.168.1.1", router_vendor: "asuswrt" });
+    await lanBridge.onOutageEvent("outage_open", { type: "wan", started_at: started, id: 2 });
+    const afterWan = await lanBridge.ingestWlanChronicle({ from: started - 60, to: started });
+    assert.equal(afterWan.ok, true);
+    assert.notEqual(afterWan.skipped, true);
+
+    await lanBridge.pollRouterOnce();
+    const lanId = db.openOutage("lan", started);
+    db.insertWifiEvent({
+      at: started + 1,
+      kind: "disconnect",
+      event_id: 8003,
+      source: "WLAN",
+      ssid: "Home",
+    });
+    const v = lanBridge.wifiVerdictForOutage(db._get("SELECT * FROM outages WHERE id=?", [lanId]));
+    assert.equal(v.code, "this_pc_wifi");
+    assert.equal(lanBridge.liveWifiVerdict().code, "this_pc_wifi");
+  });
+
   it("testConnection uses saved password and fail-closes on public host", async () => {
     let seen = null;
     lanBridge.setRouterPollForTest({

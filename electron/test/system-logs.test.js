@@ -11,6 +11,9 @@ const {
   setRunPowerShellForTest,
   resetRunPowerShellForTest,
   QUERY_SPECS,
+  clearCache,
+  getCached,
+  MAX_EVENTS,
 } = require("../system-logs");
 
 describe("classifyEvent", () => {
@@ -244,5 +247,34 @@ describe("scanWindowsLogs EventData script and events array", () => {
     assert.equal(result.events.length, 1);
     assert.equal(result.events[0].kind, "disconnect");
     assert.deepEqual(result.events[0].eventData, { Reason: "3", SSID: "HomeNet" });
+  });
+
+  it("skipCache leaves the UI cache in place; events are capped", async () => {
+    assert.equal(MAX_EVENTS, 500);
+    clearCache();
+    let n = 0;
+    setRunPowerShellForTest(async () => {
+      n += 1;
+      return {
+        stdout: JSON.stringify([
+          {
+            TimeCreated: "2026-07-31T15:00:00.000Z",
+            Id: 8003,
+            ProviderName: "Microsoft-Windows-WLAN-AutoConfig",
+            Message: n === 1 ? "first-scan" : "second-scan",
+            _sourceLabel: "WLAN",
+            EventData: { Reason: "3" },
+          },
+        ]),
+        stderr: "",
+      };
+    });
+    await scanWindowsLogs({ from: 1, to: 1_800_000_000 });
+    await scanWindowsLogs({ from: 100, to: 200, skipCache: true });
+    const hit = getCached({ from: 1, to: 1_800_000_000 });
+    assert.ok(hit);
+    assert.ok(hit.cached);
+    assert.match(String(hit.events[0].message), /first-scan/);
+    clearCache();
   });
 });

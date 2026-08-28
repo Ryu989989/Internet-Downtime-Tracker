@@ -2,6 +2,8 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
 const {
   classifyWlanEvent,
   detectHostNicRoam,
@@ -25,7 +27,7 @@ describe("classifyWlanEvent", () => {
     });
     assert.equal(ev.kind, "disconnect");
     assert.equal(ev.reason_code, "3");
-    assert.equal(ev.reason_text, "3");
+    assert.equal(ev.reason_text, "WLAN disconnected because the network went away");
     assert.equal(ev.ssid, "HomeNet");
     assert.equal(ev.bssid, "aa:bb:cc:dd:ee:01");
     assert.equal(ev.event_id, 8003);
@@ -69,6 +71,25 @@ describe("detectHostNicRoam", () => {
     );
     assert.equal(roam, null);
   });
+
+  it("treats missing or case-shifted SSID as roam; different SSID is not a roam", () => {
+    const missing = detectHostNicRoam(
+      { at: 100, ssid: null, bssid: "aa:bb:cc:dd:ee:01" },
+      { at: 130, ssid: "HomeNet", bssid: "aa:bb:cc:dd:ee:02" }
+    );
+    assert.ok(missing);
+    assert.equal(missing.kind, "roam");
+    const cased = detectHostNicRoam(
+      { at: 100, ssid: "HomeNet", bssid: "aa:bb:cc:dd:ee:01" },
+      { at: 130, ssid: "homenet", bssid: "aa:bb:cc:dd:ee:02" }
+    );
+    assert.ok(cased);
+    const changed = detectHostNicRoam(
+      { at: 100, ssid: "HomeNet", bssid: "aa:bb:cc:dd:ee:01" },
+      { at: 130, ssid: "Cafe", bssid: "aa:bb:cc:dd:ee:02" }
+    );
+    assert.equal(changed, null);
+  });
 });
 
 describe("eventsToChronicle", () => {
@@ -95,6 +116,48 @@ describe("eventsToChronicle", () => {
     assert.equal(rows[0].bssid_from, "aa:bb:cc:dd:ee:01");
     assert.equal(rows[0].bssid_to, "aa:bb:cc:dd:ee:02");
     assert.ok(!rows.some((r) => r.kind === "disconnect"));
+  });
+
+  it("does not coalesce same BSSID or pairs more than 15s apart", () => {
+    const sameBssid = eventsToChronicle([
+      {
+        id: 8003,
+        eventData: { SSID: "HomeNet", BSSID: "aa:bb:cc:dd:ee:01" },
+        message: "disconnected",
+        time: 1000,
+        source: "WLAN",
+      },
+      {
+        id: 8001,
+        eventData: { SSID: "HomeNet", BSSID: "aa:bb:cc:dd:ee:01" },
+        message: "connected",
+        time: 1008,
+        source: "WLAN",
+      },
+    ]);
+    assert.equal(sameBssid.length, 2);
+    assert.equal(sameBssid[0].kind, "disconnect");
+    assert.equal(sameBssid[1].kind, "connect");
+
+    const tooLate = eventsToChronicle([
+      {
+        id: 8003,
+        eventData: { SSID: "HomeNet", BSSID: "aa:bb:cc:dd:ee:01" },
+        message: "disconnected",
+        time: 1000,
+        source: "WLAN",
+      },
+      {
+        id: 8001,
+        eventData: { SSID: "HomeNet", BSSID: "aa:bb:cc:dd:ee:02" },
+        message: "connected",
+        time: 1016,
+        source: "WLAN",
+      },
+    ]);
+    assert.equal(tooLate.length, 2);
+    assert.equal(tooLate[0].kind, "disconnect");
+    assert.equal(tooLate[1].kind, "connect");
   });
 });
 
@@ -149,5 +212,63 @@ describe("correlateVerdict", () => {
     const blob = (v.evidence || []).join(" ");
     assert.match(blob, /unproven/i);
     assert.match(blob, /router poll|other devices/i);
+  });
+
+  it("priority: sleep beats ISP and this-PC; ISP beats disconnect; unknown without ISP-up proof", () => {
+    const sleepWins = correlateVerdict({
+      lanOutage: { type: "lan", started_at: 100, ended_at: 200 },
+      wanOutage: { type: "wan", started_at: 100, ended_at: 200 },
+      wlanEvents: [
+        { kind: "sleep", at: 150, event_id: 42, source: "Kernel-Power" },
+        { kind: "disconnect", at: 120, event_id: 8003, source: "WLAN" },
+      ],
+      routerWanOk: false,
+      peersOnlineDuring: true,
+    });
+    assert.equal(sleepWins.code, "sleep");
+
+    const ispFromRouter = correlateVerdict({
+      lanOutage: { type: "lan", started_at: 100, ended_at: 200 },
+      wanOutage: null,
+      wlanEvents: [{ kind: "disconnect", at: 120, event_id: 8003, source: "WLAN" }],
+      routerWanOk: false,
+      peersOnlineDuring: true,
+    });
+    assert.equal(ispFromRouter.code, "isp");
+
+    const ispFromWan = correlateVerdict({
+      lanOutage: null,
+      wanOutage: { type: "wan", started_at: 100, ended_at: 200 },
+      wlanEvents: [],
+      routerWanOk: null,
+      peersOnlineDuring: null,
+    });
+    assert.equal(ispFromWan.code, "isp");
+
+    const thisPcRoam = correlateVerdict({
+      lanOutage: { type: "lan", started_at: 100, ended_at: 200 },
+      wanOutage: null,
+      wlanEvents: [{ kind: "roam", at: 120, event_id: 12013, source: "WLAN" }],
+      routerWanOk: null,
+      peersOnlineDuring: true,
+    });
+    assert.equal(thisPcRoam.code, "this_pc_wifi");
+
+    const unknownDespiteDisconnect = correlateVerdict({
+      lanOutage: { type: "lan", started_at: 100, ended_at: 200 },
+      wanOutage: null,
+      wlanEvents: [{ kind: "disconnect", at: 120, event_id: 8003, source: "WLAN" }],
+      routerWanOk: null,
+      peersOnlineDuring: null,
+    });
+    assert.equal(unknownDespiteDisconnect.code, "unknown");
+    assert.match((unknownDespiteDisconnect.evidence || []).join(" "), /unproven/i);
+  });
+});
+
+describe("wifi-chronicle purity", () => {
+  it("does not require monitor, fs, or child_process", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "wifi-chronicle.js"), "utf8");
+    assert.doesNotMatch(src, /require\(/);
   });
 });

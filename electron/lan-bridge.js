@@ -659,6 +659,49 @@ function recordWifiMetric(mac, source, band, rssi, signal_pct, online) {
   });
 }
 
+function refreshWifiMetrics() {
+  lastWifiMetrics = Array.from(lastWifiByMac.values())
+    .filter((w) => w.rssi != null || w.signal_pct != null)
+    .slice(0, WIFI_PROM_MAX);
+}
+
+function keepHostNicMetrics() {
+  const kept = new Map();
+  for (const [mac, v] of lastWifiByMac) {
+    if (v && v.source === "host_nic") kept.set(mac, v);
+  }
+  return kept;
+}
+
+function clearRouterWifiCache() {
+  lastPollWifiClients = [];
+  lastPollWifiSource = null;
+  lastPollExtra = null;
+  lastWifiByMac = keepHostNicMetrics();
+  for (const mac of [...wifiAlertStreaks.keys()]) {
+    if (!lastWifiByMac.has(mac)) {
+      wifiAlertStreaks.delete(mac);
+      wifiAlertFiredAt.delete(mac);
+      wifiAlertingMacs.delete(mac);
+    }
+  }
+  refreshWifiMetrics();
+}
+
+function hostNicAlertSamples() {
+  const host = lastHostNicSample;
+  if (!host || !host.mac) return [];
+  return [
+    {
+      mac: host.mac,
+      source: "host_nic",
+      band: host.band || "",
+      rssi: host.rssi,
+      signal_pct: host.signal_pct,
+    },
+  ];
+}
+
 function sampleIsWeaker(sample, cfg) {
   if (!sample || !cfg) return false;
   if (sample.rssi != null && Number.isFinite(Number(sample.rssi)) && cfg.rssi_dbm != null) {
@@ -715,18 +758,35 @@ function evaluateWifiAlerts({
   return { fires, streaks: nextStreaks, alerting };
 }
 
-async function checkWifiAlerts(nowSec) {
+async function checkWifiAlerts(nowSec, samplesOverride) {
   const s = settings();
   const cfg = parseWifiAlertsJson(s.wifi_alerts_json);
+  const subset = samplesOverride != null;
+  const samples = subset ? samplesOverride : Array.from(lastWifiByMac.values());
   const result = evaluateWifiAlerts({
     cfg,
-    samples: Array.from(lastWifiByMac.values()),
+    samples,
     streaks: wifiAlertStreaks,
     lastFired: wifiAlertFiredAt,
     nowSec,
   });
-  wifiAlertStreaks = result.streaks;
-  wifiAlertingMacs = result.alerting;
+  if (subset) {
+    for (const [mac, streak] of result.streaks) {
+      wifiAlertStreaks.set(mac, streak);
+    }
+    const sampled = new Set();
+    for (const sample of samples || []) {
+      const mac = formatMac(sample && sample.mac);
+      if (mac) sampled.add(mac);
+    }
+    for (const mac of sampled) {
+      if (result.alerting.has(mac)) wifiAlertingMacs.add(mac);
+      else wifiAlertingMacs.delete(mac);
+    }
+  } else {
+    wifiAlertStreaks = result.streaks;
+    wifiAlertingMacs = result.alerting;
+  }
   const qh = notify.parseQuietHours(s.notify_quiet_hours_json);
   const quiet = notify.inQuietHours(qh);
   for (const fire of result.fires) {
@@ -948,6 +1008,7 @@ async function persistHostNic(now) {
   };
   maybeInsertHostNicRoam(lastHostNicSample, nextSample);
   lastHostNicSample = nextSample;
+  refreshWifiMetrics();
 }
 
 async function pollOneTarget(target, secret, now) {
@@ -1035,7 +1096,7 @@ async function pollRouterOnce() {
   const enabled = targets.filter((t) => t.enabled !== false).slice(0, 4);
   const now = Date.now() / 1000;
   lastPollTargets = [];
-  lastWifiByMac = new Map();
+  lastWifiByMac = keepHostNicMetrics();
   lastPollWifiClients = [];
   const errors = [];
   try {
@@ -1048,9 +1109,7 @@ async function pollRouterOnce() {
   } catch (err) {
     lastPollError = (err && err.message) || "router poll failed";
   }
-  lastWifiMetrics = Array.from(lastWifiByMac.values())
-    .filter((w) => w.rssi != null || w.signal_pct != null)
-    .slice(0, WIFI_PROM_MAX);
+  refreshWifiMetrics();
   try {
     await checkWifiAlerts(now);
   } catch {
@@ -1080,7 +1139,7 @@ function startHostNicPoll() {
     hostNicPollInFlight = true;
     const now = Date.now() / 1000;
     persistHostNic(now)
-      .then(() => checkWifiAlerts(now))
+      .then(() => checkWifiAlerts(now, hostNicAlertSamples()))
       .catch(() => {})
       .finally(() => {
         hostNicPollInFlight = false;
@@ -1123,9 +1182,7 @@ function syncRouterPoll(s) {
   if (s && s.router_poll_enabled) startRouterPoll();
   else {
     stopRouterPoll();
-    lastPollWifiClients = [];
-    lastPollWifiSource = null;
-    lastPollExtra = null;
+    clearRouterWifiCache();
   }
 }
 
@@ -1424,7 +1481,6 @@ async function ingestWlanChronicle({ from, to } = {}) {
   if (lastChronicleIngestAt && now - lastChronicleIngestAt < CHRONICLE_DEBOUNCE_S) {
     return { ok: true, skipped: true };
   }
-  lastChronicleIngestAt = now;
   if (!db || typeof db.insertWifiEvent !== "function") return { ok: false };
   let scanWindowsLogs;
   try {
@@ -1444,6 +1500,7 @@ async function ingestWlanChronicle({ from, to } = {}) {
       from: from != null ? Number(from) : now - 3600,
       to: to != null ? Number(to) : now,
       refresh: true,
+      skipCache: true,
     });
     const raw = (result && Array.isArray(result.events) ? result.events : []).map((e) => ({
       id: e.id,
@@ -1472,6 +1529,7 @@ async function ingestWlanChronicle({ from, to } = {}) {
         source: row.source,
       });
     }
+    lastChronicleIngestAt = Date.now() / 1000;
     return { ok: true, count: Array.isArray(rows) ? rows.length : 0 };
   } catch {
     return { ok: false };

@@ -28,6 +28,7 @@ function powershellExe() {
 const DEFAULT_DAYS = 7;
 const MAX_DAYS = 30;
 const MAX_GAPS = 200;
+const MAX_EVENTS = 500;
 const SCAN_TIMEOUT_MS = 45_000;
 const MERGE_GAP_MS = 60_000;
 
@@ -360,6 +361,12 @@ function clampRange(params = {}) {
   return { from, to };
 }
 
+function capEvents(events) {
+  const rows = Array.isArray(events) ? events : [];
+  if (rows.length <= MAX_EVENTS) return rows;
+  return rows.slice(-MAX_EVENTS);
+}
+
 function filterGaps(gaps, { minMs = 0, limit = MAX_GAPS } = {}) {
   let rows = gaps;
   if (minMs > 0) {
@@ -426,7 +433,7 @@ async function scanWindowsLogs(params = {}) {
     };
   }
 
-  const events = normalizeRawEvents(raw);
+  const events = capEvents(normalizeRawEvents(raw));
   if (events.length === 0) {
     warnings.push(
       "No matching disconnect/connect events in this window. NIC may have stayed up, or those channels need elevation."
@@ -455,7 +462,7 @@ async function scanWindowsLogs(params = {}) {
     sources: sourcesTried,
     warnings,
   };
-  cache = result;
+  if (!params.skipCache) cache = result;
   return result;
 }
 
@@ -476,6 +483,8 @@ function getCached(params = {}) {
       from,
       to,
       gaps,
+      events: capEvents(cache.events),
+      event_count: capEvents(cache.events).length,
       count: gaps.length,
       cached: true,
     };
@@ -514,5 +523,6 @@ module.exports = {
   DEFAULT_DAYS,
   MAX_DAYS,
   MAX_GAPS,
+  MAX_EVENTS,
   MERGE_GAP_MS,
 };

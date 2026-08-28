@@ -3910,6 +3910,8 @@ async function runScan() {
 async function runNearbyWifi() {
   const meta = $("#nearbyWifiMeta");
   const tbody = $("#nearbyWifiBody");
+  const btn = $("#nearbyWifiRun");
+  if (btn) btn.disabled = true;
   if (meta) meta.textContent = "Scanning nearby BSS…";
   try {
     const data = await api("/api/lan/wifi/nearby");
@@ -3947,6 +3949,8 @@ async function runNearbyWifi() {
     }
   } catch (err) {
     if (meta) meta.textContent = (err && err.message) || "Nearby scan failed";
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 

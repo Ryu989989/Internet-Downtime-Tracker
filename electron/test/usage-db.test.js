@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { TrackerDb, normalizeSettingValue, DEFAULT_SETTINGS } = require("../db");
+const { TrackerDb, normalizeSettingValue, DEFAULT_SETTINGS, OUTAGE_TYPES } = require("../db");
 
 describe("usage db rollup", () => {
   let dir;
@@ -115,6 +115,12 @@ describe("usage db rollup", () => {
     assert.match(fn, /DELETE FROM wifi_events/);
     assert.match(fn, /DELETE FROM router_health_samples/);
     assert.doesNotMatch(fn, /DELETE FROM outages/);
+  });
+
+  it("rejects wifi as an outage domain", () => {
+    assert.ok(OUTAGE_TYPES instanceof Set);
+    assert.deepEqual([...OUTAGE_TYPES], ["lan", "wan", "dns", "http"]);
+    assert.throws(() => db.openOutage("wifi"), /invalid outage type/);
   });
 
   it("clearUsageHistory removes rollup rows", () => {

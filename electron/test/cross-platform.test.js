@@ -260,6 +260,12 @@ describe("cross-platform parser and command builders", () => {
       ["    Name : Wi-Fi", "    State : connected", "    Signal : -55 dBm"].join("\n")
     );
     assert.equal(fromSignalDbm.rssi, -55);
+    assert.equal(fromSignalDbm.signal, null);
+
+    const rssiPercent = parseNetshWlanInterfaces(
+      ["    Name : Wi-Fi", "    State : connected", "    RSSI : 85%"].join("\n")
+    );
+    assert.equal(rssiPercent.rssi, null);
 
     const fromSignalLevel = parseNetshWlanInterfaces(
       ["    Name : Wi-Fi", "    State : connected", "    Signal level=-55 dBm"].join("\n")

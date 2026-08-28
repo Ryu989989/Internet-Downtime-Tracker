@@ -573,8 +573,11 @@ function parseWlanState(raw) {
 function parseExplicitDbm(fields, block) {
   const rssiRaw = fields && fields.rssi;
   if (rssiRaw != null && String(rssiRaw).trim() !== "") {
-    const n = firstNumber(rssiRaw);
-    if (n != null) return n;
+    const rssiStr = String(rssiRaw);
+    if (!/%/.test(rssiStr)) {
+      const n = firstNumber(rssiStr);
+      if (n != null && (/\bdBm\b/i.test(rssiStr) || n < 0)) return n;
+    }
   }
   const signalRaw = fields && fields.signal != null ? String(fields.signal) : "";
   if (/\bdBm\b/i.test(signalRaw)) {
@@ -602,7 +605,9 @@ function parseNetshWlanInterfaces(text) {
   }
   const f = colonFields(block);
   const channel = firstNumber(f.channel);
-  const signal = firstNumber(f.signal);
+  const signalRaw = f.signal != null ? String(f.signal) : "";
+  const signalIsDbm = /\bdBm\b/i.test(signalRaw);
+  const signal = signalIsDbm ? null : firstNumber(f.signal);
   const rateRx = firstNumber(f["receive rate (mbps)"] != null ? f["receive rate (mbps)"] : f["receive rate"]);
   const rateTx = firstNumber(f["transmit rate (mbps)"] != null ? f["transmit rate (mbps)"] : f["transmit rate"]);
   return {

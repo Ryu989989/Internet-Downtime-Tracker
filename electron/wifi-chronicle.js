@@ -122,12 +122,17 @@ function classifyWlanEvent({ id, eventData, message, time, source } = {}) {
     ]) || fromMessagePrefix(msg, "BSSID");
   const reasonFromData = pickField(eventData, ["Reason", "ReasonText", "ReasonStatus"]);
   const reasonCodeFromData = pickField(eventData, ["ReasonCode", "Reason_Code"]);
+  const reasonTextNamed = pickField(eventData, ["ReasonText", "ReasonStatus"]);
   const reason_code =
     reasonCodeFromData ||
     (looksNumeric(reasonFromData) ? reasonFromData : null) ||
     fromMessagePrefix(msg, "ReasonCode");
   const reason_text =
-    reasonFromData || fromMessagePrefix(msg, "Reason") || (msg ? msg : null);
+    reasonTextNamed ||
+    (!looksNumeric(reasonFromData) ? reasonFromData : null) ||
+    (msg ? msg : null) ||
+    reasonFromData ||
+    fromMessagePrefix(msg, "Reason");
   const kind = classifyKind(id, bssid);
   return {
     kind,
@@ -148,18 +153,18 @@ function detectHostNicRoam(prevSample, nextSample) {
   if (!nFrom || !nTo || nFrom === nTo) return null;
   const ssidPrev =
     prevSample.ssid != null && String(prevSample.ssid).trim() !== ""
-      ? String(prevSample.ssid)
+      ? String(prevSample.ssid).trim().toLowerCase()
       : null;
   const ssidNext =
     nextSample.ssid != null && String(nextSample.ssid).trim() !== ""
-      ? String(nextSample.ssid)
+      ? String(nextSample.ssid).trim().toLowerCase()
       : null;
   if (ssidPrev && ssidNext && ssidPrev !== ssidNext) return null;
   return {
     kind: "roam",
     source: "host_nic",
     at: nextSample.at,
-    ssid: ssidNext || ssidPrev || null,
+    ssid: (nextSample.ssid && String(nextSample.ssid).trim()) || (prevSample.ssid && String(prevSample.ssid).trim()) || null,
     bssid_from: prevSample.bssid,
     bssid_to: nextSample.bssid,
   };

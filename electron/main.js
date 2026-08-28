@@ -894,7 +894,7 @@ function registerIpc() {
           /* ignore */
         }
       }
-      if (!verdict && row && row.type === "lan" && typeof lanBridge.wifiVerdictForOutage === "function") {
+      if (!verdict && row && row.type === "lan" && row.ended_at == null && typeof lanBridge.wifiVerdictForOutage === "function") {
         try {
           verdict = lanBridge.wifiVerdictForOutage(row);
         } catch {
@@ -949,12 +949,15 @@ function registerIpc() {
     await shell.openPath(dest);
     return { path: dest };
   });
-  safeHandle("api:system-logs:get", (_e, params = {}) =>
-    systemLogs.getOrScan({ ...(params || {}), refresh: false })
-  );
-  safeHandle("api:system-logs:scan", (_e, params = {}) =>
-    systemLogs.getOrScan({ ...(params || {}), refresh: true })
-  );
+  function systemLogsForUi(params, refresh) {
+    return Promise.resolve(systemLogs.getOrScan({ ...(params || {}), refresh })).then((data) => {
+      if (!data || typeof data !== "object") return data;
+      const { events: _events, ...rest } = data;
+      return rest;
+    });
+  }
+  safeHandle("api:system-logs:get", (_e, params = {}) => systemLogsForUi(params, false));
+  safeHandle("api:system-logs:scan", (_e, params = {}) => systemLogsForUi(params, true));
 
   const userData = () => app.getPath("userData");
   safeHandle("api:speedtest:status", () => speedtest.getStatus(userData()));

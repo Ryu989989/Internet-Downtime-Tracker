@@ -633,6 +633,12 @@ main {
   margin-top: 0.55rem;
 }
 
+.adapter-line .meta-chip {
+  min-width: 0;
+  padding: 0.28rem 0.5rem;
+  font-size: 0.8rem;
+}
+
 .wifi-verdict-badge {
   appearance: none;
   border: 1px solid var(--border);

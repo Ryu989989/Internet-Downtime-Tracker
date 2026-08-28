@@ -79,6 +79,8 @@ describe("UI hardening", () => {
     assert.match(js, /"wifi-verdict"/);
     assert.match(js, /overview_wifi/);
     assert.match(js, /wifi_verdict/);
+    assert.match(js, /wifiVerdictBadgeHtml/);
+    assert.match(js, /wifi-verdict-badge/);
     assert.match(js, /unproven without router poll/);
     const paint = js.slice(js.indexOf("function paintAdapterLine"), js.indexOf("function paintStatus"));
     assert.ok(paint.includes("finiteOrNull(a.rssi)"));
@@ -94,6 +96,9 @@ describe("UI hardening", () => {
     assert.match(html, /not a site survey/);
     const js = fs.readFileSync(path.join(repoRoot, "web", "app.js"), "utf8");
     assert.match(js, /\/api\/lan\/wifi\/nearby/);
+    assert.match(js, /escapeHtml\(r\.ssid/);
+    assert.match(js, /escapeHtml\(r\.bssid/);
+    assert.match(js, /nearbyWifiRun[\s\S]{0,200}disabled/);
     assert.doesNotMatch(js, /rssiToPct/);
   });
 

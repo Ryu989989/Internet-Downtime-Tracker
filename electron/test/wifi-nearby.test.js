@@ -7,6 +7,10 @@ const path = require("path");
 const {
   parseNetshWlanNetworks,
   parseIwScan,
+  scanNearby,
+  DISCLAIMER,
+  setRunCmdForTest,
+  resetRunCmdForTest,
 } = require("../wifi-nearby");
 
 const NETSH = `
@@ -94,5 +98,29 @@ describe("isolation", () => {
     const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
     assert.match(preload, /lanWifiNearby:/);
     assert.match(main, /safeHandle\("api:lan:wifi:nearby"/);
+  });
+
+  it("scanNearby returns disclaimer and coalesces in-flight scans", async () => {
+    let calls = 0;
+    setRunCmdForTest((cmd) => {
+      calls += 1;
+      return cmd === "netsh" ? NETSH : IW;
+    });
+    try {
+      const a = scanNearby();
+      const b = scanNearby();
+      const [one, two] = await Promise.all([a, b]);
+      assert.equal(one.ok, true);
+      assert.equal(one.disclaimer, DISCLAIMER);
+      assert.match(one.disclaimer, /not a site survey/i);
+      assert.match(one.disclaimer, /Hidden SSIDs/i);
+      assert.ok(one.networks.length >= 1);
+      if (one.networks[0].rssi == null) assert.equal(one.networks[0].signal, 80);
+      else assert.equal(one.networks[0].rssi, -55);
+      assert.equal(two.disclaimer, DISCLAIMER);
+      assert.equal(calls, 1);
+    } finally {
+      resetRunCmdForTest();
+    }
   });
 });

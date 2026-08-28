@@ -7,7 +7,7 @@ const os = require("os");
 const path = require("path");
 
 const { TrackerDb } = require("../db");
-const { Monitor, buildIncidentSnapshot, adapterRefreshEveryN, QUALITY_EVERY_N } = require("../monitor");
+const { Monitor, buildIncidentSnapshot, adapterRefreshEveryN, QUALITY_EVERY_N, OUTAGE_TYPES } = require("../monitor");
 
 function makeResult(lan, wan, dns = true, http = true) {
   return {
@@ -291,6 +291,7 @@ describe("monitor probe suppress / cool-down", async () => {
       tx_mbps: 1200,
       rx_mbps: 800,
       mac: "11:22:33:44:55:66",
+      description: "Intel Wi-Fi 6",
       state: "connected",
     };
     const live = monitor.snapshot();
@@ -311,6 +312,8 @@ describe("monitor probe suppress / cool-down", async () => {
     assert.equal(incident.adapter.rssi, -52);
     assert.equal(incident.adapter.tx_mbps, 1200);
     assert.equal(incident.adapter.rx_mbps, 800);
+    assert.equal(incident.adapter.mac, "11:22:33:44:55:66");
+    assert.equal(incident.adapter.description, "Intel Wi-Fi 6");
     assert.equal(adapterRefreshEveryN({ type: "wifi" }), QUALITY_EVERY_N);
     assert.equal(adapterRefreshEveryN({ type: "ethernet" }), 30);
     assert.equal(adapterRefreshEveryN(null), 30);
@@ -401,5 +404,13 @@ describe("monitor pause mid-probe", async () => {
     assert.ok(m.state.open_wan_id != null);
     assert.equal(n, 3);
     m.stop();
+  });
+});
+
+describe("outage domains", () => {
+  it("does not include wifi as an outage type", () => {
+    assert.deepEqual([...OUTAGE_TYPES], ["lan", "wan", "dns", "http"]);
+    const src = fs.readFileSync(path.join(__dirname, "..", "monitor.js"), "utf8");
+    assert.doesNotMatch(src, /openOutage\(\s*["']wifi["']/);
   });
 });
