@@ -31,17 +31,19 @@ function liveAdapterSnapshot(adapter) {
     rx_mbps: adapter.rx_mbps != null ? adapter.rx_mbps : null,
     mac: adapter.mac || null,
     description: adapter.description || null,
+    state: adapter.state || null,
+    radio_type: adapter.radio_type || null,
+    auth: adapter.auth || null,
+    cipher: adapter.cipher || null,
   };
 }
 
+function adapterRefreshEveryN(adapter) {
+  return adapter && adapter.type === "wifi" ? QUALITY_EVERY_N : ADAPTER_EVERY_N;
+}
+
 function buildIncidentSnapshot(state, type) {
-  const adapter = state.adapter
-    ? {
-        name: state.adapter.name || null,
-        type: state.adapter.type || null,
-        signal: state.adapter.signal != null ? state.adapter.signal : null,
-      }
-    : null;
+  const adapter = liveAdapterSnapshot(state && state.adapter);
   return {
     at: Date.now() / 1000,
     type,
@@ -355,7 +357,8 @@ class Monitor {
   }
 
   async _maybeRefreshAdapter() {
-    if (this._probeCount % ADAPTER_EVERY_N !== 0 && this.state.adapter) return;
+    const every = adapterRefreshEveryN(this.state.adapter);
+    if (this._probeCount % every !== 0 && this.state.adapter) return;
     try {
       this.state.adapter = await getActiveAdapter();
     } catch {
@@ -687,5 +690,7 @@ module.exports = {
   liveAdapterSnapshot,
   buildAutoOutageNote,
   QUALITY_EVERY_N,
+  ADAPTER_EVERY_N,
+  adapterRefreshEveryN,
   isMonitorStale,
 };

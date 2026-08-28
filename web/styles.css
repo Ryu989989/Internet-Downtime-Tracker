@@ -633,10 +633,31 @@ main {
   margin-top: 0.55rem;
 }
 
-.adapter-line .meta-chip {
-  min-width: 0;
-  padding: 0.28rem 0.5rem;
-  font-size: 0.8rem;
+.wifi-verdict-badge {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  color: inherit;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  cursor: pointer;
+  margin-left: 0.25rem;
+  vertical-align: middle;
+}
+.wifi-verdict-badge.code-this_pc_wifi,
+#wifiVerdictChip.code-this_pc_wifi {
+  border-color: rgba(230, 180, 80, 0.7);
+}
+.wifi-verdict-badge.code-isp,
+#wifiVerdictChip.code-isp {
+  border-color: rgba(240, 113, 120, 0.7);
+}
+.wifi-verdict-badge.code-sleep,
+#wifiVerdictChip.code-sleep {
+  border-color: var(--muted);
 }
 
 .timeline-wrap {

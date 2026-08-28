@@ -211,6 +211,23 @@ Object.assign(LAYER_TIPS, {
     meaning: "OS-reported signal quality (%). dBm (RSSI) is unavailable on this OS/path (Windows netsh often has % only) — never estimated from %.",
   },
   "adapter-band": { name: "Band", meaning: "Radio band and channel from this PC’s Wi-Fi association." },
+  "adapter-bssid": {
+    name: "BSSID",
+    meaning: "Access point MAC this radio is associated with. A BSSID change with the same SSID is a roam, not necessarily a drop.",
+  },
+  "adapter-rate": {
+    name: "Rate",
+    meaning: "Negotiated TX/RX PHY rate (Mbps) from this PC’s Wi-Fi association. Not internet throughput.",
+  },
+  "adapter-state": {
+    name: "Assoc",
+    meaning: "802.11 association state from the OS (connected/disconnected). Independent of LAN/WAN probes.",
+  },
+  "wifi-verdict": {
+    name: "Drop",
+    meaning:
+      "Why a LAN drop looks local vs ISP. this PC Wi-Fi needs a WLAN disconnect/roam plus router WAN up or other devices still online. Unknown: ISP-up is unproven without router poll or other devices staying online. Not an outage type. Sleep overlaps are labeled sleep, not Wi-Fi faults.",
+  },
   "router-ssid": {
     name: "Router Wi-Fi",
     meaning: "SSID from the router API (latest poll) — most common among online Wi-Fi clients. Not this PC’s radio.",
@@ -1414,6 +1431,21 @@ function ensureSpeedTrend(tests) {
   queueSpeedTrendMount(lastSpeedTrendTests);
 }
 
+function outageWifiVerdict(outage, snap) {
+  const v = (snap && snap.wifi_verdict) || (outage && outage.wifi_verdict) || null;
+  if (!v || !v.code) return null;
+  return v;
+}
+
+function wifiVerdictBadgeHtml(v) {
+  if (!v || !v.code || v.code === "unknown") return "";
+  const label = v.label || v.code;
+  const evidence = Array.isArray(v.evidence) ? v.evidence.join(" ") : "";
+  return ` <button type="button" class="wifi-verdict-badge code-${escapeHtml(String(v.code))}" data-goto-tab="system-logs" title="${escapeHtml(
+    evidence
+  )}">${escapeHtml(label)}</button>`;
+}
+
 function parseSnapshot(raw) {
   if (!raw) return null;
   if (typeof raw === "object") return raw;
@@ -1429,10 +1461,20 @@ function formatSnapshotBlock(label, snap) {
   const data = label === "Closed" ? snap.at_close : snap.at_open;
   if (!data) return "";
   const a = data.adapter;
+  const radioBits = [];
+  if (a && a.ssid) radioBits.push(`SSID ${a.ssid}`);
+  if (a && a.bssid) radioBits.push(`BSSID ${a.bssid}`);
+  if (a && a.band) radioBits.push(`${a.band}${a.channel != null ? ` ch ${a.channel}` : ""}`);
+  if (a && a.rssi != null) radioBits.push(`${Math.round(Number(a.rssi))} dBm`);
+  else if (a && a.signal != null) radioBits.push(`${a.signal}%`);
+  if (a && (a.tx_mbps != null || a.rx_mbps != null)) {
+    radioBits.push(`TX ${a.tx_mbps != null ? Math.round(Number(a.tx_mbps)) : "-"} / RX ${a.rx_mbps != null ? Math.round(Number(a.rx_mbps)) : "-"} Mbps`);
+  }
+  if (a && a.state) radioBits.push(a.state);
   const adapter =
     a && a.name
       ? `${a.type === "wifi" ? "Wi‑Fi" : a.type === "ethernet" ? "Ethernet" : "Adapter"} ${a.name}${
-          a.signal != null ? ` ${a.signal}%` : ""
+          radioBits.length ? ` · ${radioBits.join(" · ")}` : a.signal != null ? ` ${a.signal}%` : ""
         }`
       : "adapter -";
   const flags = [
@@ -1481,7 +1523,11 @@ function renderOutageRows(tbody, rows, {
     const dur = o.duration_ms != null ? o.duration_ms : Math.floor((now - o.started_at) * 1000);
     const typ = safeOutageType(o.type);
     const snap = parseSnapshot(o.snapshot_json);
-    const hasSnap = !!(snap && (snap.at_open || snap.at_close || snap.adapter || snap.lan_ok != null || snap.traceroute));
+    const verdict = outageWifiVerdict(o, snap);
+    const hasSnap = !!(
+      snap &&
+      (snap.at_open || snap.at_close || snap.adapter || snap.lan_ok != null || snap.traceroute || snap.wifi_verdict)
+    );
     const notesCell = editableNotes
       ? `<td class="notes-cell">
           <input type="text" class="notes-input" data-outage-id="${Number(o.id)}"
@@ -1499,12 +1545,13 @@ function renderOutageRows(tbody, rows, {
           <td colspan="${cols}" class="snapshot-detail">
             ${formatSnapshotBlock("Opened", snap)}
             ${formatSnapshotBlock("Closed", snap)}
+            ${verdict ? `<div><strong>Drop</strong> · ${escapeHtml(verdict.label || verdict.code)}${verdict.evidence && verdict.evidence.length ? ` · ${escapeHtml(verdict.evidence.join(" "))}` : ""}</div>` : ""}
           </td>
         </tr>`
       : "";
     return `<tr class="${open ? "open-row" : ""}" data-outage-row="${Number(o.id)}">
       ${expandBtn}
-      <td class="type-${typ}">${escapeHtml(typ.toUpperCase())}</td>
+      <td class="type-${typ}">${escapeHtml(typ.toUpperCase())}${wifiVerdictBadgeHtml(verdict)}</td>
       <td>${fmtTs(o.started_at)}</td>
       ${showEnded ? `<td>${open ? "ongoing" : fmtTs(o.ended_at)}</td>` : ""}
       <td class="dur">${fmtDuration(dur)}${open ? "…" : ""}</td>
@@ -1799,7 +1846,16 @@ function paintAdapterLine(s) {
   const a = s && s.adapter;
   const viewConn = $("#viewConnectionsLink");
   const hideWifiChips = () => {
-    for (const id of ["adapterSsidChip", "adapterRssiChip", "adapterSignalChip", "adapterBandChip", "adapterClientsChip"]) {
+    for (const id of [
+      "adapterSsidChip",
+      "adapterRssiChip",
+      "adapterSignalChip",
+      "adapterBandChip",
+      "adapterClientsChip",
+      "adapterBssidChip",
+      "adapterRateChip",
+      "adapterStateChip",
+    ]) {
       const el = $(`#${id}`);
       if (el) el.hidden = true;
     }
@@ -1844,6 +1900,7 @@ function paintAdapterLine(s) {
       (ow.ssid || ow.client_count || ow.rssi != null || ow.weakest_rssi != null);
     if (hasRouter) {
       paintRouterOverviewWifi(ow);
+      paintHostAssocChips(null);
       return;
     }
     hideWifiChips();
@@ -1889,6 +1946,51 @@ function paintAdapterLine(s) {
     bandChip.hidden = !bandText;
     bandChip.dataset.tip = "adapter-band";
     if (bandText && $("#adapterBand")) $("#adapterBand").textContent = bandText;
+  }
+  paintHostAssocChips(a);
+}
+
+function paintHostAssocChips(a) {
+  const bssidChip = $("#adapterBssidChip");
+  const bssid = a && a.bssid;
+  if (bssidChip) {
+    bssidChip.hidden = !bssid;
+    if (bssid && $("#adapterBssid")) $("#adapterBssid").textContent = String(bssid);
+  }
+  const tx = finiteOrNull(a && a.tx_mbps);
+  const rx = finiteOrNull(a && a.rx_mbps);
+  const rateText =
+    tx != null || rx != null
+      ? `${tx != null ? Math.round(tx) : "-"} / ${rx != null ? Math.round(rx) : "-"} Mbps`
+      : "";
+  const rateChip = $("#adapterRateChip");
+  if (rateChip) {
+    rateChip.hidden = !rateText;
+    if (rateText && $("#adapterRate")) $("#adapterRate").textContent = rateText;
+  }
+  const st = a && a.state ? String(a.state) : "";
+  const stateChip = $("#adapterStateChip");
+  if (stateChip) {
+    stateChip.hidden = !st;
+    if (st && $("#adapterState")) $("#adapterState").textContent = st;
+  }
+}
+
+function paintWifiVerdict(s) {
+  const chip = $("#wifiVerdictChip");
+  if (!chip) return;
+  const v = s && s.wifi_verdict;
+  const code = v && v.code ? String(v.code) : "";
+  const openLan = Array.isArray(s && s.open_outages) && s.open_outages.some((o) => o && o.type === "lan");
+  const show = !!(code && (code !== "unknown" || openLan));
+  chip.hidden = !show;
+  chip.classList.remove("code-this_pc_wifi", "code-isp", "code-sleep", "code-unknown");
+  if (show) {
+    chip.classList.add(`code-${code}`);
+    const evidence = Array.isArray(v.evidence) ? v.evidence.join(" ") : "";
+    chip.title = evidence;
+    chip.dataset.tipText = evidence || LAYER_TIPS["wifi-verdict"].meaning;
+    if ($("#wifiVerdict")) $("#wifiVerdict").textContent = v.label || code;
   }
 }
 
@@ -1939,6 +2041,7 @@ function paintStatus(s) {
   paintQuality(s.quality, s.degraded);
 
   paintAdapterLine(s);
+  paintWifiVerdict(s);
   scheduleHostWifiSpark(s);
 
   const title = s.status_title != null ? s.status_title : "All clear";
@@ -2549,7 +2652,7 @@ function setConnView(view) {
 
 const DEVICES_COLS = 9;
 const WIFI_HOST_SRC = new Set(["host_nic"]);
-const WIFI_ROUTER_SRC = new Set(["asus", "asuswrt", "nighthawk", "netgear", "router"]);
+const WIFI_ROUTER_SRC = new Set(["asus", "asuswrt", "nighthawk", "netgear", "router", "unifi", "omada"]);
 
 let lastLanDevices = [];
 let lastRouterHealth = null;
@@ -5708,8 +5811,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupChartResize();
   defaultHistoryRange();
   defaultSystemLogsRange();
-  document.querySelectorAll("[data-goto-tab]").forEach((el) => {
-    el.addEventListener("click", () => activateTab(el.getAttribute("data-goto-tab"), { focusPanel: true }));
+  document.addEventListener("click", (ev) => {
+    const el = ev.target && ev.target.closest && ev.target.closest("[data-goto-tab]");
+    if (!el || !document.body.contains(el)) return;
+    const tab = el.getAttribute("data-goto-tab");
+    if (tab) activateTab(tab, { focusPanel: true });
   });
   if (window.idt && typeof window.idt.onStatusUpdate === "function") {
     window.idt.onStatusUpdate((s) => paintStatus(s));

@@ -79,6 +79,18 @@
                 <span class="meta-label">Band</span>
                 <span id="adapterBand">-</span>
               </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-bssid" id="adapterBssidChip" hidden>
+                <span class="meta-label">BSSID</span>
+                <span id="adapterBssid">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-rate" id="adapterRateChip" hidden>
+                <span class="meta-label">Rate</span>
+                <span id="adapterRate">-</span>
+              </div>
+              <div class="meta-chip has-tip pressable" tabindex="0" data-tip="adapter-state" id="adapterStateChip" hidden>
+                <span class="meta-label">Assoc</span>
+                <span id="adapterState">-</span>
+              </div>
               <div class="meta-chip has-tip pressable" tabindex="0" data-tip="router-clients" id="adapterClientsChip" hidden>
                 <span class="meta-label">Clients</span>
                 <span id="adapterClients">-</span>
@@ -94,6 +106,10 @@
             <div class="meta-chip has-tip pressable" tabindex="0" data-tip="hero-open"><span class="meta-label">Open</span> <span id="openCount">0</span></div>
             <div class="meta-chip has-tip pressable" tabindex="0" data-tip="hero-gw"><span class="meta-label">Gateway</span> <span id="heroGateway">-</span></div>
             <div class="meta-chip has-tip pressable" tabindex="0" data-tip="hero-latency"><span class="meta-label">Latency</span> <span id="heroLatency">-</span></div>
+            <div class="meta-chip has-tip pressable" tabindex="0" data-tip="wifi-verdict" id="wifiVerdictChip" hidden>
+              <span class="meta-label">Drop</span>
+              <span id="wifiVerdict">-</span>
+            </div>
             <div class="meta-chip has-tip pressable" id="httpCertChip" hidden tabindex="0" data-tip="http-cert">
               <span class="meta-label">TLS</span> <span id="httpCertDays">-</span>
             </div>
@@ -385,7 +401,8 @@
       <p class="disclaimer">
         OS-inferred connectivity gaps from Windows Event Logs. These are not the same as live probe History.
         Only periods the OS logged are visible. Pure ISP outages may be missed if the NIC stayed up;
-        local Wi‑Fi drops may appear as downtime. Sleep, hibernate, or shutdown gaps may show up or be missing.
+        local Wi‑Fi drops may appear as downtime. Sleep overlaps are labeled sleep, not Wi-Fi faults;
+        sleep, hibernate, or shutdown gaps may still be missing from the OS log.
       </p>
       <form id="systemLogsFilters" class="filters">
         <label>From <input type="datetime-local" name="from" /></label>

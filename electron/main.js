@@ -186,6 +186,9 @@ function decorateSnapshot(snap) {
   try {
     out.host_adapter = lanBridge.getHostAdapter();
     out.overview_wifi = lanBridge.overviewWifiPayload(snap.adapter);
+    if (typeof lanBridge.liveWifiVerdict === "function") {
+      out.wifi_verdict = lanBridge.liveWifiVerdict();
+    }
   } catch {
     /* fail closed — Overview stays on host NIC */
   }
@@ -538,6 +541,19 @@ function maybeNotifyOutage(event) {
   );
   lanBridge
     .onOutageEvent(event.action === "open" ? "outage_open" : "outage_close", event)
+    .then(() => {
+      if (event.id == null || !db || typeof db.mergeOutageSnapshot !== "function") return;
+      try {
+        const row = db._get("SELECT * FROM outages WHERE id=?", [event.id]);
+        const v =
+          typeof lanBridge.wifiVerdictForOutage === "function"
+            ? lanBridge.wifiVerdictForOutage(row || event)
+            : null;
+        if (v) db.mergeOutageSnapshot(event.id, { wifi_verdict: v });
+      } catch {
+        /* fail closed */
+      }
+    })
     .catch(() => {});
 }
 
@@ -867,7 +883,26 @@ function registerIpc() {
       orderBy: params.sort || "started_at",
       orderDir: params.dir || "DESC",
     });
-    return { outages: rows, count: rows.length };
+    const outages = rows.map((row) => {
+      let verdict = null;
+      if (row && row.snapshot_json) {
+        try {
+          const snap = JSON.parse(row.snapshot_json);
+          if (snap && snap.wifi_verdict) verdict = snap.wifi_verdict;
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!verdict && row && row.type === "lan" && typeof lanBridge.wifiVerdictForOutage === "function") {
+        try {
+          verdict = lanBridge.wifiVerdictForOutage(row);
+        } catch {
+          verdict = null;
+        }
+      }
+      return verdict ? { ...row, wifi_verdict: verdict } : row;
+    });
+    return { outages, count: outages.length };
   });
   safeHandle("api:outages:notes", (_e, body = {}) => {
     const row = db.updateOutageNotes(body.id, body.notes);
