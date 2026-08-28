@@ -88,6 +88,15 @@ describe("UI hardening", () => {
     assert.match(js, /WIFI_ROUTER_SRC = new Set\(\[[^\]]*omada/);
   });
 
+  it("Scan tab nearby BSS is a snapshot disclaimer, not a survey", () => {
+    const html = fs.readFileSync(path.join(repoRoot, "web", "index.html"), "utf8");
+    assert.match(html, /id="nearbyWifiRun"/);
+    assert.match(html, /not a site survey/);
+    const js = fs.readFileSync(path.join(repoRoot, "web", "app.js"), "utf8");
+    assert.match(js, /\/api\/lan\/wifi\/nearby/);
+    assert.doesNotMatch(js, /rssiToPct/);
+  });
+
   it("widget.html is loadFile-safe (no remote script)", () => {
     const html = fs.readFileSync(path.join(repoRoot, "web", "widget.html"), "utf8");
     assert.doesNotMatch(html, /<script[^>]+src=["']https?:/i);

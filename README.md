@@ -37,7 +37,7 @@ Cross-platform **Electron** tray app that monitors **LAN** (router/gateway), **W
 | **Router writes** — block/allow + guest SSID on/off | Master toggle **off** + confirm | `setClientBlocked` / `setGuestWifi` only. **No** firmware or reboot. Omada: block/allow only (guest skipped). Audit `router_actions`. Private host required. |
 | **Topology** — SNMP sysName/IF-MIB + LLDP when present | SNMP community; Settings off by default | Seeds = gateway + Devices/Settings IPs. Cancel on leave. |
 | **Sniffer** — metadata flow open/close ring buffer | Settings gate; always-on optional | Payloads off by default. Not full packet capture / Npcap. |
-| **Scan** — top ports + offline CVE advisories; gated subnet discovery | User-triggered; still private/known-device only | CVE labeled advisory/stale. Discovery ≥5 min; probe suppress while running. |
+| **Scan** — top ports + offline CVE advisories; gated subnet discovery; nearby BSS snapshot | User-triggered; still private/known-device only | CVE labeled advisory/stale. Discovery ≥5 min; probe suppress while running. Nearby Wi-Fi is a click-time `netsh`/`iw` snapshot — **not** a site survey/heatmap; hidden SSIDs may be missing; **not** on the probe tick. |
 | **Notifications** — outage/new-device/scan/monitor/`wifi_weak` + quiet hours | None | Generic HTTPS webhooks plus Discord, Slack, Telegram, ntfy, and SMTP email. Secret tokens are never logged. |
 | **Custom monitors** — user-defined TCP/HTTP/PING targets | None | Per-target history in `monitor_checks`; independent intervals and notifications. |
 | **Router webhook** — manual/auto quarantine-ish POST | Opt-in URL | Generic payload; no Omada/OPNsense plugin marketplace. |

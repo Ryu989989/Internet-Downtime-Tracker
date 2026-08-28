@@ -168,6 +168,11 @@ Object.assign(LAYER_TIPS, {
   "scan-port": { name: "Port", meaning: "Open port on the scanned private IP." },
   "scan-banner": { name: "Banner", meaning: "Short banner/service string if any." },
   "scan-cve": { name: "CVE", meaning: "Advisory/stale CVE hits for this port — not a live feed." },
+  "nearby-ssid": { name: "SSID", meaning: "Advertised network name from a point-in-time scan. Hidden SSIDs may be missing." },
+  "nearby-bssid": { name: "BSSID", meaning: "Access point radio MAC seen in this snapshot." },
+  "nearby-ch": { name: "Channel", meaning: "Primary channel reported by the OS scan." },
+  "nearby-signal": { name: "Signal", meaning: "OS scan quality. Windows is percent; Linux iw is dBm. Never converted." },
+  "nearby-sec": { name: "Security", meaning: "Auth/cipher flags from the snapshot. Not a pentest." },
   "speed-when": { name: "When", meaning: "When this Ookla test finished." },
   "speed-jitter-col": { name: "Jitter", meaning: "RTT variation (ms) on that test." },
   "speed-server": { name: "Server", meaning: "Ookla server name and location." },
@@ -497,6 +502,11 @@ async function api(path, opts) {
     if (path === "/api/lan/scan") {
       const body = opts && opts.body ? JSON.parse(opts.body) : {};
       return window.idt.lanScan(body);
+    }
+    if (path === "/api/lan/wifi/nearby") {
+      const fn = window.idt.lanWifiNearby;
+      if (typeof fn !== "function") return { ok: false, error: "not implemented", networks: [] };
+      return fn();
     }
     if (path === "/api/lan/discovery") return window.idt.lanDiscovery();
     if (path === "/api/lan/router-notify") {
@@ -3897,6 +3907,49 @@ async function runScan() {
   }
 }
 
+async function runNearbyWifi() {
+  const meta = $("#nearbyWifiMeta");
+  const tbody = $("#nearbyWifiBody");
+  if (meta) meta.textContent = "Scanning nearby BSS…";
+  try {
+    const data = await api("/api/lan/wifi/nearby");
+    const rows = (data && data.networks) || [];
+    if (tbody) {
+      tbody.innerHTML =
+        rows
+          .map((r) => {
+            const sig =
+              r.rssi != null
+                ? `${Math.round(Number(r.rssi))} dBm`
+                : r.signal != null
+                  ? `${Math.round(Number(r.signal))}%`
+                  : "—";
+            const ch = [r.band ? `${r.band} GHz` : "", r.channel != null ? `ch ${r.channel}` : ""]
+              .filter(Boolean)
+              .join(" · ");
+            return `<tr>
+              <td>${escapeHtml(r.ssid || "(hidden)")}</td>
+              <td>${escapeHtml(r.bssid || "—")}</td>
+              <td>${escapeHtml(ch || "—")}</td>
+              <td>${escapeHtml(sig)}</td>
+              <td>${escapeHtml(r.security || "—")}</td>
+            </tr>`;
+          })
+          .join("") || `<tr><td colspan="5" class="muted">No BSS in this snapshot</td></tr>`;
+      bindTooltips(tbody);
+    }
+    if (meta) {
+      const warn = data && data.warning ? ` · ${data.warning}` : "";
+      meta.textContent =
+        data && data.ok
+          ? `${rows.length} BSS · ${data.disclaimer || "Snapshot when you clicked — not a site survey."}${warn}`
+          : (data && data.warning) || "Nearby scan failed";
+    }
+  } catch (err) {
+    if (meta) meta.textContent = (err && err.message) || "Nearby scan failed";
+  }
+}
+
 function bindScanRowTips(tbody) {
   if (!tbody) return;
   tbody.querySelectorAll("tr").forEach((tr) => {
@@ -4233,6 +4286,8 @@ function setupConnectionsPanel() {
   }
   const scanRun = $("#scanRun");
   if (scanRun) scanRun.addEventListener("click", () => runScan());
+  const nearbyWifiRun = $("#nearbyWifiRun");
+  if (nearbyWifiRun) nearbyWifiRun.addEventListener("click", () => runNearbyWifi());
   const scanDiscover = $("#scanDiscover");
   if (scanDiscover) {
     scanDiscover.addEventListener("click", async () => {

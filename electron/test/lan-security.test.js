@@ -16,6 +16,7 @@ describe("LAN IPC allowlist + isolation", () => {
     assert.match(preload, /lanDevicesPing:/);
     assert.match(preload, /lanDevicesTraceroute:/);
     assert.match(preload, /lanScan:/);
+    assert.match(preload, /lanWifiNearby:/);
     assert.match(preload, /lanSnifferStart:/);
     assert.match(preload, /lanTopology:/);
     assert.doesNotMatch(preload, /require\("child_process"\)/);
@@ -27,6 +28,7 @@ describe("LAN IPC allowlist + isolation", () => {
     assert.match(main, /safeHandle\("api:lan:devices:ping"/);
     assert.match(main, /safeHandle\("api:lan:devices:traceroute"/);
     assert.match(main, /safeHandle\("api:lan:scan"/);
+    assert.match(main, /safeHandle\("api:lan:wifi:nearby"/);
     assert.match(main, /safeHandle\("api:lan:sniffer:start"/);
     assert.match(main, /safeHandle\("api:lan:topology"/);
     assert.match(main, /tracerouteDevice/);

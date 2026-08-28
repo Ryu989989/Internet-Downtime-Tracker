@@ -23,6 +23,7 @@ const { createSpeedtestScheduler } = require("./speedtest-scheduler");
 const { traceroutePublic } = require("./traceroute");
 const notifyChannels = require("./notify-webhooks");
 const widget = require("./widget");
+const wifiNearby = require("./wifi-nearby");
 const { statusHeadline, layerLatencyLine } = require("./status-copy");
 
 /** Exports always land under downloads/temp — ignore renderer-supplied paths. */
@@ -1132,6 +1133,7 @@ function registerIpc() {
   safeHandle("api:lan:router:test", async (_e, targetId) => lanBridge.testRouterConnection(targetId));
   safeHandle("api:lan:router:action", async (_e, body = {}) => lanBridge.routerAction(body || {}));
   safeHandle("api:lan:wifi:history", async (_e, body = {}) => lanBridge.listWifiHistory(body || {}));
+  safeHandle("api:lan:wifi:nearby", async () => wifiNearby.scanNearby());
   safeHandle("api:lan:router:health", async () => lanBridge.getRouterHealth());
 }
 

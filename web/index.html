@@ -663,6 +663,27 @@
             <tbody id="scanBody"></tbody>
           </table>
         </div>
+        <p class="muted" id="nearbyWifiLead">
+          Nearby BSS is a point-in-time snapshot when you click — not a site survey, not a heatmap.
+          Hidden SSIDs may be missing. Not on the monitor tick.
+        </p>
+        <div class="filters conn-toolbar">
+          <button type="button" class="btn btn-secondary" id="nearbyWifiRun">Scan nearby Wi-Fi</button>
+          <span class="muted" id="nearbyWifiMeta" aria-live="polite"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="sr-only">Nearby Wi-Fi BSS snapshot</caption>
+            <thead><tr>
+              <th class="has-tip" tabindex="0" data-tip="nearby-ssid">SSID</th>
+              <th class="has-tip" tabindex="0" data-tip="nearby-bssid">BSSID</th>
+              <th class="has-tip" tabindex="0" data-tip="nearby-ch">Channel</th>
+              <th class="has-tip" tabindex="0" data-tip="nearby-signal">Signal</th>
+              <th class="has-tip" tabindex="0" data-tip="nearby-sec">Security</th>
+            </tr></thead>
+            <tbody id="nearbyWifiBody"></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
