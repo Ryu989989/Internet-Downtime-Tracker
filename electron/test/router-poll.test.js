@@ -68,7 +68,13 @@ describe("router poller / IPC", () => {
 
   afterEach(async () => {
     lanBridge.stopRouterPoll();
-    for (let i = 0; i < 50 && lanBridge.getRouterPollStatus().in_flight; i++) {
+    lanBridge.stopHostNicPoll();
+    for (
+      let i = 0;
+      i < 50 &&
+      (lanBridge.getRouterPollStatus().in_flight || lanBridge.getHostNicPollStatus().in_flight);
+      i++
+    ) {
       await new Promise((r) => setTimeout(r, 10));
     }
     lanBridge.resetRouterPollForTest();
@@ -132,7 +138,7 @@ describe("router poller / IPC", () => {
     assert.equal(payload.router_health.vendor, "nighthawk");
     assert.equal(payload.router_health.error, null);
     assert.equal(payload.router_health.cpu_pct, 12);
-    assert.equal(payload.host_adapter.mac, null);
+    assert.equal(payload.host_adapter && payload.host_adapter.mac, null);
     const ow = lanBridge.overviewWifiPayload({ type: "ethernet", name: "Ethernet" });
     assert.equal(ow.ssid, "Home");
     assert.equal(ow.source, "nighthawk");
@@ -161,7 +167,7 @@ describe("router poller / IPC", () => {
       }),
       getDefaultGateway: async () => "192.168.1.1",
     });
-    await lanBridge.pollRouterOnce();
+    await lanBridge.persistHostNic();
     const mac = "AA:BB:CC:11:22:33";
     const hist = lanBridge.listWifiHistory({ mac });
     assert.equal(hist.length, 1);
@@ -173,6 +179,123 @@ describe("router poller / IPC", () => {
     assert.equal(payload.host_adapter.mac, "aa-bb-cc-11-22-33");
     assert.equal(payload.host_adapter.signal, 80);
   });
+
+  it("persistHostNic inserts host_nic sample when router poll is disabled", async () => {
+    db.updateSettings({ router_poll_enabled: false });
+    lanBridge.setRouterPollForTest({
+      createAdapter: () => fakeAdapter({ clients: [] }),
+      getActiveAdapter: async () => ({
+        mac: "aa-bb-cc-11-22-33",
+        ssid: "Home",
+        bssid: "11:22:33:44:55:66",
+        band: "5",
+        channel: 36,
+        rssi: -50,
+        signal: 80,
+        tx_mbps: 1200,
+        rx_mbps: 800,
+        type: "wifi",
+      }),
+      getDefaultGateway: async () => "192.168.1.1",
+    });
+    await lanBridge.persistHostNic();
+    const mac = "AA:BB:CC:11:22:33";
+    const hist = lanBridge.listWifiHistory({ mac });
+    assert.equal(hist.length, 1);
+    assert.equal(hist[0].source, "host_nic");
+    assert.equal(hist[0].ssid, "Home");
+    assert.equal(lanBridge.listDevices().host_adapter.mac, "aa-bb-cc-11-22-33");
+  });
+
+  it("pollRouterOnce does not insert host_nic samples", async () => {
+    lanBridge.setRouterPollForTest({
+      createAdapter: () => fakeAdapter({ clients: [] }),
+      getActiveAdapter: async () => ({
+        mac: "aa-bb-cc-11-22-33",
+        ssid: "Home",
+        bssid: "11:22:33:44:55:66",
+        band: "5",
+        rssi: -50,
+        signal: 80,
+        type: "wifi",
+      }),
+      getDefaultGateway: async () => "192.168.1.1",
+    });
+    await lanBridge.pollRouterOnce();
+    const hist = lanBridge.listWifiHistory({ mac: "AA:BB:CC:11:22:33" });
+    assert.equal(hist.length, 0);
+  });
+
+  it("startHostNicPoll starts timer; stop/reset/shutdown clear it", async () => {
+    assert.equal(lanBridge.HOST_NIC_INTERVAL_MS, 30000);
+    const on = lanBridge.startHostNicPoll();
+    assert.equal(on.running, true);
+    assert.equal(lanBridge.getHostNicPollStatus().running, true);
+    lanBridge.stopHostNicPoll();
+    assert.equal(lanBridge.getHostNicPollStatus().running, false);
+
+    lanBridge.startHostNicPoll();
+    assert.equal(lanBridge.getHostNicPollStatus().running, true);
+    lanBridge.resetRouterPollForTest();
+    assert.equal(lanBridge.getHostNicPollStatus().running, false);
+
+    lanBridge.init({ db, monitor: null });
+    lanBridge.startHostNicPoll();
+    assert.equal(lanBridge.getHostNicPollStatus().running, true);
+    lanBridge.shutdown();
+    assert.equal(lanBridge.getHostNicPollStatus().running, false);
+  });
+
+  it("applyIntegrationSettings starts host NIC poll even when router poll is off", async () => {
+    db.updateSettings({ router_poll_enabled: false });
+    await lanBridge.applyIntegrationSettings({}, db.getSettings());
+    assert.equal(lanBridge.getHostNicPollStatus().running, true);
+    assert.equal(lanBridge.getRouterPollStatus().running, false);
+    lanBridge.stopHostNicPoll();
+    assert.equal(lanBridge.getHostNicPollStatus().running, false);
+  });
+
+  const hasWifiChronicle = fs.existsSync(path.join(__dirname, "..", "wifi-chronicle.js"));
+  (hasWifiChronicle ? it : it.skip)(
+    "two persistHostNic with different BSSID same SSID records roam",
+    async () => {
+      lanBridge.setRouterPollForTest({
+        createAdapter: () => fakeAdapter({ clients: [] }),
+        getActiveAdapter: async () => ({
+          mac: "aa-bb-cc-11-22-33",
+          ssid: "Home",
+          bssid: "11:22:33:44:55:66",
+          band: "5",
+          rssi: -50,
+          signal: 80,
+          type: "wifi",
+        }),
+        getDefaultGateway: async () => "192.168.1.1",
+      });
+      await lanBridge.persistHostNic(1_700_000_000);
+      lanBridge.setRouterPollForTest({
+        createAdapter: () => fakeAdapter({ clients: [] }),
+        getActiveAdapter: async () => ({
+          mac: "aa-bb-cc-11-22-33",
+          ssid: "Home",
+          bssid: "aa:bb:cc:dd:ee:ff",
+          band: "5",
+          rssi: -55,
+          signal: 70,
+          type: "wifi",
+        }),
+        getDefaultGateway: async () => "192.168.1.1",
+      });
+      await lanBridge.persistHostNic(1_700_000_030);
+      const events = db.listWifiEvents({ fromTs: 1_700_000_000, toTs: 1_700_000_040 });
+      const roam = events.filter((e) => e.kind === "roam");
+      assert.equal(roam.length, 1);
+      assert.equal(roam[0].source, "host_nic");
+      assert.equal(roam[0].ssid, "Home");
+      assert.match(String(roam[0].bssid_from || "").toUpperCase(), /11:22:33:44:55:66/);
+      assert.match(String(roam[0].bssid_to || "").toUpperCase(), /AA:BB:CC:DD:EE:FF/);
+    }
+  );
 
   it("testConnection uses saved password and fail-closes on public host", async () => {
     let seen = null;

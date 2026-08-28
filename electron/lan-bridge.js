@@ -39,6 +39,13 @@ let metricsTimer = null;
 let onRecentEvent = null;
 let routerPollTimer = null;
 let routerPollInFlight = false;
+let hostNicPollTimer = null;
+let hostNicPollInFlight = false;
+/** Last host_nic wifi sample used for roam detection. */
+let lastHostNicSample = null;
+let lastChronicleIngestAt = 0;
+const HOST_NIC_INTERVAL_MS = 30000;
+const CHRONICLE_DEBOUNCE_S = 10;
 /** @type {string | null} */
 let lastPollError = null;
 /** @type {object[]} */
@@ -865,7 +872,28 @@ function cacheHostAdapter(adapter) {
   };
 }
 
+function tryWifiChronicle() {
+  try {
+    return require("./wifi-chronicle");
+  } catch {
+    return null;
+  }
+}
+
+function maybeInsertHostNicRoam(prev, next) {
+  if (!db || typeof db.insertWifiEvent !== "function") return;
+  const chronicle = tryWifiChronicle();
+  if (!chronicle || typeof chronicle.detectHostNicRoam !== "function") return;
+  try {
+    const ev = chronicle.detectHostNicRoam(prev, next);
+    if (ev && ev.kind) db.insertWifiEvent(ev);
+  } catch {
+    /* fail closed */
+  }
+}
+
 async function persistHostNic(now) {
+  const ts = now != null && Number.isFinite(Number(now)) ? Number(now) : Date.now() / 1000;
   const getAdapter = routerPollHooks.getActiveAdapter || netcheck.getActiveAdapter;
   let adapter;
   try {
@@ -882,7 +910,7 @@ async function persistHostNic(now) {
     ip: prior && prior.ip,
     hostname: prior && prior.hostname,
     online: true,
-    last_seen: now,
+    last_seen: ts,
     source: (prior && prior.source) || "host_nic",
     gateway: prior && prior.gateway ? 1 : 0,
     wifi_rssi: adapter.rssi,
@@ -891,13 +919,13 @@ async function persistHostNic(now) {
     wifi_tx_mbps: adapter.tx_mbps,
     wifi_rx_mbps: adapter.rx_mbps,
     wifi_ssid: adapter.ssid,
-    last_wifi_at: now,
+    last_wifi_at: ts,
   });
   recordWifiMetric(mac, "host_nic", adapter.band, adapter.rssi, adapter.signal, true);
   db.insertWifiSample({
     mac,
     source: "host_nic",
-    at: now,
+    at: ts,
     rssi: adapter.rssi,
     signal_pct: adapter.signal,
     band: adapter.band,
@@ -907,6 +935,19 @@ async function persistHostNic(now) {
     tx_mbps: adapter.tx_mbps,
     rx_mbps: adapter.rx_mbps,
   });
+  const nextSample = {
+    mac,
+    source: "host_nic",
+    at: ts,
+    ssid: adapter.ssid || null,
+    bssid: adapter.bssid || null,
+    rssi: adapter.rssi,
+    signal_pct: adapter.signal,
+    band: adapter.band,
+    channel: adapter.channel,
+  };
+  maybeInsertHostNicRoam(lastHostNicSample, nextSample);
+  lastHostNicSample = nextSample;
 }
 
 async function pollOneTarget(target, secret, now) {
@@ -1007,11 +1048,6 @@ async function pollRouterOnce() {
   } catch (err) {
     lastPollError = (err && err.message) || "router poll failed";
   }
-  try {
-    await persistHostNic(now);
-  } catch {
-    /* fail closed */
-  }
   lastWifiMetrics = Array.from(lastWifiByMac.values())
     .filter((w) => w.rssi != null || w.signal_pct != null)
     .slice(0, WIFI_PROM_MAX);
@@ -1028,6 +1064,39 @@ function stopRouterPoll() {
     clearInterval(routerPollTimer);
     routerPollTimer = null;
   }
+}
+
+function stopHostNicPoll() {
+  if (hostNicPollTimer) {
+    clearInterval(hostNicPollTimer);
+    hostNicPollTimer = null;
+  }
+}
+
+function startHostNicPoll() {
+  stopHostNicPoll();
+  const tick = () => {
+    if (hostNicPollInFlight) return;
+    hostNicPollInFlight = true;
+    const now = Date.now() / 1000;
+    persistHostNic(now)
+      .then(() => checkWifiAlerts(now))
+      .catch(() => {})
+      .finally(() => {
+        hostNicPollInFlight = false;
+      });
+  };
+  tick();
+  hostNicPollTimer = setInterval(tick, HOST_NIC_INTERVAL_MS);
+  if (hostNicPollTimer.unref) hostNicPollTimer.unref();
+  return { ok: true, running: true, interval_ms: HOST_NIC_INTERVAL_MS };
+}
+
+function getHostNicPollStatus() {
+  return {
+    running: !!hostNicPollTimer,
+    in_flight: hostNicPollInFlight,
+  };
 }
 
 function startRouterPoll() {
@@ -1138,6 +1207,10 @@ function setRouterPollForTest(hooks = {}) {
 
 function resetRouterPollForTest() {
   stopRouterPoll();
+  stopHostNicPoll();
+  hostNicPollInFlight = false;
+  lastHostNicSample = null;
+  lastChronicleIngestAt = 0;
   routerPollInFlight = false;
   lastPollError = null;
   lastPollTargets = [];
@@ -1240,6 +1313,7 @@ async function applyIntegrationSettings(prev, next) {
     if (metricsTimer.unref) metricsTimer.unref();
   }
   syncRouterPoll(next);
+  startHostNicPoll();
 }
 
 async function pushMetrics() {
@@ -1256,6 +1330,152 @@ async function pushMetrics() {
     ]);
   }
   return fields;
+}
+
+const UNKNOWN_WIFI_VERDICT = {
+  code: "unknown",
+  label: "Unknown",
+  evidence: ["ISP-up is unproven without router poll or other devices staying online."],
+};
+
+function routerWanOkForVerdict() {
+  const s = settings();
+  if (!s || !s.router_poll_enabled) return null;
+  try {
+    const health = getRouterHealth();
+    if (!health || health.wan_ok == null) return null;
+    return !!health.wan_ok;
+  } catch {
+    return null;
+  }
+}
+
+function peersOnlineDuring(hostMac) {
+  if (!db || typeof db.listLanDevices !== "function") return null;
+  const host = formatMac(hostMac) || formatMac(lastHostAdapter && lastHostAdapter.mac);
+  const devices = db.listLanDevices() || [];
+  for (const d of devices) {
+    if (!d.online) continue;
+    const mac = formatMac(d.mac);
+    if (!mac) continue;
+    if (host && mac === host) continue;
+    return true;
+  }
+  return false;
+}
+
+function overlappingWanOutage(start, end) {
+  if (!db || typeof db.listOutages !== "function") return null;
+  const rows = db.listOutages({
+    fromTs: start,
+    toTs: end,
+    outageType: "wan",
+    limit: 5,
+  });
+  return (rows && rows[0]) || null;
+}
+
+function wifiVerdictForOutage(outage) {
+  const chronicle = tryWifiChronicle();
+  if (!chronicle || typeof chronicle.correlateVerdict !== "function") {
+    return { ...UNKNOWN_WIFI_VERDICT };
+  }
+  const now = Date.now() / 1000;
+  const start =
+    outage && outage.started_at != null && Number.isFinite(Number(outage.started_at))
+      ? Number(outage.started_at)
+      : now;
+  const end =
+    outage && outage.ended_at != null && Number.isFinite(Number(outage.ended_at))
+      ? Number(outage.ended_at)
+      : now;
+  const lanOutage = outage && (!outage.type || outage.type === "lan") ? outage : null;
+  let wlanEvents = [];
+  if (db && typeof db.listWifiEvents === "function") {
+    try {
+      wlanEvents = db.listWifiEvents({ fromTs: start, toTs: end, limit: 500 }) || [];
+    } catch {
+      wlanEvents = [];
+    }
+  }
+  try {
+    return (
+      chronicle.correlateVerdict({
+        lanOutage,
+        wanOutage: overlappingWanOutage(start, end),
+        wlanEvents,
+        routerWanOk: routerWanOkForVerdict(),
+        peersOnlineDuring: peersOnlineDuring(),
+      }) || { ...UNKNOWN_WIFI_VERDICT }
+    );
+  } catch {
+    return { ...UNKNOWN_WIFI_VERDICT };
+  }
+}
+
+function liveWifiVerdict() {
+  const openLan =
+    db && typeof db.getOpenOutage === "function" ? db.getOpenOutage("lan") : null;
+  return wifiVerdictForOutage(openLan);
+}
+
+async function ingestWlanChronicle({ from, to } = {}) {
+  const now = Date.now() / 1000;
+  if (lastChronicleIngestAt && now - lastChronicleIngestAt < CHRONICLE_DEBOUNCE_S) {
+    return { ok: true, skipped: true };
+  }
+  lastChronicleIngestAt = now;
+  if (!db || typeof db.insertWifiEvent !== "function") return { ok: false };
+  let scanWindowsLogs;
+  try {
+    ({ scanWindowsLogs } = require("./system-logs"));
+  } catch {
+    return { ok: false };
+  }
+  if (typeof scanWindowsLogs !== "function") return { ok: false };
+  const chronicle = tryWifiChronicle();
+  if (!chronicle) return { ok: false };
+  const { eventsToChronicle, classifyWlanEvent } = chronicle;
+  if (typeof eventsToChronicle !== "function" && typeof classifyWlanEvent !== "function") {
+    return { ok: false };
+  }
+  try {
+    const result = await scanWindowsLogs({
+      from: from != null ? Number(from) : now - 3600,
+      to: to != null ? Number(to) : now,
+      refresh: true,
+    });
+    const raw = (result && Array.isArray(result.events) ? result.events : []).map((e) => ({
+      id: e.id,
+      eventData: e.eventData,
+      message: e.message || e.reason,
+      time: e.time,
+      source: e.source,
+    }));
+    let rows;
+    if (typeof eventsToChronicle === "function") {
+      rows = eventsToChronicle(raw) || [];
+    } else {
+      rows = raw.map((e) => classifyWlanEvent(e)).filter((r) => r && r.kind);
+    }
+    for (const row of rows) {
+      if (!row || !row.kind) continue;
+      db.insertWifiEvent({
+        at: row.at,
+        kind: row.kind,
+        ssid: row.ssid,
+        bssid_from: row.bssid_from || row.bssid || null,
+        bssid_to: row.bssid_to || null,
+        reason_code: row.reason_code,
+        reason_text: row.reason_text,
+        event_id: row.event_id,
+        source: row.source,
+      });
+    }
+    return { ok: true, count: Array.isArray(rows) ? rows.length : 0 };
+  } catch {
+    return { ok: false };
+  }
 }
 
 async function onOutageEvent(kind, outage) {
@@ -1280,10 +1500,21 @@ async function onOutageEvent(kind, outage) {
     title: `Outage ${kind}: ${outage && outage.type}`,
     body,
   });
+  if (kind === "outage_open" && outage && outage.type === "lan") {
+    const now = Date.now() / 1000;
+    const started = Number(outage.started_at);
+    const from = (Number.isFinite(started) ? started : now) - 60;
+    try {
+      await ingestWlanChronicle({ from, to: now });
+    } catch {
+      /* fail closed */
+    }
+  }
 }
 
 function shutdown() {
   stopRouterPoll();
+  stopHostNicPoll();
   snmpTopology.stop();
   packetSniffer.stop({ force: true });
   subnetDiscovery.stopSchedule();
@@ -1314,6 +1545,11 @@ module.exports = {
   applyIntegrationSettings,
   startRouterPoll,
   stopRouterPoll,
+  startHostNicPoll,
+  stopHostNicPoll,
+  getHostNicPollStatus,
+  HOST_NIC_INTERVAL_MS,
+  persistHostNic,
   pollRouterOnce,
   evaluateWifiAlerts,
   sampleIsWeaker,
@@ -1331,6 +1567,9 @@ module.exports = {
   resetRouterPollForTest,
   pushMetrics,
   onOutageEvent,
+  ingestWlanChronicle,
+  wifiVerdictForOutage,
+  liveWifiVerdict,
   shutdown,
   lanDevices,
   snmpTopology,
