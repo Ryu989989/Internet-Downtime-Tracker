@@ -10,6 +10,9 @@ const {
   resetRunCmdForTest,
   getDefaultGateway,
   getActiveAdapter,
+  parseNetshWlanInterfaces,
+  emptyAdapter,
+  fillWifiGaps,
 } = require("../netcheck");
 const { tracerouteArgs, parseTraceroute } = require("../traceroute");
 const { dataDir } = require("../db");
@@ -194,6 +197,8 @@ describe("cross-platform parser and command builders", () => {
       "    Receive rate (Mbps)    : 1201",
       "    Transmit rate (Mbps)   : 1201",
       "    Signal                 : 85%",
+      "    Authentication         : WPA2-Personal",
+      "    Cipher                 : CCMP",
     ].join("\n");
     setRunCmdForTest((cmd) => {
       if (cmd === "powershell") {
@@ -219,6 +224,103 @@ describe("cross-platform parser and command builders", () => {
     assert.equal(adapter.tx_mbps, 1201);
     assert.equal(adapter.rx_mbps, 1201);
     assert.equal(adapter.mac, "00:11:22:33:44:55");
+    assert.equal(adapter.radio_type, "802.11ax");
+    assert.equal(adapter.state, "connected");
+    assert.equal(adapter.auth, "WPA2-Personal");
+    assert.equal(adapter.cipher, "CCMP");
+  });
+
+  it("parseNetshWlanInterfaces reads disconnected state", () => {
+    const parsed = parseNetshWlanInterfaces(
+      [
+        "    Name                   : Wi-Fi",
+        "    State                  : disconnected",
+        "    Radio type             : 802.11ac",
+        "    Authentication         : WPA2-Personal",
+        "    Cipher                 : CCMP",
+        "    Signal                 : 0%",
+      ].join("\n")
+    );
+    assert.equal(parsed.state, "disconnected");
+    assert.equal(parsed.radio_type, "802.11ac");
+    assert.equal(parsed.auth, "WPA2-Personal");
+    assert.equal(parsed.cipher, "CCMP");
+    assert.equal(parsed.signal, 0);
+    assert.equal(parsed.rssi, null);
+  });
+
+  it("parseNetshWlanInterfaces parses explicit RSSI dBm and not percent", () => {
+    const fromRssiField = parseNetshWlanInterfaces(
+      ["    Name : Wi-Fi", "    State : connected", "    RSSI : -55", "    Signal : 85%"].join("\n")
+    );
+    assert.equal(fromRssiField.signal, 85);
+    assert.equal(fromRssiField.rssi, -55);
+
+    const fromSignalDbm = parseNetshWlanInterfaces(
+      ["    Name : Wi-Fi", "    State : connected", "    Signal : -55 dBm"].join("\n")
+    );
+    assert.equal(fromSignalDbm.rssi, -55);
+
+    const fromSignalLevel = parseNetshWlanInterfaces(
+      ["    Name : Wi-Fi", "    State : connected", "    Signal level=-55 dBm"].join("\n")
+    );
+    assert.equal(fromSignalLevel.rssi, -55);
+
+    const percentOnly = parseNetshWlanInterfaces(
+      ["    Name : Wi-Fi", "    State : connected", "    Signal : 85%"].join("\n")
+    );
+    assert.equal(percentOnly.signal, 85);
+    assert.equal(percentOnly.rssi, null);
+  });
+
+  it("parseNetshWlanInterfaces prefers a connected interface block", () => {
+    const parsed = parseNetshWlanInterfaces(
+      [
+        "    Name                   : Wi-Fi 2",
+        "    State                  : disconnected",
+        "    SSID                   : old",
+        "    Radio type             : 802.11n",
+        "",
+        "    Name                   : Wi-Fi",
+        "    State                  : connected",
+        "    SSID                   : home",
+        "    Radio type             : 802.11ax",
+        "    Authentication         : WPA3-Personal",
+        "    Cipher                 : GCMP",
+        "    Signal                 : 85%",
+      ].join("\n")
+    );
+    assert.equal(parsed.state, "connected");
+    assert.equal(parsed.ssid, "home");
+    assert.equal(parsed.radio_type, "802.11ax");
+    assert.equal(parsed.auth, "WPA3-Personal");
+    assert.equal(parsed.cipher, "GCMP");
+    assert.equal(parsed.signal, 85);
+    assert.equal(parsed.rssi, null);
+  });
+
+  it("emptyAdapter includes wifi state fields as null", () => {
+    const a = emptyAdapter();
+    assert.equal(a.state, null);
+    assert.equal(a.radio_type, null);
+    assert.equal(a.auth, null);
+    assert.equal(a.cipher, null);
+  });
+
+  it("fillWifiGaps copies wifi state radio auth cipher", () => {
+    const target = emptyAdapter();
+    fillWifiGaps(target, {
+      state: "connected",
+      radio_type: "802.11ax",
+      auth: "WPA2-Personal",
+      cipher: "CCMP",
+      ssid: "home",
+    });
+    assert.equal(target.state, "connected");
+    assert.equal(target.radio_type, "802.11ax");
+    assert.equal(target.auth, "WPA2-Personal");
+    assert.equal(target.cipher, "CCMP");
+    assert.equal(target.ssid, "home");
   });
 
   it("dataDir uses platform-appropriate paths", () => {
